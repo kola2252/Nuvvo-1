@@ -1,0 +1,6 @@
+{
+  "summary": "Streamline the Add Dishes and Edit Dishes workflow by completely removing the description input field from administrator forms, and cleanly hide descriptions across all customer cards and detail views for a distraction-free food ordering experience.",
+  "updatedAt": "2026-10-12T20:55:31.857016791Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

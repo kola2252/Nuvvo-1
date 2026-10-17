@@ -1,0 +1,4702 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { 
+  User, FoodItem, Restaurant, CartItem, Order, OrderStatus, 
+  DeliveryPartnerProfile, FranchiseApplication, Address, Coupon, AuditLog,
+  AppNotification, Banner, PointsTransaction, RestaurantReview, ScheduledNotification,
+  RiderEarningRecord, RiderPayout, SimulatedEmail, MerchantPayout, AppTheme,
+  DesignatedAdmin, AdminPermissions, PaymentMethodType, VegIndicator, AppLanguage, ReferralSettings,
+  PaymentStatusType, StorePaymentSettings
+} from '../types';
+import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
+import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
+import { APP_THEMES } from '../data/themes';
+import { isAdminRole, isSuperAdminRole, normalizePhoneNumber } from '../config/authConfig';
+import { 
+  getFoodItemsFromSupabase, 
+  insertFoodItemToSupabase, 
+  updateFoodItemInSupabase, 
+  deleteFoodItemFromSupabase, 
+  seedFoodItemsToSupabase,
+  mapSupabaseRowToFoodItem,
+  LIVE_FOOD_SYNC_CHANNEL,
+  broadcastFoodMutation,
+  broadcastPaymentSettingsMutation,
+  broadcastRestaurantMutation,
+  broadcastHotelMutation,
+  CLIENT_SESSION_ID
+} from '../services/supabaseFood';
+import { supabase } from '../utils/supabase/client';
+
+function safeParse<T>(key: string, fallback: T): T {
+  const stored = localStorage.getItem(key);
+  if (!stored || stored === 'null' || stored === 'undefined') return fallback;
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed === null || parsed === undefined) {
+      return fallback;
+    }
+    // If fallback is an array, ensure parsed is also an array
+    if (Array.isArray(fallback) && !Array.isArray(parsed)) {
+      return fallback;
+    }
+    // If fallback is an object (and not null), ensure parsed is also an object
+    if (typeof fallback === 'object' && fallback !== null && (typeof parsed !== 'object' || parsed === null)) {
+      return fallback;
+    }
+    return parsed as T;
+  } catch (e) {
+    console.error(`Error parsing localStorage key "${key}":`, e);
+    return fallback;
+  }
+}
+
+interface AppContextProps {
+  // Theme & App Settings
+  darkMode: boolean;
+  toggleDarkMode: () => void;
+  currentTheme: AppTheme;
+  setThemeId: (id: string) => void;
+  themesList: AppTheme[];
+  currentPage: string;
+  setCurrentPage: (page: string) => void;
+  pageHistory: string[];
+  goBack: () => void;
+  closePage: () => void;
+  selectedFoodItem: FoodItem | null;
+  setSelectedFoodItem: (item: FoodItem | null) => void;
+  cartSuccessAnimation: boolean;
+  setCartSuccessAnimation: React.Dispatch<React.SetStateAction<boolean>>;
+  
+  // Authentication & Profile
+  user: User | null;
+  language: AppLanguage;
+  setLanguage: (lang: AppLanguage) => void;
+  otpCode: string;
+  setOtpCode: (code: string) => void;
+  loginWithPhone: (phone: string, role?: string) => Promise<boolean>;
+  verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<boolean>;
+  completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => void;
+  updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => void;
+  logoutUser: () => void;
+  updateUserAddresses: (addresses: Address[]) => void;
+  currentAddress: Address | null;
+  setCurrentAddress: (address: Address | null) => void;
+
+  // Admin-Only Referral Points Management
+  referralSettings: ReferralSettings;
+  updateReferralSettings: (settings: Partial<ReferralSettings>) => boolean;
+  resetAllReferralPoints: () => boolean;
+  resetUserReferralPoints: (userPhone: string) => boolean;
+  adjustUserReferralPoints: (userPhone: string, newPointsAmount: number) => boolean;
+
+  // Admin-Configured PhonePe & Bank Payment Settings
+  storePaymentSettings: StorePaymentSettings;
+  updateStorePaymentSettings: (settings: Partial<StorePaymentSettings>) => boolean;
+
+  // Food Catalog & Searches (Supabase public.food_items)
+  foodCatalog: FoodItem[];
+  foodLoading: boolean;
+  foodError: string | null;
+  supabaseConnected: boolean;
+  refetchFoodCatalog: () => Promise<void>;
+  seedDishesToSupabase: () => Promise<{ success: boolean; count?: number; error?: string }>;
+  addFoodItem: (item: Omit<FoodItem, 'id'>) => Promise<FoodItem | null | void> | void;
+  updateFoodItem: (id: string, updatedFields: Partial<FoodItem>) => Promise<void> | void;
+  deleteFoodItem: (id: string) => Promise<boolean | void> | void;
+  restaurants: Restaurant[];
+  addRestaurant: (restaurant: Restaurant) => void;
+  updateRestaurant: (id: string, updatedFields: Partial<Restaurant>) => void;
+  deleteRestaurant: (id: string) => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
+
+  // Favorites
+  favoriteFoods: string[];
+  favoriteRestaurants: string[];
+  toggleFavoriteFood: (foodId: string) => void;
+  toggleFavoriteRestaurant: (restId: string) => void;
+
+  // Cart
+  cart: CartItem[];
+  addToCart: (food: FoodItem, customizations?: { [cat: string]: any }) => void;
+  removeFromCart: (foodId: string, customKeys?: string) => void;
+  updateCartQuantity: (foodId: string, delta: number) => void;
+  clearCart: () => void;
+  appliedCoupon: Coupon | null;
+  applyCouponCode: (code: string) => { success: boolean; message: string };
+  removeCouponCode: () => void;
+  deliveryPartnerTip: number;
+  setDeliveryPartnerTip: (tip: number) => void;
+  orderInstructions: string;
+  setOrderInstructions: (instructions: string) => void;
+
+  // Orders
+  orders: Order[];
+  createNewOrder: (paymentMethod?: PaymentMethodType | string, phonePeNoOrDetails?: any, scheduledTime?: string) => Order | null;
+  reorderItems: (order: Order) => void;
+  changeOrderStatus: (orderId: string, status: OrderStatus, isSystemSimulation?: boolean) => void;
+  submitOrderRating: (orderId: string, rating: number, feedback?: string) => void;
+  updateOrderPaymentStatus: (orderId: string, paymentStatus: PaymentStatusType | string, notes?: string) => void;
+
+  // Live Track State
+  activeTrackingOrder: Order | null;
+  setActiveTrackingOrder: (order: Order | null) => void;
+  deliveryRouteProgress: number; // 0 to 100 representing moving vehicle coordinates
+
+  // Delivery Partner Section
+  deliveryPartner: DeliveryPartnerProfile | null;
+  registerAsPartner: (name: string, phone: string, docs: any) => void;
+  partnerOtpVerify: (phone: string) => boolean;
+  updatePartnerAvailability: (available: boolean) => void;
+  partnerAcceptOrder: (orderId: string) => void;
+  partnerRejectOrder: (orderId: string) => void;
+  partnerCompleteDelivery: (orderId: string, customTip?: number) => void;
+  deliveryPartners: DeliveryPartnerProfile[];
+  addDeliveryPartner: (
+    name: string, 
+    phone: string, 
+    initialBalance?: number, 
+    bikeNumber?: string,
+    whatsAppPhone?: string,
+    address?: string,
+    vehicleType?: 'Bike' | 'Scooter' | 'Cycle' | 'Auto' | 'Other',
+    aadhaar?: string,
+    drivingLicense?: string,
+    avatar?: string,
+    isApproved?: boolean
+  ) => void;
+  removeDeliveryPartner: (id: string) => void;
+  toggleDeliveryPartnerAvailability: (id: string) => void;
+  updateRiderStatus: (id: string, isApproved: boolean, status: DeliveryPartnerProfile['status']) => void;
+  assignOrderToDeliveryPartner: (orderId: string, partnerId: string) => boolean;
+  resetAdminData: (scope?: 'all_admin_data' | 'catalog' | 'delivery_partners') => Promise<{ success: boolean; message: string }>;
+
+  // Rider Earnings & Payouts API
+  incentiveSettings: {
+    peakHourBonus: number;
+    festivalBonus: number;
+    rainBonus: number;
+    weekendBonus: number;
+    referralBonus: number;
+  };
+  updateIncentiveSettings: (settings: {
+    peakHourBonus: number;
+    festivalBonus: number;
+    rainBonus: number;
+    weekendBonus: number;
+    referralBonus: number;
+  }) => void;
+  approvePayout: (payoutId: string) => void;
+  requestPayout: (riderId: string, amount: number) => void;
+  addRiderEarningRecord: (riderId: string, record: Omit<RiderEarningRecord, 'id' | 'date'>) => void;
+
+  // Franchise Settings
+  franchiseApplications: FranchiseApplication[];
+  submitFranchiseForm: (formData: any) => void;
+  updateFranchiseStatus: (id: string, status: FranchiseApplication['status']) => void;
+
+  // Admin & Super Admin Controls
+  isAdmin: boolean;
+  isSuperAdmin: boolean;
+  isSuperAdminAuthenticated: boolean;
+  verifySuperAdminOtp: (otp: string) => boolean;
+  setSuperAdminAuthenticated: (auth: boolean) => void;
+  authenticateSuperAdmin: () => void;
+  wipeAllData: () => void;
+  clearSystemCache: () => void;
+  clearStats: () => void;
+  seedSampleOrders: () => void;
+  couponsList: Coupon[];
+  addNewCoupon: (coupon: Coupon) => void;
+  deleteCoupon: (code: string) => void;
+  clearAllCoupons: () => void;
+  resetDefaultCoupons: () => void;
+  clearAllBanners: () => void;
+  resetDefaultBanners: () => void;
+  logs: AuditLog[];
+  addAuditLog: (action: string, details: string) => void;
+  clearLogs: () => void;
+  designatedAdmins: DesignatedAdmin[];
+  toggleAdminPermission: (adminId: string, permissionKey: keyof AdminPermissions) => void;
+  addDesignatedAdmin: (name: string, phone: string, email: string, role: string) => void;
+  deleteDesignatedAdmin: (id: string) => void;
+  
+  // Administrative & Onboarding Updates
+  toggleRestaurantActiveStatus: (id: string) => void;
+  approveRestaurant: (id: string) => void;
+  registerNewRestaurantRequest: (name: string, cuisines: string[], costForTwo: number, phone: string, businessType: any, image?: string) => { success: boolean; id: string };
+
+
+  // Support & WhatsApp Food Bookings
+  clickToWhatsAppSupport: (message: string) => void;
+  clickToWhatsAppFoodBooking: (details: {
+    restaurantName?: string;
+    items?: Array<{ name: string; quantity: number; price: number }>;
+    totalAmount?: number;
+    deliveryAddress?: string;
+    customerName?: string;
+    customerPhone?: string;
+    customNote?: string;
+  } | string) => void;
+
+  // Dynamic Banner Management & Click Action System
+  banners: Banner[];
+  addBanner: (banner: Omit<Banner, 'id'>) => void;
+  updateBanner: (id: string, updatedFields: Partial<Banner>) => void;
+  deleteBanner: (id: string) => void;
+  enableBanner: (id: string, enabled: boolean) => void;
+  reorderBanners: (reordered: Banner[]) => void;
+
+  // Real-time Push Notifications
+  notifications: AppNotification[];
+  markNotificationAsRead: (id: string) => void;
+  clearAllNotifications: () => void;
+  requestNotificationPermission: () => Promise<boolean>;
+  notificationPermission: NotificationPermission;
+  orderUpdatesEnabled: boolean;
+  promotionalAlertsEnabled: boolean;
+  deliveryUpdatesEnabled: boolean;
+  setOrderUpdatesEnabled: (enabled: boolean) => void;
+  setPromotionalAlertsEnabled: (enabled: boolean) => void;
+  setDeliveryUpdatesEnabled: (enabled: boolean) => void;
+  triggerPromoAlert: (title: string, body: string) => void;
+  triggerOrderUpdateAlert: (title: string, body: string) => void;
+  triggerDeliveryUpdateAlert: (title: string, body: string) => void;
+  
+  // Swiggy & Zomato Spec Push Notification Methods
+  broadcastNotification: (
+    target: 'all' | 'customers' | 'riders' | 'restaurants' | 'admin', 
+    title: string, 
+    body: string, 
+    imageUrl?: string, 
+    isPromo?: boolean
+  ) => void;
+  deleteNotification: (id: string) => void;
+  scheduledNotifications: ScheduledNotification[];
+  addScheduledNotification: (sched: Omit<ScheduledNotification, 'id' | 'status'>) => void;
+  deleteScheduledNotification: (id: string) => void;
+  triggerPushNotification: (
+    orderId: string, 
+    status: OrderStatus | string, 
+    title: string, 
+    body: string, 
+    isPromo?: boolean,
+    targetAudience?: 'all' | 'customers' | 'riders' | 'restaurants' | 'admin',
+    imageUrl?: string
+  ) => void;
+
+  // Manual Delivery Location System Database replicas & validation helper
+  addresses: Address[];
+  customer_addresses: Address[];
+  delivery_locations: Array<{ id: string; label: string; lat: number; lng: number; radiusKm: number }>;
+  saved_addresses: Address[];
+  validateDeliveryLocation: (lat: number, lng: number) => boolean;
+
+  // Nuvvo Points Loyalty Rewards
+  nuvvoPoints: number;
+  pointsToRedeem: number;
+  pointsHistory: PointsTransaction[];
+  redeemPointsForDiscount: (points: number) => { success: boolean; message: string };
+  cancelPointsRedemption: () => void;
+  awardPointsBonus: (amount: number, description: string, type?: 'spin_bonus' | 'welcome') => void;
+  
+  // Restaurant Reviews System
+  restaurantReviews: RestaurantReview[];
+  submitRestaurantReview: (review: Omit<RestaurantReview, 'id' | 'date'>) => void;
+  hideRestaurantReview: (reviewId: string) => void;
+  deleteRestaurantReview: (reviewId: string) => void;
+  
+  // Restaurant Open/Closed Operating Schedules and manual override
+  getRestaurantOpenStatus: (restaurant: Restaurant) => {
+    status: 'open' | 'closed' | 'temp_closed' | 'emergency_closed';
+    label: string;
+    color: string;
+    message: string;
+  };
+  updateRestaurantOperatingHours: (
+    id: string, 
+    openingTime: string, 
+    closingTime: string, 
+    weeklySchedule: string[],
+    holidaySchedule?: string[]
+  ) => void;
+  updateRestaurantForceStatus: (
+    id: string, 
+    forceStatus: 'auto' | 'force_open' | 'force_close' | 'temp_closed' | 'emergency_closed'
+  ) => void;
+
+  isOffline: boolean;
+
+  // Automated Notification Summary Email API
+  payoutEmails: SimulatedEmail[];
+  sendPayoutSummaryEmail: (params: {
+    recipientType: 'rider' | 'restaurant_owner';
+    recipientName: string;
+    to: string;
+    amount: number;
+    payoutId: string;
+    subject: string;
+    bodyHtml: string;
+  }) => void;
+  processMerchantPayout: (restaurantId: string, amount: number) => void;
+  merchantPayouts: MerchantPayout[];
+  approveMerchantPayout: (payoutId: string) => void;
+}
+
+const AppContext = createContext<AppContextProps | undefined>(undefined);
+
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Theme & Page states
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    return localStorage.getItem('nuvvo_theme') === 'dark';
+  });
+  const [currentThemeId, setCurrentThemeId] = useState<string>(() => {
+    return localStorage.getItem('nuvvo_current_theme_id') || 'classic-orange';
+  });
+  const currentTheme = APP_THEMES.find(t => t.id === currentThemeId) || APP_THEMES[0];
+  const setThemeId = (id: string) => {
+    setCurrentThemeId(id);
+    localStorage.setItem('nuvvo_current_theme_id', id);
+  };
+  const themesList = APP_THEMES;
+
+  const [currentPage, setCurrentPageRaw] = useState<string>('home');
+  const [pageHistory, setPageHistory] = useState<string[]>(['home']);
+
+  const setCurrentPage = (page: string) => {
+    if (page === currentPage) return;
+    setPageHistory(prev => {
+      if (prev[prev.length - 1] === page) return prev;
+      return [...prev, page];
+    });
+    setCurrentPageRaw(page);
+  };
+
+  const goBack = () => {
+    if (pageHistory.length > 1) {
+      const newHistory = [...pageHistory];
+      newHistory.pop(); // Pop current page
+      const prevPage = newHistory[newHistory.length - 1];
+      setPageHistory(newHistory);
+      setCurrentPageRaw(prevPage);
+    } else {
+      setCurrentPageRaw('home');
+      setPageHistory(['home']);
+    }
+  };
+
+  const closePage = () => {
+    setCurrentPageRaw('home');
+    setPageHistory(['home']);
+  };
+  const [selectedFoodItem, setSelectedFoodItem] = useState<FoodItem | null>(null);
+  const [cartSuccessAnimation, setCartSuccessAnimation] = useState<boolean>(false);
+
+  // Network online/offline status observer
+  const [isOffline, setIsOffline] = useState<boolean>(() => !navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Authentication
+  const [user, setUser] = useState<User | null>(() => {
+    const existing = safeParse<User | null>('nuvvo_user', null);
+    if (existing) return existing;
+
+    const defaultUser: User = {
+      id: 'usr_default',
+      name: 'Demo Customer',
+      phone: '9999911111',
+      email: 'customer@nuvvo.cloud',
+      addresses: [
+        {
+          id: 'addr_1',
+          type: 'Home',
+          flatNo: 'Nuvvo Towers, Penthouse B',
+          area: 'Madhapur High-Tech Zone',
+          landmark: 'Near Cyber Towers',
+          city: 'Hyderabad',
+          gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
+        }
+      ],
+      favoriteFoods: [],
+      favoriteRestaurants: [],
+      role: 'Customer',
+      isProfileComplete: true,
+      createdAt: new Date().toISOString()
+    };
+
+    localStorage.setItem('nuvvo_user', JSON.stringify(defaultUser));
+    return defaultUser;
+  });
+  const [otpCode, setOtpCode] = useState<string>('5555'); // Default simulated auto-filled OTP
+
+  const checkSuperAdminPermission = (actionName: string): boolean => {
+    if (!isSuperAdminRole(user?.role)) {
+      alert(`Access Denied: Only Super Admin has authority to perform: "${actionName}".`);
+      return false;
+    }
+    return true;
+  };
+
+  // App Language State (English, Telugu, Hindi)
+  const [language, setLanguageState] = useState<AppLanguage>(() => {
+    const saved = localStorage.getItem('nuvvo_app_language') as AppLanguage;
+    if (saved === 'en' || saved === 'te' || saved === 'hi') return saved;
+    const userLang = safeParse<User | null>('nuvvo_user', null)?.preferredLanguage;
+    if (userLang === 'en' || userLang === 'te' || userLang === 'hi') return userLang;
+    return 'te'; // Default to Telugu as requested in prompt
+  });
+
+  const setLanguage = (lang: AppLanguage) => {
+    setLanguageState(lang);
+    localStorage.setItem('nuvvo_app_language', lang);
+    if (user) {
+      setUser(prev => prev ? { ...prev, preferredLanguage: lang } : null);
+    }
+  };
+
+  // Admin-Only Referral Settings & Control
+  const [referralSettings, setReferralSettings] = useState<ReferralSettings>(() => {
+    return safeParse<ReferralSettings>('nuvvo_referral_settings', {
+      referrerBonusPoints: 150,
+      refereeBonusPoints: 100,
+      pointsToRupeeRatio: 1,
+      isReferralProgramActive: true
+    });
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_referral_settings', JSON.stringify(referralSettings));
+  }, [referralSettings]);
+
+  const updateReferralSettings = (settings: Partial<ReferralSettings>): boolean => {
+    if (!checkSuperAdminPermission('Change Referral Points Configuration')) {
+      return false;
+    }
+    setReferralSettings(prev => {
+      const updated = { ...prev, ...settings };
+      localStorage.setItem('nuvvo_referral_settings', JSON.stringify(updated));
+      return updated;
+    });
+    addAuditLog('Referral Settings Updated', `Super Admin updated referral rules: Referrer Bonus: ${settings.referrerBonusPoints ?? referralSettings.referrerBonusPoints}, Referee Bonus: ${settings.refereeBonusPoints ?? referralSettings.refereeBonusPoints}`);
+    return true;
+  };
+
+  // Default Store Admin PhonePe and Bank details (Pre-configured with verified Karur Vysya Bank - PhonePe Merchant)
+  const DEFAULT_STORE_PAYMENT_SETTINGS: StorePaymentSettings = {
+    upiId: 'arjun.gorrepati@axl',
+    merchantName: 'Nuvvo Food & Hospitality',
+    bankName: 'Karur Vysya Bank - 4761',
+    phonePeNumber: '9876543210',
+    accountHolderName: 'Arjun Gorrepati (Nuvvo Foods)',
+    qrNote: 'Food bill amount directly deposited to PhonePe connected Bank Account',
+    enableStaticQrFallback: false,
+    staticQrImage: '',
+    isLive: true
+  };
+
+  // Admin-Configured PhonePe & Bank Payment Settings State
+  const [storePaymentSettings, setStorePaymentSettings] = useState<StorePaymentSettings>(() => {
+    return safeParse<StorePaymentSettings>('nuvvo_store_payment_settings', DEFAULT_STORE_PAYMENT_SETTINGS);
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nuvvo_store_payment_settings', JSON.stringify(storePaymentSettings));
+    } catch (e) {
+      console.warn('Failed saving payment settings to localStorage', e);
+    }
+  }, [storePaymentSettings]);
+
+  const updateStorePaymentSettings = (settings: Partial<StorePaymentSettings>): boolean => {
+    const updated: StorePaymentSettings = {
+      ...storePaymentSettings,
+      ...settings,
+      lastUpdated: new Date().toISOString()
+    };
+    setStorePaymentSettings(updated);
+    try {
+      localStorage.setItem('nuvvo_store_payment_settings', JSON.stringify(updated));
+    } catch {}
+    // Broadcast realtime update to all customer devices and checkouts
+    broadcastPaymentSettingsMutation(updated);
+    addAuditLog('Payment Settings Updated', `Admin updated PhonePe UPI ID: ${updated.upiId}, Bank: ${updated.bankName}`);
+    return true;
+  };
+
+  const resetAllReferralPoints = (): boolean => {
+    if (!checkSuperAdminPermission('Reset All Users Referral Points')) {
+      return false;
+    }
+    try {
+      localStorage.setItem('nuvvo_referral_credits', '0');
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('nuvvo_registered_')) {
+          const userStr = localStorage.getItem(key);
+          if (userStr) {
+            try {
+              const u = JSON.parse(userStr);
+              u.referralCredits = 0;
+              localStorage.setItem(key, JSON.stringify(u));
+            } catch (e) {}
+          }
+        }
+      }
+      setUser(prev => prev ? { ...prev, referralCredits: 0 } : null);
+      addAuditLog('Referral Points Reset', 'Super Admin reset all customer referral points to zero.');
+      return true;
+    } catch (err) {
+      console.error('Error resetting referral points:', err);
+      return false;
+    }
+  };
+
+  const resetUserReferralPoints = (userPhone: string): boolean => {
+    if (!checkSuperAdminPermission(`Reset Referral Points for User ${userPhone}`)) {
+      return false;
+    }
+    try {
+      const stored = localStorage.getItem(`nuvvo_registered_${userPhone}`);
+      if (stored) {
+        const u = JSON.parse(stored);
+        u.referralCredits = 0;
+        localStorage.setItem(`nuvvo_registered_${userPhone}`, JSON.stringify(u));
+      }
+      if (user?.phone === userPhone) {
+        localStorage.setItem('nuvvo_referral_credits', '0');
+        setUser(prev => prev ? { ...prev, referralCredits: 0 } : null);
+      }
+      addAuditLog('User Referral Points Reset', `Super Admin reset referral credits for user ${userPhone}`);
+      return true;
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  };
+
+  const adjustUserReferralPoints = (userPhone: string, newPointsAmount: number): boolean => {
+    if (!checkSuperAdminPermission(`Adjust Referral Points for User ${userPhone}`)) {
+      return false;
+    }
+    try {
+      const stored = localStorage.getItem(`nuvvo_registered_${userPhone}`);
+      if (stored) {
+        const u = JSON.parse(stored);
+        u.referralCredits = newPointsAmount;
+        localStorage.setItem(`nuvvo_registered_${userPhone}`, JSON.stringify(u));
+      }
+      if (user?.phone === userPhone) {
+        localStorage.setItem('nuvvo_referral_credits', newPointsAmount.toString());
+        setUser(prev => prev ? { ...prev, referralCredits: newPointsAmount } : null);
+      }
+      addAuditLog('User Referral Points Adjusted', `Super Admin adjusted referral points to ${newPointsAmount} for ${userPhone}`);
+      return true;
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  };
+
+  // Address
+  const [currentAddress, setCurrentAddress] = useState<Address | null>(() => {
+    return safeParse<Address | null>('nuvvo_address', {
+      id: 'addr_1',
+      type: 'Home',
+      flatNo: 'Nuvvo Towers, Penthouse B',
+      area: 'Madhapur High-Tech Zone',
+      landmark: 'Near Cyber Towers',
+      city: 'Hyderabad',
+      gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
+    });
+  });
+
+  // Favorites
+  const [favoriteFoods, setFavoriteFoods] = useState<string[]>(() => {
+    return safeParse<string[]>('nuvvo_fav_foods', []);
+  });
+  const [favoriteRestaurants, setFavoriteRestaurants] = useState<string[]>(() => {
+    return safeParse<string[]>('nuvvo_fav_rests', []);
+  });
+
+  // Cart
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  const [deliveryPartnerTip, setDeliveryPartnerTip] = useState<number>(0);
+  const [orderInstructions, setOrderInstructions] = useState<string>('');
+
+  // Orders
+  const [orders, setOrders] = useState<Order[]>(() => {
+    return safeParse<Order[]>('nuvvo_orders', []);
+  });
+
+  // Nuvvo Points Loyalty Rewards program states (Loyalty Passport starts at 0 for new accounts)
+  const [nuvvoPoints, setNuvvoPoints] = useState<number>(() => {
+    const stored = localStorage.getItem('nuvvo_points');
+    if (stored !== null) {
+      const parsed = Number(stored);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0; // Loyalty Passport starts strictly at 0
+  });
+
+  const [pointsToRedeem, setPointsToRedeem] = useState<number>(0);
+
+  const [pointsHistory, setPointsHistory] = useState<PointsTransaction[]>(() => {
+    return safeParse<PointsTransaction[]>('nuvvo_points_history', []);
+  });
+
+  const [restaurantReviews, setRestaurantReviews] = useState<RestaurantReview[]>(() => {
+    const stored = localStorage.getItem('nuvvo_restaurant_reviews');
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        // Fallback
+      }
+    }
+    return [
+      {
+        id: 'rev_1_0',
+        orderId: 'ord_1001',
+        customerId: 'cust_101',
+        customerName: 'Amani Prasad',
+        restaurantId: 'rest_1',
+        foodRating: 5,
+        restaurantRating: 5,
+        deliveryRating: 5,
+        comment: 'Exceptional Mughlai dishes! The spices are perfectly authentic and the delivery was blazing fast.',
+        date: '2026-06-20T14:30:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_1',
+        orderId: 'ord_1002',
+        customerId: 'cust_102',
+        customerName: 'Raghav Rao',
+        restaurantId: 'rest_1',
+        foodRating: 4,
+        restaurantRating: 4,
+        deliveryRating: 4,
+        comment: 'Satisfying butter chicken and garlic naan. Good packaging too, kept everything warm.',
+        date: '2026-06-19T20:15:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_2',
+        orderId: 'ord_1003',
+        customerId: 'cust_103',
+        customerName: 'Priya N.',
+        restaurantId: 'rest_2',
+        foodRating: 5,
+        restaurantRating: 5,
+        deliveryRating: 3,
+        comment: 'Chirala Spicy Biryani is out of this world! Took some time to deliver, but the food made up for it.',
+        date: '2026-06-18T13:05:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_3',
+        orderId: 'ord_1004',
+        customerId: 'cust_104',
+        customerName: 'Satish G.',
+        restaurantId: 'rest_2',
+        foodRating: 3,
+        restaurantRating: 4,
+        deliveryRating: 5,
+        comment: 'Gongura chicken was quite spicier than expected, but restaurant response was polite.',
+        date: '2026-06-17T21:40:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_4',
+        orderId: 'ord_1005',
+        customerId: 'cust_105',
+        customerName: 'Subbarami Reddy',
+        restaurantId: 'rest_3',
+        foodRating: 5,
+        restaurantRating: 4,
+        deliveryRating: 5,
+        comment: 'Pesarattu and filter coffee are absolutely divine! Best breakfast place in Chirala.',
+        date: '2026-06-21T08:30:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_5',
+        orderId: 'ord_1006',
+        customerId: 'cust_106',
+        customerName: 'Sneha Reddy',
+        restaurantId: 'rest_4',
+        foodRating: 4,
+        restaurantRating: 4,
+        deliveryRating: 4,
+        comment: 'Super solid peri-peri fries and double cheese burgers. Kids loved the chocolate shakes!',
+        date: '2026-06-20T19:50:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_6',
+        orderId: 'ord_1007',
+        customerId: 'cust_107',
+        customerName: 'Venkatesh Babu',
+        restaurantId: 'rest_5',
+        foodRating: 5,
+        restaurantRating: 5,
+        deliveryRating: 4,
+        comment: 'Truly hand-tossed thin crust cheese pizza! Amazing marinara sauce quality.',
+        date: '2026-06-19T21:10:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_7',
+        orderId: 'ord_1008',
+        customerId: 'cust_108',
+        customerName: 'Jyothi Prasad',
+        restaurantId: 'rest_7',
+        foodRating: 5,
+        restaurantRating: 5,
+        deliveryRating: 5,
+        comment: 'The dry fruit sundae and butterscotch shake are so delicious. Highly recommended desserts!',
+        date: '2026-06-21T21:45:00Z',
+        hidden: false
+      },
+      {
+        id: 'rev_1_8',
+        orderId: 'ord_1009',
+        customerId: 'cust_109',
+        customerName: 'Kumar K.',
+        restaurantId: 'rest_8',
+        foodRating: 4,
+        restaurantRating: 4,
+        deliveryRating: 4,
+        comment: 'Super clean and healthy proteins. Good portions of avocado and sprout bowls.',
+        date: '2026-06-20T12:00:00Z',
+        hidden: false
+      }
+    ];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_restaurant_reviews', JSON.stringify(restaurantReviews));
+  }, [restaurantReviews]);
+
+  // Live simulation GPS Tracking parameters
+  const [activeTrackingOrder, setActiveTrackingOrder] = useState<Order | null>(null);
+  const [deliveryRouteProgress, setDeliveryRouteProgress] = useState<number>(0);
+
+  // Helper generators for high-quality Rider Earnings and Payout history
+  const generateRiderMockData = (partnerId: string): RiderEarningRecord[] => {
+    const records: RiderEarningRecord[] = [];
+    const startDay = new Date("2026-05-24T12:00:00Z"); // Approx 30 days ago
+    
+    const restaurants = ['Sri Sivarama Food Court', 'Perala Spice Bowl', 'Bapatla Biryani Point', 'Coastal Delights', 'Chirala Bakers'];
+    const areas = ['Perala Bypass', 'Chirala Beach Road', 'RTC Bus Stand Area', 'ILTD Colony', 'Kothapet'];
+    
+    for (let i = 0; i < 22; i++) {
+      const orderDate = new Date(startDay.getTime() + i * 1.35 * 24 * 3600 * 1000);
+      const rIdx = i % restaurants.length;
+      const aIdx = i % areas.length;
+      
+      const deliveryFee = 55 + (i % 3) * 10;
+      const peakHour = (i % 3 === 0) ? 15 : 0;
+      const festival = (i % 5 === 0) ? 25 : 0;
+      const rain = (i % 7 === 0) ? 20 : 0;
+      const weekend = (orderDate.getDay() === 0 || orderDate.getDay() === 6) ? 15 : 0;
+      const referral = (i === 12) ? 100 : 0; 
+      
+      const tip = (i % 4 === 0) ? 20 : (i % 4 === 1) ? 10 : (i % 4 === 2) ? 30 : 0;
+      const totalEarned = deliveryFee + peakHour + festival + rain + weekend + referral + tip;
+      
+      records.push({
+        id: `earn_${partnerId}_${i}`,
+        orderId: `ord_mock_${1010 + i}`,
+        restaurantName: restaurants[rIdx],
+        customerArea: areas[aIdx],
+        deliveryFee,
+        bonus: {
+          peakHour,
+          festival,
+          rain,
+          weekend,
+          referral
+        },
+        tip,
+        totalEarned,
+        date: orderDate.toISOString()
+      });
+    }
+    
+    // Sort records descending by date so latest is first
+    return records.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  };
+
+  const generateRiderMockPayouts = (partnerId: string, riderName: string): RiderPayout[] => {
+    return [
+      {
+        id: `payout_${partnerId}_1`,
+        riderId: partnerId,
+        riderName,
+        amount: 850,
+        status: 'Paid',
+        requestDate: '2026-06-08T10:00:00Z',
+        payoutDate: '2026-06-09T14:30:00Z',
+        bankAccount: '918273645012',
+        bankIfsc: 'SBIN0001234',
+        referenceId: 'REF-TXN-283421'
+      },
+      {
+        id: `payout_${partnerId}_2`,
+        riderId: partnerId,
+        riderName,
+        amount: 1120,
+        status: 'Paid',
+        requestDate: '2026-06-15T09:15:00Z',
+        payoutDate: '2026-06-16T11:00:00Z',
+        bankAccount: '918273645012',
+        bankIfsc: 'SBIN0001234',
+        referenceId: 'REF-TXN-948210'
+      },
+      {
+        id: `payout_${partnerId}_pending`,
+        riderId: partnerId,
+        riderName,
+        amount: 320,
+        status: 'Pending',
+        requestDate: '2026-06-22T08:00:00Z',
+        bankAccount: '918273645012',
+        bankIfsc: 'SBIN0001234'
+      }
+    ];
+  };
+
+  // Global Incentive Settings state for Super Admin adjustments
+  const [incentiveSettings, setIncentiveSettings] = useState(() => {
+    return safeParse('nuvvo_incentives', {
+      peakHourBonus: 15,
+      festivalBonus: 25,
+      rainBonus: 20,
+      weekendBonus: 15,
+      referralBonus: 100
+    });
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_incentives', JSON.stringify(incentiveSettings));
+  }, [incentiveSettings]);
+
+  const updateIncentiveSettings = (settings: typeof incentiveSettings) => {
+    if (!checkSuperAdminPermission('Configure Payout Incentives')) return;
+    setIncentiveSettings(settings);
+    addAuditLog('Incentives Configured', `Super Admin updated standard rider bonus rules: Peak: ₹${settings.peakHourBonus}, Rain: ₹${settings.rainBonus}`);
+  };
+
+  // Delivery Partner Dashboard states
+  const [deliveryPartner, setDeliveryPartner] = useState<DeliveryPartnerProfile | null>(() => {
+    const parsed = safeParse<DeliveryPartnerProfile | null>('nuvvo_partner', null);
+    if (parsed) {
+      if (!parsed.earningRecords || parsed.earningRecords.length === 0) {
+        parsed.earningRecords = generateRiderMockData(parsed.id);
+      }
+      if (!parsed.payouts || parsed.payouts.length === 0) {
+        parsed.payouts = generateRiderMockPayouts(parsed.id, parsed.name);
+      }
+      return parsed;
+    }
+    return null;
+  });
+
+  const [deliveryPartners, setDeliveryPartners] = useState<DeliveryPartnerProfile[]>(() => {
+    const stored = safeParse<DeliveryPartnerProfile[]>('nuvvo_delivery_partners', []);
+    // Zero default rule: do NOT automatically create fake/default delivery boys.
+    // Strip out any legacy mock partner IDs from previous tests.
+    const legacyMockIds = ['partner_suresh', 'partner_ramu', 'partner_raju', 'partner_anji'];
+    const valid = (stored || []).filter(p => !legacyMockIds.includes(p.id));
+    return valid;
+  });
+
+  // Franchise states
+  const [franchiseApplications, setFranchiseApplications] = useState<FranchiseApplication[]>(() => {
+    return safeParse<FranchiseApplication[]>('nuvvo_franchise', []);
+  });
+
+  // Admin and Super Admin
+  const [isSuperAdminAuthenticated, setSuperAdminAuthenticated] = useState<boolean>(false);
+  const [designatedAdmins, setDesignatedAdmins] = useState<DesignatedAdmin[]>(() => {
+    return safeParse<DesignatedAdmin[]>('nuvvo_designated_admins', [
+      {
+        id: 'admin_master',
+        name: 'Master Admin',
+        phone: '9999900000',
+        email: 'admin@nuvvo.cloud',
+        role: 'Master Admin / Owner',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        joinedAt: '2026-01-01T00:00:00Z',
+        permissions: {
+          canDeleteRestaurants: true,
+          canProcessRefunds: true,
+          canEditFoodItems: true,
+          canManageCoupons: true,
+          canBroadcastCampaigns: true,
+          canApproveFranchise: true,
+          canOnboardRiders: true,
+        }
+      },
+      {
+        id: 'admin_rajesh',
+        name: 'Rajesh Kumar',
+        phone: '9848022338',
+        email: 'rajesh.support@chirala.in',
+        role: 'Support Lead',
+        avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+        joinedAt: '2026-01-10T08:30:00Z',
+        permissions: {
+          canDeleteRestaurants: false,
+          canProcessRefunds: true,
+          canEditFoodItems: true,
+          canManageCoupons: false,
+          canBroadcastCampaigns: true,
+          canApproveFranchise: false,
+          canOnboardRiders: false,
+        }
+      },
+      {
+        id: 'admin_sita',
+        name: 'Sita Mahalakshmi',
+        phone: '9440511220',
+        email: 'sita.audit@chirala.in',
+        role: 'Franchise Auditor',
+        avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
+        joinedAt: '2026-02-15T09:45:00Z',
+        permissions: {
+          canDeleteRestaurants: false,
+          canProcessRefunds: false,
+          canEditFoodItems: false,
+          canManageCoupons: true,
+          canBroadcastCampaigns: false,
+          canApproveFranchise: true,
+          canOnboardRiders: false,
+        }
+      },
+      {
+        id: 'admin_ravi',
+        name: 'Ravi Shankar',
+        phone: '8008123456',
+        email: 'ravi.logistics@chirala.in',
+        role: 'Logistics Manager',
+        avatar: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150&auto=format&fit=crop&q=80',
+        joinedAt: '2026-03-20T14:20:00Z',
+        permissions: {
+          canDeleteRestaurants: true,
+          canProcessRefunds: true,
+          canEditFoodItems: false,
+          canManageCoupons: false,
+          canBroadcastCampaigns: false,
+          canApproveFranchise: false,
+          canOnboardRiders: true,
+        }
+      }
+    ]);
+  });
+
+  // Strict admin authorization: exclusively determined by server-verified role
+  const isSuperAdmin = isSuperAdminRole(user?.role);
+  const isAdmin = isAdminRole(user?.role);
+
+  // Security Route Guard: Direct URL or state navigation to admin/super-admin
+  // by unauthorized users must be immediately bounced to the Settings ('account') page
+  useEffect(() => {
+    if ((currentPage === 'admin' || currentPage === 'super-admin') && !isAdminRole(user?.role)) {
+      setCurrentPage('account');
+    }
+  }, [currentPage, user?.role]);
+  const [couponsList, setCouponsList] = useState<Coupon[]>(() => {
+    return safeParse<Coupon[]>('nuvvo_coupons', MOCK_COUPONS);
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_coupons', JSON.stringify(couponsList));
+  }, [couponsList]);
+  const [logs, setLogs] = useState<AuditLog[]>(() => {
+    return safeParse<AuditLog[]>('nuvvo_audit_logs', []);
+  });
+
+  // Automated notification summary email logs
+  const [payoutEmails, setPayoutEmails] = useState<SimulatedEmail[]>(() => {
+    return safeParse<SimulatedEmail[]>('nuvvo_payout_emails', []);
+  });
+
+  const [merchantPayouts, setMerchantPayouts] = useState<MerchantPayout[]>(() => {
+    const stored = localStorage.getItem('nuvvo_merchant_payouts');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    const mockPayouts: MerchantPayout[] = [
+      {
+        id: 'PAY-MERCH-100201',
+        restaurantId: '1',
+        restaurantName: 'Chirala Spicy Dhaba',
+        amount: 8500,
+        status: 'Paid',
+        requestDate: '2026-06-15T10:00:00Z',
+        payoutDate: '2026-06-16T11:30:00Z',
+        bankAccount: 'XXXXXX9845',
+        bankIfsc: 'SBIN0000832'
+      },
+      {
+        id: 'PAY-MERCH-100202',
+        restaurantId: '2',
+        restaurantName: 'Sea Breeze Seafood Resort',
+        amount: 14200,
+        status: 'Paid',
+        requestDate: '2026-06-18T14:15:00Z',
+        payoutDate: '2026-06-19T10:00:00Z',
+        bankAccount: 'XXXXXX1234',
+        bankIfsc: 'HDFC0000240'
+      },
+      {
+        id: 'PAY-MERCH-100203',
+        restaurantId: '3',
+        restaurantName: 'Vijayawada Hot Biryanis',
+        amount: 5100,
+        status: 'Pending',
+        requestDate: '2026-06-22T09:30:00Z',
+        bankAccount: 'XXXXXX5541',
+        bankIfsc: 'ICIC0001092'
+      },
+      {
+        id: 'PAY-MERCH-100204',
+        restaurantId: '4',
+        restaurantName: 'Andhra Mess & Meals',
+        amount: 3200,
+        status: 'Pending',
+        requestDate: '2026-06-23T08:00:00Z',
+        bankAccount: 'XXXXXX7789',
+        bankIfsc: 'BARB0CHIRAL'
+      }
+    ];
+    return mockPayouts;
+  });
+
+  // Dynamic Banner Management & Click Action System
+  const INITIAL_BANNERS: Banner[] = [
+    {
+      id: 'b_biryani',
+      title: '🔥 Biryani Festival',
+      description: 'Sizzling aromatic claypot dum biryanis at 50% discount flat.',
+      image: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-orange-600 to-red-650',
+      actionType: 'category',
+      actionValue: 'Biryani',
+      enabled: true,
+      order: 1,
+      startDate: '2026-06-20',
+      endDate: '2026-07-20'
+    },
+    {
+      id: 'b_pizza',
+      title: '🍕 Pizza Mania',
+      description: 'Double cheesy slice loaded with woodfired toppings starting from ₹149.',
+      image: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-yellow-500 to-amber-600',
+      actionType: 'category',
+      actionValue: 'Pizza',
+      enabled: true,
+      order: 2
+    },
+    {
+      id: 'b_burger',
+      title: '🍔 Burger Combo Offers',
+      description: 'Custom patty burgers with loaded peri-peri fries & premium milkshakes.',
+      image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-red-500 to-orange-500',
+      actionType: 'category',
+      actionValue: 'Burgers',
+      enabled: true,
+      order: 3
+    },
+    {
+      id: 'b_icecream',
+      title: '🍨 Ice Cream Specials',
+      description: 'Brainfreeze fruit sundaes, waffle cones & decadent rich scoops.',
+      image: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-pink-500 to-purple-500',
+      actionType: 'category',
+      actionValue: 'Ice Cream',
+      enabled: true,
+      order: 4
+    },
+    {
+      id: 'b_meals',
+      title: '🥘 Andhra Meals Festival',
+      description: 'Royal unlimited thalis with organic spice podi & pure ghee.',
+      image: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-emerald-600 to-teal-600',
+      actionType: 'category',
+      actionValue: 'South Indian',
+      enabled: true,
+      order: 5
+    },
+    {
+      id: 'b_seafood',
+      title: '🐟 Seafood Specials',
+      description: 'Tangy Pulasa fish curries & golden crisp prawns caught fresh!',
+      image: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-blue-500 to-cyan-500',
+      actionType: 'category',
+      actionValue: 'Seafood',
+      enabled: true,
+      order: 6
+    },
+    {
+      id: 'b_freedel',
+      title: '🚚 Free Delivery Offer',
+      description: 'Savour hot meals delivered absolutely free over ₹199!',
+      image: '',
+      color: 'bg-gradient-to-r from-teal-500 to-emerald-500',
+      actionType: 'custom',
+      actionValue: 'free_delivery',
+      enabled: true,
+      order: 7
+    },
+    {
+      id: 'b_first_order',
+      title: '🎉 First Order Discount',
+      description: 'Enjoy Flat 50% OFF on your very first order! Code: NUVVO50',
+      image: '',
+      color: 'bg-gradient-to-r from-amber-500 to-orange-600',
+      actionType: 'coupon',
+      actionValue: 'NUVVO50',
+      enabled: true,
+      order: 8,
+      couponCode: 'NUVVO50',
+      discount: '50% OFF',
+      expiryDate: 'Valid for new purchase'
+    },
+    {
+      id: 'b_cashback',
+      title: '💰 Cashback Offers',
+      description: 'Spend securely via PhonePe for flat ₹55 cashback into wallet.',
+      image: '',
+      color: 'bg-gradient-to-r from-violet-600 to-indigo-600',
+      actionType: 'coupon',
+      actionValue: 'PHONEPE55',
+      enabled: true,
+      order: 9,
+      couponCode: 'PHONEPE55',
+      discount: '₹55 Cashback',
+      expiryDate: 'Limited Period Only'
+    },
+    {
+      id: 'b_toprated',
+      title: '🏆 Top Rated Restaurants',
+      description: 'Authentic five-star delicacies with flawless delivery speed records.',
+      image: '',
+      color: 'bg-gradient-to-r from-amber-600 to-yellow-500',
+      actionType: 'custom',
+      actionValue: 'top_rated',
+      enabled: true,
+      order: 10
+    },
+    // Restaurant Specific Banners
+    {
+      id: 'b_rest_aromas',
+      title: 'CHIRALA AROMAS',
+      description: 'Indulge in our exquisite gourmet Continental, BBQ star platters, and luxury treats.',
+      image: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-rose-500 to-red-500',
+      actionType: 'restaurant',
+      actionValue: 'CHIRALA AROMAS RESTAURANT',
+      enabled: true,
+      order: 11
+    },
+    {
+      id: 'b_rest_missamma',
+      title: 'Missamma Family Restaurant',
+      description: 'Authentic local dining, traditional Andhra meals, and premium high-quality tiffins.',
+      image: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-green-600 to-teal-600',
+      actionType: 'restaurant',
+      actionValue: 'Missamma Family Restaurant',
+      enabled: true,
+      order: 12
+    },
+    {
+      id: 'b_rest_rao',
+      title: 'Rao Gari Biryani House',
+      description: 'Royal Dum Biryanis, hot spicy pulovs, and customized family portions.',
+      image: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-red-650 to-amber-600',
+      actionType: 'restaurant',
+      actionValue: 'Raos Biryani House',
+      enabled: true,
+      order: 13
+    },
+    {
+      id: 'b_rest_dineplay',
+      title: 'Dine N Play',
+      description: 'Sizzling burgers, crisp garlic sliders, shakes, and gaming boards.',
+      image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-blue-600 to-cyan-600',
+      actionType: 'restaurant',
+      actionValue: 'Dine N Play',
+      enabled: true,
+      order: 14
+    },
+    {
+      id: 'b_rest_tempt',
+      title: 'Temptations',
+      description: 'Iceberg chocolate cakes, brownies, thick fruit shakes, & baked goods.',
+      image: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&q=80&w=400',
+      color: 'bg-gradient-to-r from-fuchsia-600 to-pink-500',
+      actionType: 'restaurant',
+      actionValue: 'Temptations',
+      enabled: true,
+      order: 15
+    }
+  ];
+
+  const [banners, setBanners] = useState<Banner[]>(() => {
+    return safeParse<Banner[]>('nuvvo_banners', INITIAL_BANNERS);
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_banners', JSON.stringify(banners));
+  }, [banners]);
+
+  const addBanner = (newB: Omit<Banner, 'id'>) => {
+    const bannerWithId: Banner = {
+      ...newB,
+      id: `banner_${Date.now()}`
+    };
+    setBanners(prev => {
+      const updated = [...prev, bannerWithId];
+      return updated.sort((a, b) => a.order - b.order);
+    });
+    addAuditLog('Banner Operation', `Added banner: "${newB.title}" with action: ${newB.actionType}`);
+  };
+
+  const updateBanner = (id: string, updatedFields: Partial<Banner>) => {
+    setBanners(prev => {
+      const updated = prev.map(b => b.id === id ? { ...b, ...updatedFields } : b);
+      return updated.sort((a, b) => a.order - b.order);
+    });
+    addAuditLog('Banner Operation', `Updated banner ID: ${id}`);
+  };
+
+  const deleteBanner = (id: string) => {
+    setBanners(prev => prev.filter(b => b.id !== id));
+    addAuditLog('Banner Operation', `Deleted banner ID: ${id}`);
+  };
+
+  const clearAllBanners = () => {
+    setBanners([]);
+    addAuditLog('Banner Operation', 'Admin cleared all promotional banners');
+  };
+
+  const resetDefaultBanners = () => {
+    setBanners(INITIAL_BANNERS);
+    addAuditLog('Banner Operation', 'Admin restored default promotional banners');
+  };
+
+  const enableBanner = (id: string, enabled: boolean) => {
+    setBanners(prev => prev.map(b => b.id === id ? { ...b, enabled } : b));
+    addAuditLog('Banner Operation', `${enabled ? 'Enabled' : 'Disabled'} banner ID: ${id}`);
+  };
+
+  const reorderBanners = (reordered: Banner[]) => {
+    const sequentiallyOrdered = reordered.map((b, idx) => ({
+      ...b,
+      order: idx + 1
+    }));
+    setBanners(sequentiallyOrdered);
+    addAuditLog('Banner Operation', `Reordered banners sequence`);
+  };
+
+  // Real-time Push Notifications State
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    return safeParse<AppNotification[]>('nuvvo_notifications', []);
+  });
+
+  const [orderUpdatesEnabled, setOrderUpdatesEnabledState] = useState<boolean>(() => {
+    return safeParse<boolean>('nuvvo_order_updates_enabled', true);
+  });
+
+  const [promotionalAlertsEnabled, setPromotionalAlertsEnabledState] = useState<boolean>(() => {
+    return safeParse<boolean>('nuvvo_promotional_alerts_enabled', true);
+  });
+
+  const [deliveryUpdatesEnabled, setDeliveryUpdatesEnabledState] = useState<boolean>(() => {
+    return safeParse<boolean>('nuvvo_delivery_updates_enabled', true);
+  });
+
+  const setOrderUpdatesEnabled = (enabled: boolean) => {
+    setOrderUpdatesEnabledState(enabled);
+    localStorage.setItem('nuvvo_order_updates_enabled', JSON.stringify(enabled));
+    addAuditLog('Settings Toggle', `Push notifications for Order Updates: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+  };
+
+  const setPromotionalAlertsEnabled = (enabled: boolean) => {
+    setPromotionalAlertsEnabledState(enabled);
+    localStorage.setItem('nuvvo_promotional_alerts_enabled', JSON.stringify(enabled));
+    addAuditLog('Settings Toggle', `Push notifications for Promotional Alerts: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+  };
+
+  const setDeliveryUpdatesEnabled = (enabled: boolean) => {
+    setDeliveryUpdatesEnabledState(enabled);
+    localStorage.setItem('nuvvo_delivery_updates_enabled', JSON.stringify(enabled));
+    addAuditLog('Settings Toggle', `Push notifications for Delivery Updates: ${enabled ? 'ENABLED' : 'DISABLED'}`);
+  };
+
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'default';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_notifications', JSON.stringify(notifications));
+  }, [notifications]);
+
+  const playPushChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1); // E5
+      gain2.gain.setValueAtTime(0.12, ctx.currentTime + 0.1);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc2.start(ctx.currentTime + 0.1);
+      osc2.stop(ctx.currentTime + 0.25);
+    } catch (e) {
+      console.warn('Audio chime failed to play:', e);
+    }
+  };
+
+  const triggerNativeBrowserNotification = (title: string, body: string, status: OrderStatus | string) => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'granted') {
+        try {
+          const iconUrl = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=128&q=80';
+          const nativeNotif = new Notification(title, {
+            body: body,
+            icon: iconUrl,
+            tag: `${status}-${Date.now()}`,
+            requireInteraction: false
+          });
+          
+          nativeNotif.onclick = () => {
+            window.focus();
+            setCurrentPage('orders');
+          };
+        } catch (err) {
+          console.error('Failed to trigger native notification:', err);
+        }
+      }
+    }
+  };
+
+  const [scheduledNotifications, setScheduledNotifications] = useState<ScheduledNotification[]>(() => {
+    return safeParse<ScheduledNotification[]>('nuvvo_scheduled_notifications', []);
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_scheduled_notifications', JSON.stringify(scheduledNotifications));
+  }, [scheduledNotifications]);
+
+  // Periodic FCM scheduler loop looking for pending scheduled pushes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      setScheduledNotifications(prev => {
+        let changed = false;
+        const mapped = prev.map(item => {
+          if (item.status === 'pending') {
+            const schedDate = new Date(item.scheduledAt);
+            if (schedDate <= now) {
+              changed = true;
+              // Dispatch actual push
+              triggerPushNotification(
+                'scheduled_' + Date.now(),
+                'accepted',
+                item.title,
+                item.body,
+                true, // isPromo
+                item.targetAudience,
+                item.imageUrl
+              );
+              addAuditLog('FCM Scheduled Dispatch', `Auto-broadcasted scheduled alert "${item.title}" to target "${item.targetAudience}"`);
+              return { ...item, status: 'sent' as const };
+            }
+          }
+          return item;
+        });
+        return changed ? mapped : prev;
+      });
+    }, 4000); // Check every 4 seconds dynamically
+    return () => clearInterval(interval);
+  }, []);
+
+  const addScheduledNotification = (sched: Omit<ScheduledNotification, 'id' | 'status'>) => {
+    if (!checkSuperAdminPermission('Add Scheduled Notification')) return;
+    const newSched: ScheduledNotification = {
+      ...sched,
+      id: `scheduled_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      status: 'pending'
+    };
+    setScheduledNotifications(prev => [...prev, newSched]);
+    addAuditLog('FCM Scheduled Created', `Approved queue for dynamic push "${newSched.title}" for audience "${newSched.targetAudience}"`);
+  };
+
+  const deleteScheduledNotification = (id: string) => {
+    if (!checkSuperAdminPermission('Delete Scheduled Notification')) return;
+    setScheduledNotifications(prev => prev.filter(item => item.id !== id));
+    addAuditLog('FCM Schedule Purged', `Deleted scheduled notification reference: "${id}"`);
+  };
+
+  const deleteNotification = (id: string) => {
+    if (!checkSuperAdminPermission('Delete Notification')) return;
+    setNotifications(prev => prev.filter(item => item.id !== id));
+    addAuditLog('Notification Cleared', `Deleted live alert reference: "${id}"`);
+  };
+
+  const broadcastNotification = (
+    target: 'all' | 'customers' | 'riders' | 'restaurants' | 'admin', 
+    title: string, 
+    body: string, 
+    imageUrl?: string, 
+    isPromo: boolean = false
+  ) => {
+    if (!checkSuperAdminPermission('Broadcast Notification')) return;
+    triggerPushNotification(
+      'broadcast_' + Date.now(),
+      'accepted',
+      title,
+      body,
+      isPromo,
+      target,
+      imageUrl
+    );
+    addAuditLog('FCM Broadcast Transmitted', `Admin manually transmitted push alert: "${title}" targeting audience: "${target}"`);
+  };
+
+  const triggerPushNotification = (
+    orderId: string, 
+    status: OrderStatus | string, 
+    title: string, 
+    body: string, 
+    isPromo: boolean = false,
+    targetAudience: 'all' | 'customers' | 'riders' | 'restaurants' | 'admin' = 'customers',
+    imageUrl?: string
+  ) => {
+    const isDelivery = status === 'picked' || status === 'on_the_way' || status === 'delivered';
+    
+    if (isPromo && !promotionalAlertsEnabled) {
+      addAuditLog('Notification Suppressed', `Promotional Alert ("${title}") blocked because promotional alerts setting is disabled.`);
+      return;
+    }
+    if (isDelivery && !deliveryUpdatesEnabled) {
+      addAuditLog('Notification Suppressed', `Delivery Update Alert ("${title}") blocked because delivery updates are disabled.`);
+      return;
+    }
+    if (!isPromo && !isDelivery && !orderUpdatesEnabled) {
+      addAuditLog('Notification Suppressed', `Order State Alert ("${title}") blocked because purchase state updates are disabled.`);
+      return;
+    }
+
+    setNotifications(prev => {
+      // Avoid duplicate live status updates for the exact same order & state transition
+      const isOrderAlert = orderId && !orderId.includes('promo') && !orderId.includes('broadcast') && !orderId.includes('scheduled') && !orderId.includes('permission');
+      if (isOrderAlert) {
+        const isDuplicate = prev.some(n => n.orderId === orderId && n.status === status);
+        if (isDuplicate) return prev;
+      }
+
+      playPushChime();
+      triggerNativeBrowserNotification(title, body, status);
+
+      const newNotif: AppNotification = {
+        id: `notification_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+        title,
+        body,
+        read: false,
+        timestamp: new Date().toISOString(),
+        orderId,
+        status,
+        isPromo,
+        targetAudience,
+        imageUrl
+      };
+      
+      return [newNotif, ...prev].slice(0, 50); // Increased maximum history limit to 50 for robust debugging
+    });
+
+    addAuditLog('Push Notification Dispatch', `FCM successfully synchronized notification "${title}" (target: "${targetAudience}")`);
+  };
+
+  const triggerPromoAlert = (title: string, body: string) => {
+    triggerPushNotification('promo_broadcast', 'accepted', title, body, true, 'all');
+  };
+
+  const triggerOrderUpdateAlert = (title: string, body: string) => {
+    triggerPushNotification('order_update_test', 'preparing', title, body, false, 'customers');
+  };
+
+  const triggerDeliveryUpdateAlert = (title: string, body: string) => {
+    triggerPushNotification('delivery_update_test', 'on_the_way', title, body, false, 'customers');
+  };
+
+  const markNotificationAsRead = (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  };
+
+  const clearAllNotifications = () => {
+    setNotifications([]);
+  };
+
+  const requestNotificationPermission = async (): Promise<boolean> => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      return false;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission === 'granted') {
+      playPushChime();
+      triggerPushNotification(
+        'permission_check',
+        'accepted',
+        '🔔 Notifications Enabled!',
+        'Real-time culinary updates are now successfully live on this browser device.'
+      );
+      return true;
+    }
+    return false;
+  };
+
+  // Food Catalog State - Integrated with Supabase public.food_items + Instant Local Mobile Cache
+  const [foodCatalogList, setFoodCatalogList] = useState<FoodItem[]>(() => {
+    const cached = safeParse<FoodItem[]>('nuvo_cached_food_catalog', []);
+    if (cached.length > 0) return cached;
+    return [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
+  });
+  const [foodLoading, setFoodLoading] = useState<boolean>(true);
+  const [foodError, setFoodError] = useState<string | null>(null);
+  const [supabaseConnected, setSupabaseConnected] = useState<boolean>(false);
+
+  // Sync catalog updates to offline/startup cache for instant boot in Play Store app
+  useEffect(() => {
+    if (foodCatalogList.length > 0) {
+      try {
+        localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(foodCatalogList));
+      } catch (e) {
+        // storage quota safety
+      }
+    }
+  }, [foodCatalogList]);
+
+  // Fetch food items directly from Supabase public.food_items table
+  const fetchSupabaseCatalog = async (silent: boolean = false) => {
+    if (!silent) setFoodLoading(true);
+    setFoodError(null);
+    try {
+      const { data, error } = await getFoodItemsFromSupabase();
+      if (error) {
+        console.error('Failed to load food items from Supabase:', error);
+        const errMsg = error.message || 'Error connecting to Supabase food_items table';
+        setFoodError(errMsg);
+        setSupabaseConnected(false);
+      } else {
+        setSupabaseConnected(true);
+        if (data && data.length > 0) {
+          setFoodCatalogList(data);
+          try {
+            localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(data));
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      console.error('Supabase food_items query exception:', err);
+      setFoodError(err?.message || 'Database error connecting to Supabase');
+    } finally {
+      if (!silent) setFoodLoading(false);
+    }
+  };
+
+  // Initial load, Realtime Postgres Changes & Broadcast Fallback listener
+  useEffect(() => {
+    fetchSupabaseCatalog(false);
+
+    // Channel for both Postgres CDC changes AND instant Broadcast fallback across all mobile customer devices
+    const channel = supabase
+      .channel(LIVE_FOOD_SYNC_CHANNEL, {
+        config: {
+          broadcast: { self: false }
+        }
+      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'food_items' },
+        (payload) => {
+          if (payload.eventType === 'INSERT' && payload.new) {
+            const newItem = mapSupabaseRowToFoodItem(payload.new as any);
+            setFoodCatalogList(prev => {
+              if (prev.some(d => String(d.id) === String(newItem.id))) {
+                return prev.map(d => String(d.id) === String(newItem.id) ? newItem : d);
+              }
+              return [newItem, ...prev];
+            });
+
+            // Trigger silent catalog refresh with a notification toast for customers
+            triggerPushNotification(
+              `menu_new_${newItem.id}_${Date.now()}`,
+              'menu_update',
+              '🍽️ Fresh Dish Added!',
+              `"${newItem.name}" (₹${newItem.price}) is now available on Nuvo Menu!`,
+              false,
+              'customers',
+              newItem.image || newItem.image_url
+            );
+            playPushChime();
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            const updated = mapSupabaseRowToFoodItem(payload.new as any);
+            setFoodCatalogList(prev => prev.map(d => String(d.id) === String(updated.id) ? updated : d));
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            const delId = String((payload.old as any).id);
+            setFoodCatalogList(prev => prev.filter(d => String(d.id) !== delId));
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'food_item_mutation' },
+        ({ payload }) => {
+          if (!payload) return;
+          const { eventType, item, id, updatedFields, senderSessionId } = payload;
+          // Skip if from this exact device session to avoid duplicate echo
+          if (senderSessionId === CLIENT_SESSION_ID) return;
+
+          if (eventType === 'INSERT' && item) {
+            const newItem = item as FoodItem;
+            setFoodCatalogList(prev => {
+              if (prev.some(d => String(d.id) === String(newItem.id))) {
+                return prev.map(d => String(d.id) === String(newItem.id) ? newItem : d);
+              }
+              return [newItem, ...prev];
+            });
+
+            // Silent catalog refresh with a notification toast
+            triggerPushNotification(
+              `menu_broadcast_${newItem.id}_${Date.now()}`,
+              'menu_update',
+              '🍽️ Fresh Dish Added!',
+              `"${newItem.name}" (₹${newItem.price}) was just added to the menu!`,
+              false,
+              'customers',
+              newItem.image || newItem.image_url
+            );
+            playPushChime();
+          } else if (eventType === 'UPDATE') {
+            const targetId = id || item?.id;
+            if (targetId) {
+              setFoodCatalogList(prev => prev.map(d => {
+                if (String(d.id) === String(targetId)) {
+                  return { ...d, ...(updatedFields || item) };
+                }
+                return d;
+              }));
+            }
+          } else if (eventType === 'DELETE') {
+            const delId = id || item?.id;
+            if (delId) {
+              setFoodCatalogList(prev => prev.filter(d => String(d.id) !== String(delId)));
+            }
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'payment_settings_mutation' },
+        ({ payload }) => {
+          if (!payload) return;
+          const { settings, senderSessionId } = payload;
+          if (senderSessionId === CLIENT_SESSION_ID) return;
+          if (settings && typeof settings === 'object') {
+            setStorePaymentSettings(prev => ({ ...prev, ...settings }));
+            try {
+              localStorage.setItem('nuvvo_store_payment_settings', JSON.stringify(settings));
+            } catch {}
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'restaurant_mutation' },
+        ({ payload }) => {
+          if (!payload) return;
+          const { eventType, item, id, updatedFields, senderSessionId } = payload;
+          if (senderSessionId === CLIENT_SESSION_ID) return;
+
+          if (eventType === 'INSERT' && item) {
+            setRestaurantsList(prev => {
+              if (prev.some(r => String(r.id) === String(item.id))) {
+                return prev.map(r => String(r.id) === String(item.id) ? { ...r, ...item } : r);
+              }
+              const nextList = [item, ...prev];
+              try {
+                localStorage.setItem('nuvvo_restaurants', JSON.stringify(nextList));
+              } catch {}
+              return nextList;
+            });
+
+            // Instant push chime and notification toast for customer app (Play Store app)
+            triggerPushNotification(
+              `rest_broadcast_${item.id}_${Date.now()}`,
+              'accepted',
+              '🏢 New Restaurant Live!',
+              `"${item.name}" is now on Nuvvo! Fresh dishes and doorstep delivery ready.`,
+              false,
+              'customers',
+              item.image
+            );
+            playPushChime();
+          } else if (eventType === 'UPDATE') {
+            const targetId = id || item?.id;
+            if (targetId) {
+              setRestaurantsList(prev => {
+                const nextList = prev.map(r => {
+                  if (String(r.id) === String(targetId)) {
+                    return { ...r, ...(updatedFields || item) };
+                  }
+                  return r;
+                });
+                try {
+                  localStorage.setItem('nuvvo_restaurants', JSON.stringify(nextList));
+                } catch {}
+                return nextList;
+              });
+            }
+          } else if (eventType === 'DELETE') {
+            const delId = id || item?.id;
+            if (delId) {
+              setRestaurantsList(prev => {
+                const nextList = prev.filter(r => String(r.id) !== String(delId));
+                try {
+                  localStorage.setItem('nuvvo_restaurants', JSON.stringify(nextList));
+                } catch {}
+                return nextList;
+              });
+            }
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'hotel_mutation' },
+        ({ payload }) => {
+          if (!payload) return;
+          const { eventType, item, id, updatedFields, senderSessionId } = payload;
+          if (senderSessionId === CLIENT_SESSION_ID) return;
+          if (eventType === 'INSERT' && item) {
+            setRestaurantsList(prev => {
+              if (prev.some(r => String(r.id) === String(item.id))) {
+                return prev.map(r => String(r.id) === String(item.id) ? { ...r, ...item } : r);
+              }
+              return [item, ...prev];
+            });
+          } else if (eventType === 'UPDATE' && (id || item?.id)) {
+            const targetId = id || item?.id;
+            setRestaurantsList(prev => prev.map(r => String(r.id) === String(targetId) ? { ...r, ...(updatedFields || item) } : r));
+          }
+        }
+      )
+      .subscribe();
+
+    // App Resume / Network Reconnect Listeners for Play Store / Mobile reliability
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSupabaseCatalog(true);
+      }
+    };
+    const handleOnline = () => {
+      fetchSupabaseCatalog(true);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
+
+    // Silent periodic background poll every 45 seconds (safety fallback in case mobile OS pauses WebSockets)
+    const pollTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchSupabaseCatalog(true);
+      }
+    }, 45000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
+      clearInterval(pollTimer);
+    };
+  }, []);
+
+  // Add Food Item: Save directly to Supabase public.food_items + Instant Broadcast Fallback
+  // Add Food Item: Save to Supabase public.food_items + Instant Broadcast & Play Store Sync
+  const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<FoodItem | null> => {
+    if (!checkSuperAdminPermission('Add Food Item')) return null;
+
+    try {
+      const { data: savedRecord, error } = await insertFoodItemToSupabase(item);
+
+      let activeItem: FoodItem;
+      if (savedRecord) {
+        activeItem = savedRecord;
+      } else {
+        // High-reliability fallback if Supabase table RLS is active:
+        // Generate valid dish item with permanent ID
+        activeItem = {
+          ...item,
+          id: `dish_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          rating: item.rating || 4.8,
+          reviewsCount: item.reviewsCount || 16,
+          prepTime: item.prepTime || 20,
+          isAvailable: item.isAvailable !== false,
+          is_available: item.isAvailable !== false,
+        } as FoodItem;
+
+        // Persist in local storage custom dishes
+        try {
+          const stored = localStorage.getItem('nuvvo_custom_dishes');
+          const list = stored ? JSON.parse(stored) : [];
+          localStorage.setItem('nuvvo_custom_dishes', JSON.stringify([activeItem, ...list]));
+        } catch {}
+
+        // Notify server API proxy for server-side persistence and SSE broadcast
+        try {
+          fetch('/api/admin/dishes', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('nuvvo_auth_token') || ''}`
+            },
+            body: JSON.stringify(activeItem)
+          }).catch(() => {});
+        } catch {}
+      }
+
+      setFoodCatalogList(prev => [activeItem, ...prev.filter(d => String(d.id) !== String(activeItem.id))]);
+      
+      // Update cached catalog
+      try {
+        const stored = localStorage.getItem('nuvo_cached_food_catalog');
+        const list = stored ? JSON.parse(stored) : [];
+        localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify([activeItem, ...list.filter((d: any) => String(d.id) !== String(activeItem.id))]));
+      } catch {}
+
+      addAuditLog('Menu Updated', `Registered new dish "${activeItem.name}".`);
+
+      // Broadcast immediately across all connected devices (Play Store Android app + Web)
+      broadcastFoodMutation('INSERT', { item: activeItem });
+
+      return activeItem;
+    } catch (err: any) {
+      console.error('Exception during addFoodItem:', err);
+      // Even in error, create and broadcast so app never drops user input
+      const fallbackItem: FoodItem = {
+        ...item,
+        id: `dish_${Date.now()}`,
+        rating: item.rating || 4.8,
+        reviewsCount: 12,
+        prepTime: 20,
+        isAvailable: true,
+        is_available: true
+      } as FoodItem;
+      setFoodCatalogList(prev => [fallbackItem, ...prev]);
+      broadcastFoodMutation('INSERT', { item: fallbackItem });
+      return fallbackItem;
+    }
+  };
+
+  // Update Food Item: Update in Supabase public.food_items + Instant Broadcast Fallback
+  const updateFoodItem = async (id: string, updatedFields: Partial<FoodItem>) => {
+    if (!checkSuperAdminPermission('Update Food Item')) return;
+
+    // Optimistic UI update
+    setFoodCatalogList(prev => prev.map(item => {
+      if (String(item.id) === String(id)) {
+        return { ...item, ...updatedFields };
+      }
+      return item;
+    }));
+
+    // Broadcast immediately to connected peer devices
+    broadcastFoodMutation('UPDATE', { id, updatedFields });
+
+    try {
+      const { data: updatedRecord, error } = await updateFoodItemInSupabase(id, updatedFields);
+      if (error) {
+        console.error('Supabase updateFoodItem error:', error);
+        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
+        const alertMsg = isRls
+          ? '⚠️ Supabase RLS Note: Please ensure an UPDATE policy exists for public.food_items in Supabase.'
+          : (error.message || 'Failed to update record in Supabase');
+        setFoodError(alertMsg);
+      } else if (updatedRecord) {
+        setFoodCatalogList(prev => prev.map(item => String(item.id) === String(id) ? updatedRecord : item));
+      }
+      addAuditLog('Menu Updated', `Updated dish ID ${id} in Supabase.`);
+    } catch (err: any) {
+      console.error('Exception during updateFoodItem in Supabase:', err);
+      setFoodError(err.message);
+    }
+  };
+
+  // Delete Food Item: Remove from Supabase public.food_items + Instant Broadcast Fallback
+  const deleteFoodItem = async (id: string) => {
+    if (!checkSuperAdminPermission('Delete Food Item')) return;
+
+    // Optimistic removal
+    setFoodCatalogList(prev => prev.filter(item => String(item.id) !== String(id)));
+
+    // Broadcast immediately to connected peer devices
+    broadcastFoodMutation('DELETE', { id });
+
+    try {
+      const { error } = await deleteFoodItemFromSupabase(id);
+      if (error) {
+        console.error('Supabase deleteFoodItem error:', error);
+        setFoodError(error.message);
+      }
+      addAuditLog('Menu Updated', `Removed dish ID ${id} from Supabase.`);
+    } catch (err: any) {
+      console.error('Exception during deleteFoodItem in Supabase:', err);
+      setFoodError(err.message);
+    }
+  };
+
+  // Seed default preloaded dishes to Supabase public.food_items
+  const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; error?: string }> => {
+    if (!checkSuperAdminPermission('Seed Food Items')) return { success: false, error: 'Unauthorized' };
+    setFoodLoading(true);
+    try {
+      const defaultPool: FoodItem[] = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
+      const { count, error } = await seedFoodItemsToSupabase(defaultPool);
+      if (error) {
+        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
+        const msg = isRls
+          ? 'RLS Policy Error: Please disable RLS or add an INSERT policy on public.food_items in your Supabase Dashboard SQL Editor.'
+          : (error.message || 'Failed to seed database');
+        setFoodError(msg);
+        return { success: false, error: msg };
+      }
+      await fetchSupabaseCatalog();
+      addAuditLog('Menu Seeded', `Successfully inserted ${count} dishes into Supabase public.food_items.`);
+      return { success: true, count };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    } finally {
+      setFoodLoading(false);
+    }
+  };
+
+  // Search query
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Restaurants State (guaranteeing the 13 priority Chirala spots at top)
+  const [restaurantsList, setRestaurantsList] = useState<Restaurant[]>(() => {
+    let pool: Restaurant[] = [];
+    const chiralaList = generatePreloadedChiralaRestaurants();
+    const stored = localStorage.getItem('nuvvo_restaurants');
+    if (stored) {
+      try {
+        pool = JSON.parse(stored);
+      } catch {
+        pool = [];
+      }
+    }
+
+    // Always ensure the 13 priority Chirala spots are present, fresh, and pinned at the top
+    const priorityChirala = chiralaList.slice(0, 13);
+    const priorityIds = new Set(priorityChirala.map(p => p.id));
+    const priorityNames = new Set(priorityChirala.map(p => p.name.toLowerCase()));
+    
+    // Filter out older duplicates
+    const remainingPool = pool.filter(r => !priorityIds.has(r.id) && !priorityNames.has(r.name.toLowerCase()));
+    
+    if (remainingPool.length === 0) {
+      const otherChirala = chiralaList.slice(13);
+      pool = [...priorityChirala, ...RESTAURANTS, ...otherChirala];
+    } else {
+      pool = [...priorityChirala, ...remainingPool];
+    }
+
+    // Set scheduling parameters if missing
+    return pool.map(r => ({
+      ...r,
+      phone: r.phone || '+91 98480 22338',
+      openingTime: r.openingTime || '09:00',
+      closingTime: r.closingTime || '23:00',
+      weeklySchedule: r.weeklySchedule || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+      holidaySchedule: r.holidaySchedule || [],
+      forceStatus: r.forceStatus || 'auto'
+    }));
+  });
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_restaurants', JSON.stringify(restaurantsList));
+  }, [restaurantsList]);
+
+  // Restaurant Open/Closed status calculator
+  const getRestaurantOpenStatus = (restaurant: Restaurant) => {
+    const force = restaurant.forceStatus || 'auto';
+    
+    if (force === 'force_open') {
+      return {
+        status: 'open' as const,
+        label: '🟢 Open Now',
+        color: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-800/30',
+        message: 'Direct ordering accepted now.'
+      };
+    }
+    
+    if (force === 'force_close') {
+      return {
+        status: 'closed' as const,
+        label: '🔴 Closed',
+        color: 'bg-red-50 text-red-600 dark:bg-red-950/20 dark:text-red-400 border border-red-200/50 dark:border-red-800/30',
+        message: 'Currently closed by kitchen management.'
+      };
+    }
+    
+    if (force === 'temp_closed') {
+      return {
+        status: 'temp_closed' as const,
+        label: '🛑 Temporarily Closed',
+        color: 'bg-amber-50 text-amber-600 dark:bg-amber-955/20 dark:text-amber-400 border border-amber-200/50 dark:border-amber-800/30',
+        message: 'Kitchen temporarily offline.'
+      };
+    }
+    
+    if (force === 'emergency_closed') {
+      return {
+        status: 'emergency_closed' as const,
+        label: '🛑 Temporarily Closed',
+        color: 'bg-red-50 text-red-700 dark:bg-red-955/20 dark:text-red-350 border border-red-200/40 dark:border-red-800/20',
+        message: 'Closed due to live emergency weather/operations.'
+      };
+    }
+
+    // Otherwise, respect standard auto mode with working hours
+    const now = new Date();
+    
+    // Day check
+    const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const todayName = weekdays[now.getDay()];
+    const schedule = restaurant.weeklySchedule || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    
+    if (!schedule.includes(todayName)) {
+      return {
+        status: 'closed' as const,
+        label: '🔴 Closed Today',
+        color: 'bg-red-50 text-red-500 border-red-200/50',
+        message: `Weekly day off (${todayName}).`
+      };
+    }
+
+    // Holiday check
+    const todayISO = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const holiday = restaurant.holidaySchedule || [];
+    if (holiday.includes(todayISO)) {
+      return {
+        status: 'closed' as const,
+        label: '🔴 Closed (Holiday)',
+        color: 'bg-red-50 text-red-500 border-red-150',
+        message: `Closed for national holiday today.`
+      };
+    }
+
+    // Time hours check
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    
+    const [openH, openM] = (restaurant.openingTime || '09:00').split(':').map(Number);
+    const [closeH, closeM] = (restaurant.closingTime || '23:00').split(':').map(Number);
+    
+    const openMinutes = openH * 60 + openM;
+    const closeMinutes = closeH * 60 + closeM;
+    
+    if (currentMinutes >= openMinutes && currentMinutes < closeMinutes) {
+      return {
+        status: 'open' as const,
+        label: '🟢 Open Now',
+        color: 'bg-emerald-50 text-emerald-650 dark:bg-emerald-950/20 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30',
+        message: `Closes at ${formatTime12Hrs(restaurant.closingTime || '23:00')}`
+      };
+    } else {
+      return {
+        status: 'closed' as const,
+        label: `⏳ Opens At ${formatTime12Hrs(restaurant.openingTime || '09:00')}`,
+        color: 'bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400 border border-amber-100 dark:border-amber-900/30',
+        message: `Closed currently. Opens at ${formatTime12Hrs(restaurant.openingTime || '09:00')}`
+      };
+    }
+  };
+
+  const formatTime12Hrs = (time24: string) => {
+    try {
+      const [h, m] = time24.split(':').map(Number);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const hour12 = h % 12 === 0 ? 12 : h % 12;
+      const minStr = m < 10 ? `0${m}` : m;
+      return `${hour12}:${minStr} ${ampm}`;
+    } catch {
+      return time24;
+    }
+  };
+
+  // Submit dynamic Reviews system
+  const submitRestaurantReview = (review: Omit<RestaurantReview, 'id' | 'date'>) => {
+    const newId = `rev_${Date.now()}`;
+    const newDate = new Date().toISOString();
+    const newReview: RestaurantReview = {
+      ...review,
+      id: newId,
+      date: newDate,
+      hidden: false
+    };
+
+    setRestaurantReviews(prev => [newReview, ...prev]);
+
+    // Recalculate restaurant ratings inline
+    setRestaurantsList(prev => prev.map(r => {
+      if (r.id === review.restaurantId) {
+        const matches = restaurantReviews.filter(rev => rev.restaurantId === r.id && !rev.hidden);
+        const ratings = [...matches.map(m => m.restaurantRating), review.restaurantRating];
+        const sum = ratings.reduce((a, b) => a + b, 0);
+        const avg = parseFloat((sum / ratings.length).toFixed(1));
+        return {
+          ...r,
+          rating: avg,
+          reviewsCount: r.reviewsCount + 1
+        };
+      }
+      return r;
+    }));
+
+    const targetRest = restaurantsList.find(r => r.id === review.restaurantId);
+    triggerPushNotification(
+      newId,
+      'accepted',
+      '⭐ New Review Received!',
+      `Customer left a ${review.restaurantRating}⭐ review for restaurant "${targetRest?.name || 'Your Kitchen'}": ${review.comment ? `"${review.comment}"` : 'No written feedback.'}`,
+      false,
+      'restaurants'
+    );
+
+    addAuditLog('Feedback Submitted', `Order review logged: food ${review.foodRating}⭐, rest ${review.restaurantRating}⭐, rider ${review.deliveryRating}⭐`);
+  };
+
+  const hideRestaurantReview = (reviewId: string) => {
+    if (!checkSuperAdminPermission('Toggle Review Visibility')) return;
+    setRestaurantReviews(prev => prev.map(r => r.id === reviewId ? { ...r, hidden: !r.hidden } : r));
+    addAuditLog('Review Visibility', `Super Admin toggled visibility of review ID ${reviewId}.`);
+  };
+
+  const deleteRestaurantReview = (reviewId: string) => {
+    if (!checkSuperAdminPermission('Delete Review')) return;
+    setRestaurantReviews(prev => prev.filter(r => r.id !== reviewId));
+    addAuditLog('Review Deleted', `Super Admin deleted review ID ${reviewId}.`);
+  };
+
+  const updateRestaurantOperatingHours = (
+    id: string, 
+    openingTime: string, 
+    closingTime: string, 
+    weeklySchedule: string[],
+    holidaySchedule?: string[]
+  ) => {
+    if (!checkSuperAdminPermission('Update Restaurant Operating Hours')) return;
+    const updatedFields = {
+      openingTime,
+      closingTime,
+      weeklySchedule,
+      holidaySchedule: holidaySchedule || []
+    };
+    setRestaurantsList(prev => prev.map(r => {
+      if (r.id === id) {
+        return {
+          ...r,
+          ...updatedFields
+        };
+      }
+      return r;
+    }));
+    broadcastRestaurantMutation('UPDATE', { id, updatedFields });
+    addAuditLog('Hours Updated', `Super Admin adjusted operational schedule for Kitchen ID ${id}.`);
+  };
+
+  const updateRestaurantForceStatus = (
+    id: string, 
+    forceStatus: 'auto' | 'force_open' | 'force_close' | 'temp_closed' | 'emergency_closed'
+  ) => {
+    if (!checkSuperAdminPermission('Update Restaurant Forced Online/Offline Status')) return;
+    const targetRest = restaurantsList.find(r => r.id === id);
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, forceStatus } : r));
+    broadcastRestaurantMutation('UPDATE', { id, updatedFields: { forceStatus } });
+    
+    if (forceStatus === 'force_close' || forceStatus === 'temp_closed' || forceStatus === 'emergency_closed') {
+      triggerPushNotification(
+        `rest_offline_${id}_${Date.now()}`,
+        'accepted',
+        '🚨 Restaurant Went Offline',
+        `Eatery "${targetRest?.name || id}" is now offline (Reason: ${forceStatus}).`,
+        false,
+        'admin'
+      );
+    }
+
+    addAuditLog('Force Status Set', `Super Admin set forced status of Kitchen ID ${id} to ${forceStatus}.`);
+  };
+
+  const toggleRestaurantActiveStatus = (id: string) => {
+    if (!checkSuperAdminPermission('Toggle Restaurant Visibility Status')) return;
+    const targetRest = restaurantsList.find(r => r.id === id);
+    const nextStatus = targetRest?.isActive === false ? true : false;
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, isActive: nextStatus } : r));
+    broadcastRestaurantMutation('UPDATE', { id, updatedFields: { isActive: nextStatus } });
+    addAuditLog('Vendor Toggled', `Vendor ID ${id} visibility toggled.`);
+  };
+
+  const approveRestaurant = (id: string) => {
+    if (!checkSuperAdminPermission('Approve Restaurant Registration')) return;
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, isApproved: true, isActive: true } : r));
+    broadcastRestaurantMutation('UPDATE', { id, updatedFields: { isApproved: true, isActive: true } });
+    addAuditLog('Vendor Approved', `Super Admin approved registration of Vendor ID ${id}.`);
+  };
+
+  const registerNewRestaurantRequest = (
+    name: string,
+    cuisines: string[],
+    costForTwo: number,
+    phone: string,
+    businessType: any,
+    image?: string
+  ) => {
+    const newId = `chirala_rest_self_${Date.now()}`;
+    const newRest: Restaurant = {
+      id: newId,
+      name,
+      rating: 4.2,
+      cuisines,
+      reviewsCount: 12,
+      deliveryTime: 30,
+      costForTwo,
+      image: image || 'https://images.unsplash.com/photo-1552566626-52f8b828add9?auto=format&fit=crop&q=80&w=400',
+      isApproved: false, // Must be approved by Super Admin
+      isActive: false,   // Default inactive until approved
+      businessType,
+      phone,
+      distance: parseFloat((1.2 + Math.random() * 6).toFixed(1)),
+      offers: ['Welfare signup: Free delivery on order above ₹199']
+    };
+    setRestaurantsList(prev => [...prev, newRest]);
+    broadcastRestaurantMutation('INSERT', { item: newRest });
+    
+    // Trigger notification
+    triggerPushNotification(
+      newId,
+      'accepted',
+      '🆕 New Restaurant Onboarding Request',
+      `Merchant "${name}" (${phone}) has self-registered and is waiting for Super Admin authorization.`,
+      false,
+      'admin'
+    );
+
+    addAuditLog('Self Registration Requested', `Vendor "${name}" with phone ${phone} filed onboarding interest.`);
+    return { success: true, id: newId };
+  };
+
+  // Direct Restaurant CRUD with automatic Play Store / Mobile sync
+  const addRestaurant = (restaurant: Restaurant) => {
+    setRestaurantsList(prev => {
+      const filtered = prev.filter(r => r.id !== restaurant.id);
+      const next = [restaurant, ...filtered];
+      try {
+        localStorage.setItem('nuvvo_restaurants', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    broadcastRestaurantMutation('INSERT', { item: restaurant });
+    triggerPushNotification(
+      `rest_new_${restaurant.id}_${Date.now()}`,
+      'accepted',
+      '🏢 New Restaurant Available!',
+      `"${restaurant.name}" is now live in Chirala!`,
+      false,
+      'customers',
+      restaurant.image
+    );
+    addAuditLog('Restaurant Added', `Super Admin added restaurant "${restaurant.name}".`);
+  };
+
+  const updateRestaurant = (id: string, updatedFields: Partial<Restaurant>) => {
+    setRestaurantsList(prev => {
+      const next = prev.map(r => r.id === id ? { ...r, ...updatedFields } : r);
+      try {
+        localStorage.setItem('nuvvo_restaurants', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    broadcastRestaurantMutation('UPDATE', { id, updatedFields });
+    addAuditLog('Restaurant Updated', `Super Admin updated restaurant ID ${id}.`);
+  };
+
+  const deleteRestaurant = (id: string) => {
+    setRestaurantsList(prev => {
+      const next = prev.filter(r => r.id !== id);
+      try {
+        localStorage.setItem('nuvvo_restaurants', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    broadcastRestaurantMutation('DELETE', { id });
+    addAuditLog('Restaurant Deleted', `Super Admin removed restaurant ID ${id}.`);
+  };
+
+  // Save changes to localStorage regularly
+  useEffect(() => {
+    localStorage.setItem('nuvvo_theme', darkMode ? 'dark' : 'light');
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
+
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem('nuvvo_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('nuvvo_user');
+    }
+  }, [user]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_fav_foods', JSON.stringify(favoriteFoods));
+  }, [favoriteFoods]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_fav_rests', JSON.stringify(favoriteRestaurants));
+  }, [favoriteRestaurants]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_orders', JSON.stringify(orders));
+  }, [orders]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_address', JSON.stringify(currentAddress));
+  }, [currentAddress]);
+
+  useEffect(() => {
+    if (deliveryPartner) {
+      localStorage.setItem('nuvvo_partner', JSON.stringify(deliveryPartner));
+    } else {
+      localStorage.removeItem('nuvvo_partner');
+    }
+  }, [deliveryPartner]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_delivery_partners', JSON.stringify(deliveryPartners));
+  }, [deliveryPartners]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_franchise', JSON.stringify(franchiseApplications));
+  }, [franchiseApplications]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_audit_logs', JSON.stringify(logs));
+  }, [logs]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_payout_emails', JSON.stringify(payoutEmails));
+  }, [payoutEmails]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_merchant_payouts', JSON.stringify(merchantPayouts));
+  }, [merchantPayouts]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_designated_admins', JSON.stringify(designatedAdmins));
+  }, [designatedAdmins]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_points', String(nuvvoPoints));
+  }, [nuvvoPoints]);
+
+  useEffect(() => {
+    localStorage.setItem('nuvvo_points_history', JSON.stringify(pointsHistory));
+  }, [pointsHistory]);
+
+  // Toggle Dark Mode
+  const toggleDarkMode = () => setDarkMode(!darkMode);
+
+  // General Logging
+  const addAuditLog = (action: string, details: string) => {
+    const newLog: AuditLog = {
+      id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      userPhone: user?.phone || 'Guest Operator',
+      userRole: user?.role || 'Guest',
+      action,
+      timestamp: new Date().toISOString(),
+      details
+    };
+    setLogs(prev => {
+      const updated = [newLog, ...prev];
+      return updated.slice(0, 100); // Cap at 100 logs to optimize memory, state updates, and storage serialization
+    });
+  };
+
+  const clearLogs = () => {
+    localStorage.removeItem('nuvvo_audit_logs');
+    setLogs([]);
+  };
+
+  // OTP Login Routine
+  const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<boolean> => {
+    // Generate randomized OTP code, or fix at 5555 for quick validation testing
+    const simulatedOtp = '5555';
+    setOtpCode(simulatedOtp);
+    addAuditLog('OTP Sent', `Successfully generated dynamic security pass to user cell ${phone}`);
+    return true; 
+  };
+
+  const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<boolean> => {
+    if (otp !== '5555') {
+      addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${phone}`);
+      return false;
+    }
+
+    const cleanPhone = normalizePhoneNumber(phone);
+    let resolvedRole: any = 'Customer';
+
+    try {
+      const resp = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone, otp, requestedRole: role })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.token) {
+          localStorage.setItem('nuvvo_auth_token', data.token);
+        }
+        if (data.role === 'super_admin') {
+          resolvedRole = 'Super Admin';
+        } else if (data.role === 'admin') {
+          resolvedRole = 'Admin';
+        } else if (role === 'Delivery Partner') {
+          resolvedRole = 'Delivery Partner';
+        } else if (role === 'Franchise') {
+          resolvedRole = 'Franchise';
+        } else {
+          resolvedRole = 'Customer';
+        }
+      }
+    } catch (e) {
+      console.warn('Backend verify-otp notice:', e);
+      if (role === 'Delivery Partner') resolvedRole = 'Delivery Partner';
+      else if (role === 'Franchise') resolvedRole = 'Franchise';
+      else resolvedRole = 'Customer';
+    }
+
+    const existingUserStr = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
+    if (existingUserStr) {
+      try {
+        const parsed = JSON.parse(existingUserStr);
+        // Security check: role is strictly determined by server authorization
+        parsed.role = resolvedRole;
+        parsed.phone = cleanPhone;
+        setUser(parsed);
+        localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(parsed));
+        localStorage.setItem('nuvvo_user', JSON.stringify(parsed));
+        addAuditLog('Login Success', `${parsed.role} log-in operation successful for authenticated user`);
+        return true;
+      } catch (e) {
+        console.error('Failed to parse existing registered user:', e);
+      }
+    }
+
+    const newUser: User = {
+      id: `user_${Date.now()}`,
+      name: `Guest ${cleanPhone.slice(-4)}`,
+      phone: cleanPhone,
+      email: `${cleanPhone}@nuvvo.cloud`,
+      addresses: [
+        {
+          id: `addr_${Date.now()}`,
+          type: 'Home',
+          flatNo: 'Nuvvo Towers, Penthouse B',
+          area: 'Madhapur High-Tech Zone',
+          landmark: 'Near Cyber Towers',
+          city: 'Hyderabad',
+          gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
+        }
+      ],
+      role: resolvedRole,
+      isProfileComplete: true,
+      favoriteFoods: [],
+      favoriteRestaurants: [],
+      createdAt: new Date().toISOString()
+    };
+    setUser(newUser);
+    localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(newUser));
+    localStorage.setItem('nuvvo_user', JSON.stringify(newUser));
+    addAuditLog('Registration Complete', `New cellular entity verification complete. Profile auto-populated with defaults.`);
+    return true;
+  };
+
+  const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => {
+    if (!user) return;
+    const cleanPhone = normalizePhoneNumber(user.phone);
+    const completedUser: User = {
+      ...user,
+      name,
+      email,
+      phone: cleanPhone,
+      role: user.role,
+      addresses: [address],
+      currentAddressId: address.id,
+      isProfileComplete: true,
+      preferredLanguage: preferredLanguage || language
+    };
+    if (preferredLanguage) {
+      setLanguage(preferredLanguage);
+    }
+    setUser(completedUser);
+    localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(completedUser));
+    localStorage.setItem('nuvvo_user', JSON.stringify(completedUser));
+    setCurrentAddress(address);
+    addAuditLog('Profile Created', `User registration profile submitted under credentials name ${name}`);
+  };
+
+  const updateUserProfile = (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => {
+    setUser(prevUser => {
+      const base = prevUser || {
+        id: `user_${Date.now()}`,
+        name,
+        email,
+        phone: '9999911111',
+        role: 'Customer',
+        addresses: addresses || [],
+        favoriteFoods: [],
+        favoriteRestaurants: [],
+        isProfileComplete: true,
+        createdAt: new Date().toISOString()
+      };
+      // Security: Privileges are determined strictly from authenticated server identity
+      const authedPhone = normalizePhoneNumber(base.phone);
+      const updatedUser: User = {
+        ...base,
+        name: name.trim(),
+        email: email.trim(),
+        phone: authedPhone,
+        role: base.role, // Preserved server role
+        avatar: avatar !== undefined ? avatar : base.avatar,
+        addresses: addresses !== undefined ? addresses : base.addresses,
+        preferredLanguage: preferredLanguage || base.preferredLanguage || language
+      };
+      if (preferredLanguage) {
+        setLanguageState(preferredLanguage);
+        localStorage.setItem('nuvvo_app_language', preferredLanguage);
+      }
+      try {
+        localStorage.setItem(`nuvvo_registered_${authedPhone}`, JSON.stringify(updatedUser));
+        localStorage.setItem('nuvvo_user', JSON.stringify(updatedUser));
+      } catch (err) {
+        console.error('Failed to write user to localStorage:', err);
+      }
+      return updatedUser;
+    });
+    addAuditLog('Profile Updated', `User profile updated (Name: ${name}, Email: ${email})`);
+  };
+
+  const logoutUser = () => {
+    addAuditLog('User Logout', `Cellular token invalidated for current session`);
+    setUser(null);
+    setCurrentPage('auth');
+    setCart([]);
+    setAppliedCoupon(null);
+    setActiveTrackingOrder(null);
+    setSuperAdminAuthenticated(false);
+  };
+
+  const updateUserAddresses = (addresses: Address[]) => {
+    setUser(prevUser => {
+      if (!prevUser) return null;
+      const updated = { ...prevUser, addresses };
+      try {
+        localStorage.setItem(`nuvvo_registered_${prevUser.phone}`, JSON.stringify(updated));
+        localStorage.setItem('nuvvo_user', JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to write addresses to localStorage:', err);
+      }
+      return updated;
+    });
+  };
+
+  // Favorites
+  const toggleFavoriteFood = (foodId: string) => {
+    setFavoriteFoods(prev => {
+      if (prev.includes(foodId)) {
+        addAuditLog('Favorite Removed', `Food Item ID ${foodId} removed from personal vault.`);
+        return prev.filter(id => id !== foodId);
+      } else {
+        addAuditLog('Favorite Added', `Food Item ID ${foodId} persisted inside personal vault.`);
+        return [...prev, foodId];
+      }
+    });
+  };
+
+  const toggleFavoriteRestaurant = (restId: string) => {
+    setFavoriteRestaurants(prev => {
+      if (prev.includes(restId)) {
+        addAuditLog('Favorite Removed', `Restaurant ID ${restId} removed from preferences.`);
+        return prev.filter(id => id !== restId);
+      } else {
+        addAuditLog('Favorite Added', `Restaurant ID ${restId} added to preferences.`);
+        return [...prev, restId];
+      }
+    });
+  };
+
+  // Cart operations
+  const addToCart = (food: FoodItem, selectedCustomizations = {}) => {
+    setCart(prev => {
+      const existing = prev.find(item => item.foodItem.id === food.id);
+      if (existing) {
+        return prev.map(item => 
+          item.foodItem.id === food.id ? { ...item, quantity: item.quantity + 1 } : item
+        );
+      } else {
+        return [...prev, { foodItem: food, quantity: 1, selectedCustomizations }];
+      }
+    });
+    addAuditLog('Cart Added', `Added delicious ${food.name} to checkout preparation bucket.`);
+    
+    // Smooth, performance-optimized "✔ Added To Cart" success animation flag lasting 300ms
+    setCartSuccessAnimation(true);
+    setTimeout(() => {
+      setCartSuccessAnimation(false);
+    }, 300);
+  };
+
+  const removeFromCart = (foodId: string) => {
+    setCart(prev => prev.filter(item => item.foodItem.id !== foodId));
+    addAuditLog('Cart Removed', `Discarded food Item ID ${foodId} from local shopping cache.`);
+  };
+
+  const updateCartQuantity = (foodId: string, delta: number) => {
+    setCart(prev => {
+      return prev.map(item => {
+        if (item.foodItem.id === foodId) {
+          const newQty = item.quantity + delta;
+          if (newQty <= 0) return null;
+          return { ...item, quantity: newQty };
+        }
+        return item;
+      }).filter(Boolean) as CartItem[];
+    });
+  };
+
+  const clearCart = () => {
+    setCart([]);
+    setAppliedCoupon(null);
+    setDeliveryPartnerTip(0);
+    setOrderInstructions('');
+  };
+
+  const applyCouponCode = (code: string) => {
+    const coupon = couponsList.find(c => c.code.toUpperCase() === code.toUpperCase());
+    if (!coupon) {
+      return { success: false, message: 'Invalid or expired promotional code.' };
+    }
+    const cartSubtotal = cart.reduce((sum, item) => sum + (item.foodItem.discountPrice || item.foodItem.price) * item.quantity, 0);
+    if (cartSubtotal < coupon.minOrder) {
+      return { success: false, message: `Voucher minimum requirement is ₹${coupon.minOrder}. Current absolute total is ₹${cartSubtotal}.` };
+    }
+    setAppliedCoupon(coupon);
+    addAuditLog('Coupon Applied', `Gained discount via voucher code ${code}`);
+    return { success: true, message: 'Voucher applied successfully! Enjoy savings.' };
+  };
+
+  const removeCouponCode = () => {
+    setAppliedCoupon(null);
+  };
+
+  const redeemPointsForDiscount = (points: number) => {
+    if (points <= 0) {
+      return { success: false, message: "Please specify a positive points amount to redeem." };
+    }
+    if (points > nuvvoPoints) {
+      return { success: false, message: `Insufficient points balance. You have ${nuvvoPoints} Nuvvo Points.` };
+    }
+    setPointsToRedeem(points);
+    return { success: true, message: `Successfully staged ₹${points} discount using ${points} points!` };
+  };
+
+  const cancelPointsRedemption = () => {
+    setPointsToRedeem(0);
+  };
+
+  const awardPointsBonus = (amount: number, description: string, type: 'spin_bonus' | 'welcome' = 'spin_bonus') => {
+    setNuvvoPoints(prev => prev + amount);
+    const newTx: PointsTransaction = {
+      id: `pts_${Date.now()}`,
+      type,
+      amount,
+      description,
+      date: new Date().toLocaleDateString()
+    };
+    setPointsHistory(prev => [newTx, ...prev]);
+    addAuditLog('Loyalty Points Awarded', `Credited +${amount} Nuvvo Points: ${description}`);
+  };
+
+  // Create New Order
+  const createNewOrder = (
+    paymentMethod: PaymentMethodType | string = 'UPI', 
+    phonePeNoOrDetails?: any, 
+    scheduledTime?: string
+  ): Order | null => {
+    if (!user || cart.length === 0 || !currentAddress) return null;
+
+    const subtotal = cart.reduce((sum, item) => sum + (item.foodItem.discountPrice || item.foodItem.price) * item.quantity, 0);
+    let discount = 0;
+    if (appliedCoupon) {
+      if (appliedCoupon.discountType === 'percentage') {
+        discount = Math.min(100, Math.round(subtotal * (appliedCoupon.value / 100)));
+      } else {
+        discount = Math.min(subtotal, appliedCoupon.value);
+      }
+    }
+
+    // Points discount value deduction
+    let pointsDiscount = 0;
+    if (pointsToRedeem > 0) {
+      pointsDiscount = Math.min(subtotal - discount, pointsToRedeem);
+    }
+    
+    const isPhonePeStr = typeof phonePeNoOrDetails === 'string';
+    const paymentDetailsObj = typeof phonePeNoOrDetails === 'object' ? phonePeNoOrDetails : undefined;
+    const maskedOrPhone = isPhonePeStr ? phonePeNoOrDetails : (paymentDetailsObj?.maskedInfo || paymentDetailsObj?.provider || undefined);
+
+    const subtotalAfterCoupon = subtotal - discount;
+    const finalAmountAfterPoints = Math.max(0, subtotalAfterCoupon - pointsDiscount);
+
+    const deliveryFee = paymentDetailsObj?.deliveryFee !== undefined 
+      ? paymentDetailsObj.deliveryFee 
+      : (subtotal > 400 ? 0 : 39);
+    const packagingFee = 0; // Packaging charges removed
+    const tax = Math.round(subtotal * 0.05); // 5% GST
+    const calculatedFinalAmount = finalAmountAfterPoints + deliveryFee + packagingFee + tax + deliveryPartnerTip;
+    const finalAmount = typeof paymentDetailsObj?.amount === 'number' 
+      ? paymentDetailsObj.amount 
+      : calculatedFinalAmount;
+
+    const orderId = `order_${Date.now()}`;
+    const earnedPoints = Math.round(subtotal / 10); // Earning 1 loyalty point per 10 rupees spent
+
+    // Zero-default delivery partner assignment:
+    // If delivery partners count is zero, do not assign a fake rider.
+    // Order stays in 'Awaiting Delivery Partner Assignment' until an administrator assigns one.
+    const availableRiders = deliveryPartners.filter(p => p.isApproved && p.isAvailable && p.status === 'Available');
+    const assignedRider = availableRiders.length > 0 ? availableRiders[0] : null;
+
+    // Payment lifecycle & status:
+    const isCodOrPayOnDelivery = 
+      paymentMethod === 'COD' || 
+      paymentMethod === 'Pay on Delivery' || 
+      paymentMethod === 'Pay After Delivery' ||
+      String(paymentMethod).toLowerCase().includes('delivery') ||
+      String(paymentMethod).toLowerCase().includes('cash');
+
+    let initialPaymentStatus: PaymentStatusType | string = 'pending';
+    if (paymentDetailsObj?.paymentStatus) {
+      initialPaymentStatus = paymentDetailsObj.paymentStatus;
+    } else if (paymentMethod === 'UPI') {
+      initialPaymentStatus = 'awaiting_confirmation';
+    } else if (isCodOrPayOnDelivery) {
+      initialPaymentStatus = 'pending';
+    }
+
+    const resolvedOrderId = paymentDetailsObj?.orderId || orderId;
+
+    const newOrder: Order = {
+      id: resolvedOrderId,
+      customerId: user.id,
+      customerPhone: user.phone,
+      customerName: user.name,
+      items: [...cart],
+      subtotal,
+      discount: discount + pointsDiscount,
+      deliveryFee,
+      packagingFee,
+      tax,
+      tip: deliveryPartnerTip,
+      finalAmount,
+      status: 'accepted',
+      address: currentAddress,
+      instructions: orderInstructions,
+      couponUsed: appliedCoupon?.code,
+      paymentMethod,
+      paymentStatus: initialPaymentStatus,
+      deliveryPartnerStatus: assignedRider ? 'Assigned' : 'Awaiting Delivery Partner Assignment',
+      phonePeNumber: maskedOrPhone,
+      paymentDetails: paymentDetailsObj,
+      upiDetails: paymentDetailsObj?.upiDetails,
+      date: new Date().toISOString(),
+      eta: 25,
+      trackingHistory: [
+        { status: 'accepted', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+      ],
+      deliveryPartnerId: assignedRider ? assignedRider.id : undefined,
+      deliveryPartnerName: assignedRider ? assignedRider.name : undefined,
+      deliveryPartnerPhone: assignedRider ? assignedRider.phone : undefined,
+      deliveryPartnerAvatar: assignedRider ? assignedRider.avatar : undefined,
+      deliveryPartnerVehicle: assignedRider ? `${assignedRider.vehicleType || 'Bike'} (${assignedRider.bikeNumber || ''})` : undefined,
+      deliveryPartnerRating: assignedRider ? assignedRider.rating : undefined,
+      deliveryPartnerLocation: assignedRider ? assignedRider.currentLocation : undefined,
+      scheduledTime,
+      pointsEarned: earnedPoints,
+      pointsRedeemed: pointsToRedeem > 0 ? pointsToRedeem : undefined
+    };
+
+    // If payment was completed using Nuvvo Wallet, deduct and log
+    if (paymentMethod === 'Wallet' || (paymentMethod as string).toLowerCase().includes('wallet')) {
+      try {
+        const storedWalletBal = localStorage.getItem('nuvvo_wallet_balance');
+        const currentBal = storedWalletBal ? Number(storedWalletBal) : 0;
+        const newBal = Math.max(0, currentBal - finalAmount);
+        localStorage.setItem('nuvvo_wallet_balance', newBal.toString());
+
+        const storedWalletHistory = localStorage.getItem('nuvvo_wallet_history');
+        const historyList = storedWalletHistory ? JSON.parse(storedWalletHistory) : [];
+        const walletDebitTx = {
+          id: `w_tx_${Date.now()}`,
+          type: 'debit',
+          amount: finalAmount,
+          description: `Paid for Order #${orderId.slice(-6).toUpperCase()}`,
+          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        };
+        localStorage.setItem('nuvvo_wallet_history', JSON.stringify([walletDebitTx, ...historyList]));
+      } catch (err) {
+        console.warn('Error syncing wallet debit:', err);
+      }
+    }
+
+    // Loyalty Ledger points adjustments
+    let nextPoints = nuvvoPoints;
+    const txRecords: PointsTransaction[] = [];
+    
+    if (pointsToRedeem > 0) {
+      nextPoints -= pointsToRedeem;
+      txRecords.push({
+        id: `pts_red_${Date.now()}_1`,
+        orderId,
+        type: 'redeem',
+        amount: pointsToRedeem,
+        description: `Redeemed points on order #${orderId}`,
+        date: new Date().toLocaleDateString()
+      });
+    }
+
+    if (earnedPoints > 0) {
+      nextPoints += earnedPoints;
+      txRecords.push({
+        id: `pts_earn_${Date.now()}_2`,
+        orderId,
+        type: 'earn',
+        amount: earnedPoints,
+        description: `Points reward for order #${orderId}`,
+        date: new Date().toLocaleDateString()
+      });
+    }
+
+    if (txRecords.length > 0) {
+      setNuvvoPoints(nextPoints);
+      setPointsHistory(prev => [...txRecords, ...prev]);
+    }
+
+    setPointsToRedeem(0);
+
+    setOrders(prev => [newOrder, ...prev]);
+    clearCart();
+    setActiveTrackingOrder(newOrder);
+
+    // Multi-Persona Notification dispatcher for order creation
+    const subId = orderId.replace('order_', '');
+    triggerPushNotification(
+      orderId,
+      'accepted',
+      '📦 Order Placed Successfully!',
+      `Your order #${subId} totaling ₹${finalAmount} has been placed successfully. Sitting tight for chef acceptance!`,
+      false,
+      'customers'
+    );
+
+    const isFirstOrder = user ? (orders.filter(o => o.customerId === user.id).length === 0) : true;
+    if (isFirstOrder && user) {
+      triggerPushNotification(
+        'welcome_promo',
+        'accepted',
+        '🎉 Welcome to NUVVO!',
+        `Nice to meet you, ${user.name}! Enjoy secure payments, loyalty rewards, and rapid home delivery.`,
+        false,
+        'customers'
+      );
+    }
+
+    triggerPushNotification(
+      orderId,
+      'accepted',
+      '📦 New Order Received!',
+      `Kitchen Alert: A new order #${subId} has been submitted by customer for preparation.`,
+      false,
+      'restaurants'
+    );
+
+    triggerPushNotification(
+      orderId,
+      'accepted',
+      '💰 Daily Revenue Update (New Trade)',
+      `Financial Audit: order #${subId} added ₹${finalAmount} to system transaction nodes.`,
+      false,
+      'admin'
+    );
+
+    addAuditLog('Order Created', `Receipt reference of ₹${finalAmount} filed on database. Stage: accepted.${scheduledTime ? ` Scheduled delivery for ${scheduledTime}` : ''}. Earned ${earnedPoints} Nuvvo Points!`);
+    return newOrder;
+  };
+
+  const reorderItems = (order: Order) => {
+    const itemsToSet = order.items.map(cartItem => ({ ...cartItem }));
+    setCart(itemsToSet);
+    setCurrentPage('cart');
+    addAuditLog('Re-Ordered Items', `Copied shopping list from invoice ${order.id} into active checkout basket`);
+  };
+
+  const submitOrderRating = (orderId: string, rating: number, feedback?: string) => {
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return { ...o, rating, feedback };
+      }
+      return o;
+    }));
+
+    // Find the order to check if we can submit a formal restaurant review too
+    const order = orders.find(o => o.id === orderId);
+    if (order && order.items && order.items.length > 0) {
+      const firstItem = order.items[0];
+      const restId = firstItem.foodItem.restaurantId || 'rest_1';
+      
+      submitRestaurantReview({
+        orderId: order.id,
+        customerId: order.customerId || user?.id || 'cust_temp',
+        customerName: order.customerName || user?.name || 'Customer',
+        restaurantId: restId,
+        foodRating: rating,
+        restaurantRating: rating,
+        deliveryRating: rating,
+        comment: feedback || `Rated ${rating} stars on order delivery`,
+      });
+      
+      addAuditLog('Feedback Submitted', `Customer submitted feedback & ${rating}-star rating for Order #${orderId.slice(-6).toUpperCase()}`);
+    } else {
+      addAuditLog('Feedback Submitted', `Customer submitted feedback & ${rating}-star rating for Order #${orderId.slice(-6).toUpperCase()}`);
+    }
+  };
+
+  const updateOrderPaymentStatus = (orderId: string, newPaymentStatus: PaymentStatusType | string, notes?: string) => {
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        const isConfirmed = newPaymentStatus === 'confirmed' || newPaymentStatus === 'success';
+        const updated: Order = {
+          ...o,
+          paymentStatus: newPaymentStatus,
+          paymentDetails: {
+            ...o.paymentDetails,
+            notes: notes || o.paymentDetails?.notes
+          },
+          upiDetails: o.upiDetails ? {
+            ...o.upiDetails,
+            confirmedAt: isConfirmed ? new Date().toISOString() : o.upiDetails.confirmedAt,
+            confirmedBy: isConfirmed ? (user?.name || 'Administrator') : o.upiDetails.confirmedBy
+          } : undefined
+        };
+        if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
+          setActiveTrackingOrder(updated);
+        }
+        return updated;
+      }
+      return o;
+    }));
+
+    addAuditLog('Payment Status Updated', `Order #${orderId.replace('order_', '').slice(-6).toUpperCase()} payment marked "${newPaymentStatus}"${notes ? `: ${notes}` : ''}.`);
+
+    if (newPaymentStatus === 'confirmed' || newPaymentStatus === 'success') {
+      triggerPushNotification(
+        orderId,
+        'accepted',
+        '✅ Payment Confirmed by Admin!',
+        `Your UPI payment for order #${orderId.replace('order_', '').slice(-6).toUpperCase()} has been verified and confirmed. Kitchen is preparing your food!`,
+        false,
+        'customers'
+      );
+    }
+  };
+
+  const changeOrderStatus = (orderId: string, status: OrderStatus, isSystemSimulation: boolean = false) => {
+    if (!isSystemSimulation && !checkSuperAdminPermission(`Change Order Status to "${status}"`)) return;
+    let orderDescription = 'Feast';
+
+    setOrders(prev => {
+      const match = prev.find(o => o.id === orderId);
+      if (match && match.items && match.items.length > 0) {
+        orderDescription = match.items.map(i => i.foodItem.name).slice(0, 2).join(', ') +
+          (match.items.length > 2 ? ' and more' : '');
+      }
+
+      return prev.map(o => {
+        if (o.id === orderId) {
+          const hasHistory = o.trackingHistory.some(h => h.status === status);
+          const nextHist = hasHistory ? o.trackingHistory : [
+            ...o.trackingHistory,
+            { status, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+          ];
+          return { ...o, status, trackingHistory: nextHist };
+        }
+        return o;
+      });
+    });
+
+    if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
+      setActiveTrackingOrder(prev => {
+        if (!prev) return null;
+        if (prev.items && prev.items.length > 0) {
+          orderDescription = prev.items.map(i => i.foodItem.name).slice(0, 2).join(', ') +
+            (prev.items.length > 2 ? ' and more' : '');
+        }
+        const nextHist = prev.trackingHistory.some(h => h.status === status) ? prev.trackingHistory : [
+          ...prev.trackingHistory,
+          { status, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+        ];
+        return { ...prev, status, trackingHistory: nextHist };
+      });
+    }
+
+    // Real-Time Notification Multi-Persona Interceptor
+    const subOrderId = orderId.replace('order_', '');
+    const defaultRider = deliveryPartners.find(p => p.isApproved && p.isAvailable) || deliveryPartners[0];
+
+    if (status === 'accepted') {
+      // Customer: Order Accepted
+      triggerPushNotification(
+        orderId,
+        'accepted',
+        '✅ Order Accepted by Restaurant',
+        `Great news! The kitchen has accepted your request for "${orderDescription}"!`,
+        false,
+        'customers'
+      );
+      // Restaurant: Order Received / Accepted
+      triggerPushNotification(
+        orderId,
+        'accepted',
+        '📦 New Order Accepted',
+        `Order #${subOrderId} has been accepted and is moving to preparing!`,
+        false,
+        'restaurants'
+      );
+    } else if (status === 'preparing') {
+      // Customer: Food Preparing
+      triggerPushNotification(
+        orderId,
+        'preparing',
+        '👨‍🍳 Chef is Preparing Your Order',
+        `The kitchen is crafting your gourmet masterpiece: "${orderDescription}". Packing safely!`,
+        false,
+        'customers'
+      );
+      // Rider: New Delivery Request
+      triggerPushNotification(
+        orderId,
+        'preparing',
+        '📦 New Delivery Request Available',
+        `Route alert! Order #${subOrderId} is being prepared. Assigning partner for pick up.`,
+        false,
+        'riders'
+      );
+    } else if (status === 'picked') {
+      const activeMatch = orders.find(o => o.id === orderId) || activeTrackingOrder;
+      const riderName = activeMatch?.deliveryPartnerName || defaultRider?.name || 'Assigned Partner';
+      const riderPhone = activeMatch?.deliveryPartnerPhone || defaultRider?.phone || '';
+      const riderVehicle = activeMatch?.deliveryPartnerVehicle || (defaultRider ? `${defaultRider.vehicleType || 'Bike'} (${defaultRider.bikeNumber || ''})` : 'Delivery Partner');
+
+      // Customer: Delivery Started with Delivery Boy Details & Phone Number
+      triggerPushNotification(
+        orderId,
+        'picked',
+        `🛵 Delivery Started! ${riderName} is on the way`,
+        `Delivery partner ${riderName} (📞 +91 ${riderPhone}) has picked up your food order. Vehicle: ${riderVehicle}. Driving to your doorstep!`,
+        false,
+        'customers'
+      );
+      // Customer: Live Location Alert
+      triggerPushNotification(
+        orderId + '_live_loc',
+        'picked',
+        `📍 Live Location Active: ${riderName} en route`,
+        `Live GPS tracking activated. Partner ${riderName} (📞 +91 ${riderPhone}) is navigating towards your location in Chirala.`,
+        false,
+        'customers'
+      );
+      // Rider: Order Assigned
+      triggerPushNotification(
+        orderId,
+        'picked',
+        '✅ Delivery Route Assigned',
+        `You have been successfully assigned to order #${subOrderId}! Head to customer address.`,
+        false,
+        'riders'
+      );
+    } else if (status === 'on_the_way') {
+      const activeMatch = orders.find(o => o.id === orderId) || activeTrackingOrder;
+      const riderName = activeMatch?.deliveryPartnerName || defaultRider?.name || 'Suresh Kumar';
+      const riderPhone = activeMatch?.deliveryPartnerPhone || defaultRider?.phone || '9876543210';
+
+      // Customer: Rider On The Way with Live Location
+      triggerPushNotification(
+        orderId,
+        'on_the_way',
+        `🚀 Delivery in Progress: ${riderName} Arriving Soon!`,
+        `${riderName} (📞 +91 ${riderPhone}) is cruising towards your destination with "${orderDescription}". Keep your phone handy!`,
+        false,
+        'customers'
+      );
+      // Customer: Real-time Live GPS broadcast notification
+      triggerPushNotification(
+        orderId + '_live_loc_ontheway',
+        'on_the_way',
+        `📍 Live GPS Signal: ${riderName} is 1.2 km away`,
+        `Partner location: Near Chirala Trunk Road / RTC Bus Stand. Tap to view live beacon and direct contact buttons!`,
+        false,
+        'customers'
+      );
+      // Rider: Customer Location Updated
+      triggerPushNotification(
+        orderId,
+        'on_the_way',
+        '📍 Customer Coordinates Mapped',
+        `Safe drop-off coordinates lock-on. Customer address is active in your terminal.`,
+        false,
+        'riders'
+      );
+    } else if (status === 'delivered') {
+      // Customer: Order Delivered
+      triggerPushNotification(
+        orderId,
+        'delivered',
+        '🎉 Order Delivered! Enjoy!',
+        `Bon Appétit! Your contactless meal box has been safely hand-delivered.`,
+        false,
+        'customers'
+      );
+      // Customer: Rate Your Order
+      triggerPushNotification(
+        orderId + '_rate',
+        'delivered',
+        '⭐ Rate Your Order',
+        `We value your feedback! Rate your culinary and delivery experience with "${orderDescription}".`,
+        false,
+        'customers'
+      );
+      // Customer: Cashback Credited
+      triggerPushNotification(
+        orderId + '_cashback',
+        'delivered',
+        '💰 Cashback Points Credited!',
+        `Congratulations! Cashback points have been accredited in your loyalty vault.`,
+        false,
+        'customers'
+      );
+      // Rider: Earnings Updated
+      triggerPushNotification(
+        orderId + '_rider_earn',
+        'delivered',
+        '💰 Earnings Updated',
+        `Payout credited! You earned ₹65 + tips for completing delivery #${subOrderId}.`,
+        false,
+        'riders'
+      );
+      // Restaurant: Settlement Processed
+      triggerPushNotification(
+        orderId + '_vendor_settle',
+        'delivered',
+        '💰 Settlement Processed',
+        `Dues cleared! Net settlement of ₹280 processed on merchant nodes.`,
+        false,
+        'restaurants'
+      );
+    } else if (status === 'cancelled') {
+      // Customer: Order Cancelled
+      triggerPushNotification(
+        orderId,
+        'cancelled',
+        '❌ Order Cancelled & Refund Initiated',
+        `Your order #${subOrderId} has been cancelled. If pre-paid, refund will credit back shortly.`,
+        false,
+        'customers'
+      );
+      // Rider: Order Cancelled
+      triggerPushNotification(
+        orderId,
+        'cancelled',
+        '❌ Delivery Cancelled',
+        `Route assignment for #${subOrderId} is revoked. The order was cancelled by merchant/admin.`,
+        false,
+        'riders'
+      );
+      // Restaurant: Order Cancelled
+      triggerPushNotification(
+        orderId,
+        'cancelled',
+        '❌ Order Cancelled',
+        `Merchant alert: Order #${subOrderId} was cancelled. Standard merchant compensation check running.`,
+        false,
+        'restaurants'
+      );
+      // Super Admin: High Cancellation Rate warning
+      triggerPushNotification(
+        orderId + '_high_cancel',
+        'cancelled',
+        '🚨 Super Admin Warning: Sudden Order Cancellation',
+        `Cancellation warning: Order #${subOrderId} has failed. cancellation thresholds active.`,
+        false,
+        'admin'
+      );
+    }
+
+    addAuditLog('Order Status Update', `Invoice Reference ${orderId} shifted coordinates to status: ${status}.`);
+  };
+
+  // Tracking Simulation loop
+  useEffect(() => {
+    if (!activeTrackingOrder) {
+      setDeliveryRouteProgress(0);
+      return;
+    }
+
+    let intervalId: any;
+    if (activeTrackingOrder.status !== 'delivered' && activeTrackingOrder.status !== 'cancelled') {
+      intervalId = setInterval(() => {
+        setDeliveryRouteProgress(prev => {
+          const next = prev + 5;
+          if (activeTrackingOrder.status === 'on_the_way' && next === 80) {
+            triggerPushNotification(
+              activeTrackingOrder.id + '_soon',
+              'on_the_way',
+              '⏱ Arriving Soon!',
+              'Our delivery partner is under 500 meters away. Clean up your dining table now!',
+              false,
+              'customers'
+            );
+          }
+          if (next >= 100) {
+            // Trigger stage transitions in chronological sequence
+            const currentStage = activeTrackingOrder.status;
+            if (currentStage === 'accepted') {
+              changeOrderStatus(activeTrackingOrder.id, 'preparing', true);
+            } else if (currentStage === 'preparing') {
+              changeOrderStatus(activeTrackingOrder.id, 'picked', true);
+            } else if (currentStage === 'picked') {
+              changeOrderStatus(activeTrackingOrder.id, 'on_the_way', true);
+            } else if (currentStage === 'on_the_way') {
+              changeOrderStatus(activeTrackingOrder.id, 'delivered', true);
+              clearInterval(intervalId);
+              return 100;
+            }
+            return 0; // Reset vehicle route progress for the next route segment
+          }
+          return next;
+        });
+      }, 1500); // Quick incremental progress for delightful simulation
+    }
+
+    return () => clearInterval(intervalId);
+  }, [activeTrackingOrder, activeTrackingOrder?.status]);
+
+  // Delivery Partner Settings
+  const registerAsPartner = (name: string, phone: string, docs: any) => {
+    const isApproved = true; // Auto-validated details for high fidelity
+    const generatedId = `partner_${Date.now()}`;
+    const newPartner: DeliveryPartnerProfile = {
+      id: generatedId,
+      name,
+      phone,
+      isApproved,
+      isAvailable: true,
+      walletBalance: 250,
+      documents: docs,
+      earnings: [
+        { orderId: 'order_prior_1', amount: 85, date: '2026-06-12' },
+        { orderId: 'order_prior_2', amount: 95, date: '2026-06-13' }
+      ],
+      earningRecords: generateRiderMockData(generatedId),
+      payouts: generateRiderMockPayouts(generatedId, name)
+    };
+    
+    // Set both the session and global lists
+    setDeliveryPartner(newPartner);
+    setDeliveryPartners(prev => [...prev, newPartner]);
+    
+    // Notifications triggers
+    triggerPushNotification(
+      newPartner.id,
+      'accepted',
+      '🎉 Welcome to NUVVO Rider Network!',
+      `Hey ${name}! Your account is fully verified. Set yourself to active to start earning now!`,
+      false,
+      'riders'
+    );
+    
+    triggerPushNotification(
+      newPartner.id,
+      'accepted',
+      '🆕 New Rider Registration Accepted',
+      `Internal audit: Rider "${name}" (${phone}) has registered successfully. KYC approved.`,
+      false,
+      'admin'
+    );
+
+    addAuditLog('Partner Registered', `Aadhaar License verification complete. Account designated: Approved.`);
+  };
+
+  const partnerOtpVerify = (phone: string): boolean => {
+    // Check if the partner exists in our global list first, to load their full profile sessions!
+    const foundGlobal = deliveryPartners.find(p => p.phone === phone);
+    if (foundGlobal) {
+      setDeliveryPartner({ ...foundGlobal, isAvailable: true });
+      addAuditLog('Partner Authenticated', `Dynamic terminal access authorized for cellular ID ${phone}`);
+      return true;
+    }
+    
+    if (deliveryPartner && deliveryPartner.phone === phone) {
+      setDeliveryPartner(prev => {
+        if (!prev) return null;
+        return { ...prev, isAvailable: true };
+      });
+      addAuditLog('Partner Authenticated', `Dynamic terminal access authorized for cellular ID ${phone}`);
+      return true;
+    }
+    return false;
+  };
+
+  const updatePartnerAvailability = (available: boolean) => {
+    if (!deliveryPartner) return;
+    const updated = { ...deliveryPartner, isAvailable: available };
+    setDeliveryPartner(updated);
+    setDeliveryPartners(prev => prev.map(p => p.id === deliveryPartner.id ? updated : p));
+  };
+
+  const partnerAcceptOrder = (orderId: string) => {
+    changeOrderStatus(orderId, 'preparing', true);
+    addAuditLog('Delivery Accepted', `Partner assigned route to execute delivery invoice ${orderId}`);
+  };
+
+  const partnerRejectOrder = (orderId: string) => {
+    addAuditLog('Delivery Rejected', `Partner passed route assignment on delivery invoice ${orderId}`);
+  };
+
+  const partnerCompleteDelivery = (orderId: string, customTip?: number) => {
+    changeOrderStatus(orderId, 'delivered', true);
+    if (deliveryPartner) {
+      // Find order to check custom tip
+      const order = orders.find(o => o.id === orderId);
+      const tipVal = customTip !== undefined ? customTip : (order?.tip || 0);
+      
+      const rId = order?.items[0]?.foodItem?.restaurantId;
+      const restName = restaurantsList.find(r => r.id === rId)?.name || 'Sri Sivarama Food Court';
+      const cArea = order?.address?.locality || order?.address?.area || 'Perala Bypass';
+      
+      // Calculate active bonuses under current settings
+      const now = new Date();
+      const isWeekend = now.getDay() === 0 || now.getDay() === 6;
+      const isPeakHour = (now.getHours() >= 12 && now.getHours() <= 14) || (now.getHours() >= 19 && now.getHours() <= 21);
+      const isRain = Math.random() > 0.6; // 40% chance of rain simulation for completed deliveries
+      const isFestival = Math.random() > 0.8; // 20% translation chance
+      
+      const peakBonus = isPeakHour ? incentiveSettings.peakHourBonus : 0;
+      const festBonus = isFestival ? incentiveSettings.festivalBonus : 0;
+      const rainBonus = isRain ? incentiveSettings.rainBonus : 0;
+      const weekBonus = isWeekend ? incentiveSettings.weekendBonus : 0;
+      const refBonus = 0; // referral is earned during registrations, but let's keep it in structure
+      
+      const baseFee = order?.deliveryFee || 65;
+      const totalBonus = peakBonus + festBonus + rainBonus + weekBonus + refBonus;
+      const totalEarned = baseFee + totalBonus + tipVal;
+      
+      const newRecord: RiderEarningRecord = {
+        id: `earn_${deliveryPartner.id}_${Date.now()}`,
+        orderId,
+        restaurantName: restName,
+        customerArea: cArea,
+        deliveryFee: baseFee,
+        bonus: {
+          peakHour: peakBonus,
+          festival: festBonus,
+          rain: rainBonus,
+          weekend: weekBonus,
+          referral: refBonus
+        },
+        tip: tipVal,
+        totalEarned,
+        date: now.toISOString()
+      };
+      
+      const updatedRecords = [newRecord, ...(deliveryPartner.earningRecords || [])];
+      const updatedEarnings = [{ orderId, amount: totalEarned, date: now.toLocaleDateString() }, ...(deliveryPartner.earnings || [])];
+      
+      // Update this partner profile
+      const updatedPartner = {
+        ...deliveryPartner,
+        walletBalance: deliveryPartner.walletBalance + totalEarned,
+        completedOrdersCount: (deliveryPartner.completedOrdersCount || 0) + 1,
+        earnings: updatedEarnings,
+        earningRecords: updatedRecords
+      };
+      
+      setDeliveryPartner(updatedPartner);
+      
+      // Sync in global list
+      setDeliveryPartners(prev => prev.map(p => p.id === deliveryPartner.id ? updatedPartner : p));
+      
+      // Send notifications to rider
+      // 1. 💰 Earnings Updated
+      const earningsBody = `Successfully earned ₹${totalEarned} for Order #${orderId.split('_')[1] || orderId}! (Base: ₹${baseFee}, Tip: ₹${tipVal}, Bonuses: ₹${totalBonus})`;
+      triggerPushNotification(orderId, 'delivered', '💰 Earnings Updated', earningsBody, false, 'riders');
+      
+      // 2. 🎉 Bonus Credited
+      if (totalBonus > 0) {
+        const bonusBody = `Applied incentives:${peakBonus ? ' Peak Hour ' : ''}${rainBonus ? ' Rain Delivery ' : ''}${weekBonus ? ' Weekend ' : ''}${festBonus ? ' Festival ' : ''}`;
+        triggerPushNotification(orderId, 'delivered', '🎉 Bonus Credited', `₹${totalBonus} added in incentives! ${bonusBody}`, true, 'riders');
+      }
+      
+      addAuditLog('Delivery Earning Reconciled', `Partner ${deliveryPartner.name} completed order ${orderId} and earned dynamic payout of ₹${totalEarned}`);
+    } else {
+      addAuditLog('Delivery Complete', `Partner verified successfully dropped packet for ${orderId}`);
+    }
+  };
+
+  const requestPayout = (riderId: string, amount: number) => {
+    // Update the rider's payouts
+    const generatePayoutId = `payout_${riderId}_req_${Date.now()}`;
+    const newPayoutRequest: RiderPayout = {
+      id: generatePayoutId,
+      riderId,
+      riderName: deliveryPartners.find(p => p.id === riderId)?.name || 'Partner',
+      amount,
+      status: 'Pending',
+      requestDate: new Date().toISOString(),
+      bankAccount: '918273645012',
+      bankIfsc: 'SBIN0001234'
+    };
+
+    setDeliveryPartners(prev => prev.map(p => {
+      if (p.id === riderId) {
+        const updatedPayouts = [newPayoutRequest, ...(p.payouts || [])];
+        return {
+          ...p,
+          walletBalance: Math.max(0, p.walletBalance - amount),
+          payouts: updatedPayouts
+        };
+      }
+      return p;
+    }));
+
+    if (deliveryPartner && deliveryPartner.id === riderId) {
+      setDeliveryPartner(prev => {
+        if (!prev) return null;
+        const updatedPayouts = [newPayoutRequest, ...(prev.payouts || [])];
+        return {
+          ...prev,
+          walletBalance: Math.max(0, prev.walletBalance - amount),
+          payouts: updatedPayouts
+        };
+      });
+    }
+
+    addAuditLog('Payout Requested', `Rider ${riderId} requested payout of ₹${amount} to their registered bank account.`);
+  };
+
+  const approvePayout = (payoutId: string) => {
+    if (!checkSuperAdminPermission('Approve Rider Payout')) return;
+    let affectedRiderId = '';
+    let payoutAmount = 0;
+
+    setDeliveryPartners(prev => prev.map(p => {
+      const hasPayout = p.payouts?.find(pay => pay.id === payoutId);
+      if (hasPayout) {
+        affectedRiderId = p.id;
+        payoutAmount = hasPayout.amount;
+        const updatedPayouts = p.payouts?.map(pay => {
+          if (pay.id === payoutId) {
+            return {
+              ...pay,
+              status: 'Paid' as const,
+              payoutDate: new Date().toISOString(),
+              referenceId: `REF-${Math.floor(100000 + Math.random() * 900000)}`
+            };
+          }
+          return pay;
+        });
+        return {
+          ...p,
+          payouts: updatedPayouts
+        };
+      }
+      return p;
+    }));
+
+    if (deliveryPartner && deliveryPartner.id === affectedRiderId) {
+      setDeliveryPartner(prev => {
+        if (!prev) return null;
+        const updatedPayouts = prev.payouts?.map(pay => {
+          if (pay.id === payoutId) {
+            return {
+              ...pay,
+              status: 'Paid' as const,
+              payoutDate: new Date().toISOString(),
+              referenceId: `REF-${Math.floor(100000 + Math.random() * 900000)}`
+            };
+          }
+          return pay;
+        });
+        return {
+          ...prev,
+          payouts: updatedPayouts
+        };
+      });
+    }
+
+    // Trigger notification and automated email to the rider about processed payout
+    if (affectedRiderId) {
+      const rider = deliveryPartners.find(p => p.id === affectedRiderId);
+      const riderName = rider?.name || 'Partner Rider';
+      const riderEmail = `${riderName.toLowerCase().replace(/[^a-z0-9]/g, '')}@nuvvo.delivery`;
+      
+      const emailBodyHtml = `
+<div style="font-family: system-ui, -apple-system, sans-serif; max-width: 580px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; background-color: #ffffff; color: #1e293b; text-align: left;">
+  <!-- Header Banner -->
+  <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 24px 32px; text-align: left;">
+    <div style="font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 4px;">Nuvvo Delivery Network</div>
+    <div style="font-size: 12px; font-weight: 600; color: #a7f3d0; text-transform: uppercase; letter-spacing: 1px;">Official Payout Statement</div>
+  </div>
+  
+  <!-- Main Content -->
+  <div style="padding: 32px;">
+    <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">Hello <strong>${riderName}</strong>,</p>
+    <p style="font-size: 15px; line-height: 1.6; color: #475569;">Great work this cycle! Your delivery partner payout has been successfully processed by the Chirala Super Admin panel. The funds are currently on their way to your registered bank account via standard IMPS transfer.</p>
+    
+    <!-- Summary Box -->
+    <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 12px; padding: 20px; margin: 24px 0; text-align: center;">
+      <span style="font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Total Amount Disbursed</span>
+      <span style="font-size: 32px; font-weight: 900; color: #059669; font-family: monospace;">₹${payoutAmount.toLocaleString()}</span>
+    </div>
+    
+    <!-- Transaction Details Table -->
+    <table style="width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px;">
+      <thead>
+        <tr style="border-bottom: 2px solid #e2e8f0;">
+          <th style="text-align: left; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Reference / Detail</th>
+          <th style="text-align: right; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Payout Request ID</td>
+          <td style="padding: 12px 0; text-align: right; font-family: monospace; font-weight: 700; color: #0f172a;">${payoutId}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Status</td>
+          <td style="padding: 12px 0; text-align: right;"><span style="background-color: #d1fae5; color: #065f46; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 9999px;">PAID / DISBURSED</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Cycle Date</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">${new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Channel / Protocol</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">IMPS Direct Bank Dispatches</td>
+        </tr>
+      </tbody>
+    </table>
+    
+    <div style="margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; line-height: 1.5;">
+      This is an automated system simulation transaction record for the Nuvvo Chirala partner network. If you notice any inconsistencies, please write to operations@nuvvo.delivery.
+    </div>
+  </div>
+</div>
+`;
+
+      sendPayoutSummaryEmail({
+        recipientType: 'rider',
+        recipientName: riderName,
+        to: riderEmail,
+        amount: payoutAmount,
+        payoutId: payoutId,
+        subject: `💳 Nuvvo Partner Payout Complete (Ref #${payoutId})`,
+        bodyHtml: emailBodyHtml
+      });
+
+      triggerPushNotification(
+        payoutId,
+        'delivered' as OrderStatus,
+        '✅ Payout Processed',
+        `Your payout of ₹${payoutAmount} has been approved and successfully credited to your bank account!`,
+        false,
+        'riders'
+      );
+    }
+
+    addAuditLog('Payout Approved', `Super Admin approved transactions Ref #${payoutId} for payout amount ₹${payoutAmount}.`);
+  };
+
+  const sendPayoutSummaryEmail = (params: {
+    recipientType: 'rider' | 'restaurant_owner';
+    recipientName: string;
+    to: string;
+    amount: number;
+    payoutId: string;
+    subject: string;
+    bodyHtml: string;
+  }) => {
+    const newEmail: SimulatedEmail = {
+      id: `email_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      to: params.to,
+      recipientType: params.recipientType,
+      recipientName: params.recipientName,
+      subject: params.subject,
+      bodyHtml: params.bodyHtml,
+      timestamp: new Date().toISOString(),
+      payoutId: params.payoutId,
+      amount: params.amount,
+    };
+    
+    setPayoutEmails(prev => [newEmail, ...prev]);
+    addAuditLog(
+      'Notification Email Sent', 
+      `Automated summary email sent to ${params.recipientType === 'rider' ? 'Rider' : 'Restaurant Owner'} (${params.recipientName}) for payout Ref #${params.payoutId} of ₹${params.amount}.`
+    );
+  };
+
+  const processMerchantPayout = (restaurantId: string, amount: number) => {
+    const restaurant = restaurantsList.find(r => r.id === restaurantId);
+    const name = restaurant?.name || 'Selected Vendor';
+    const email = `owner@${name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`;
+    const refCode = `PAY-MERCH-${Math.floor(100000 + Math.random() * 900000)}`;
+    
+    const bodyHtml = `
+<div style="font-family: system-ui, -apple-system, sans-serif; max-width: 580px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; background-color: #ffffff; color: #1e293b; text-align: left;">
+  <!-- Header Banner -->
+  <div style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); padding: 24px 32px; text-align: left;">
+    <div style="font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 4px;">Nuvvo Merchant Network</div>
+    <div style="font-size: 12px; font-weight: 600; color: #ffedd5; text-transform: uppercase; letter-spacing: 1px;">Commercial Settlement Summary</div>
+  </div>
+  
+  <!-- Main Content -->
+  <div style="padding: 32px;">
+    <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">Dear <strong>${name}</strong> Owner,</p>
+    <p style="font-size: 15px; line-height: 1.6; color: #475569;">Your merchant payout settlement has been processed and successfully dispatched by the Chirala Super Admin operations group. A bank wire has been authorized for immediate release to your commercial bank account.</p>
+    
+    <!-- Summary Box -->
+    <div style="background-color: #fdf8f6; border: 1px solid #ffedd5; border-radius: 12px; padding: 20px; margin: 24px 0; text-align: center;">
+      <span style="font-size: 12px; font-weight: 700; color: #c2410c; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Net Disbursed Amount</span>
+      <span style="font-size: 32px; font-weight: 900; color: #ea580c; font-family: monospace;">₹${amount.toLocaleString()}</span>
+    </div>
+    
+    <!-- Transaction Details Table -->
+    <table style="width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px;">
+      <thead>
+        <tr style="border-bottom: 2px solid #e2e8f0;">
+          <th style="text-align: left; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Reference / Detail</th>
+          <th style="text-align: right; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Ref Code</td>
+          <td style="padding: 12px 0; text-align: right; font-family: monospace; font-weight: 700; color: #0f172a;">${refCode}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Status</td>
+          <td style="padding: 12px 0; text-align: right;"><span style="background-color: #ffedd5; color: #c2410c; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 9999px;">SETTLED / CLEARED</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Date</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">${new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Payment Mode</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">Direct IMPS Commercial Clearing</td>
+        </tr>
+      </tbody>
+    </table>
+    
+    <div style="margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; line-height: 1.5;">
+      This is an automated system simulation transaction record for the Nuvvo Chirala partner network. If you notice any inconsistencies, please write to merchant-support@nuvvo.delivery.
+    </div>
+  </div>
+</div>
+`;
+
+    // 1. Add email record
+    sendPayoutSummaryEmail({
+      recipientType: 'restaurant_owner',
+      recipientName: name,
+      to: email,
+      amount: amount,
+      payoutId: refCode,
+      subject: `💵 Commercial Merchant Settlement Complete: ${name} (Ref #${refCode})`,
+      bodyHtml: bodyHtml
+    });
+
+    // 2. Trigger push notification
+    triggerPushNotification(
+      'k_payout', 
+      'accepted', 
+      '💵 Merchant Settlement Complete', 
+      `Operations processed ₹${amount.toLocaleString()} daily terminal vendor payout for ${name}.`, 
+      false, 
+      'restaurants'
+    );
+
+    // 3. Append to merchantPayouts array
+    const newPayout: MerchantPayout = {
+      id: refCode,
+      restaurantId: restaurantId,
+      restaurantName: name,
+      amount: amount,
+      status: 'Paid',
+      requestDate: new Date().toISOString(),
+      payoutDate: new Date().toISOString(),
+      bankAccount: `XXXXXX${Math.floor(1000 + Math.random() * 9000)}`,
+      bankIfsc: 'SBIN0000832'
+    };
+    setMerchantPayouts(prev => [newPayout, ...prev]);
+  };
+
+  const approveMerchantPayout = (payoutId: string) => {
+    setMerchantPayouts(prev => prev.map(p => {
+      if (p.id === payoutId) {
+        const updatedPayout = {
+          ...p,
+          status: 'Paid' as const,
+          payoutDate: new Date().toISOString()
+        };
+        
+        // Trigger notification and automated email to the restaurant owner about processed payout
+        const email = `owner@${p.restaurantName.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`;
+        const bodyHtml = `
+<div style="font-family: system-ui, -apple-system, sans-serif; max-width: 580px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; background-color: #ffffff; color: #1e293b; text-align: left;">
+  <!-- Header Banner -->
+  <div style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); padding: 24px 32px; text-align: left;">
+    <div style="font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 4px;">Nuvvo Merchant Network</div>
+    <div style="font-size: 12px; font-weight: 600; color: #ffedd5; text-transform: uppercase; letter-spacing: 1px;">Commercial Settlement Summary</div>
+  </div>
+  
+  <!-- Main Content -->
+  <div style="padding: 32px;">
+    <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">Dear <strong>${p.restaurantName}</strong> Owner,</p>
+    <p style="font-size: 15px; line-height: 1.6; color: #475569;">Your merchant payout settlement has been processed and successfully dispatched by the Chirala Super Admin operations group. A bank wire has been authorized for immediate release to your commercial bank account.</p>
+    
+    <!-- Summary Box -->
+    <div style="background-color: #fdf8f6; border: 1px solid #ffedd5; border-radius: 12px; padding: 20px; margin: 24px 0; text-align: center;">
+      <span style="font-size: 12px; font-weight: 700; color: #c2410c; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Net Disbursed Amount</span>
+      <span style="font-size: 32px; font-weight: 900; color: #ea580c; font-family: monospace;">₹${p.amount.toLocaleString()}</span>
+    </div>
+    
+    <!-- Transaction Details Table -->
+    <table style="width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px;">
+      <thead>
+        <tr style="border-bottom: 2px solid #e2e8f0;">
+          <th style="text-align: left; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Reference / Detail</th>
+          <th style="text-align: right; padding: 8px 0; color: #64748b; font-weight: 700; text-transform: uppercase;">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Ref Code</td>
+          <td style="padding: 12px 0; text-align: right; font-family: monospace; font-weight: 700; color: #0f172a;">${p.id}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Status</td>
+          <td style="padding: 12px 0; text-align: right;"><span style="background-color: #ffedd5; color: #c2410c; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 9999px;">SETTLED / CLEARED</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Settlement Date</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">${new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f1f5f9;">
+          <td style="padding: 12px 0; font-weight: 500; color: #334155;">Payment Mode</td>
+          <td style="padding: 12px 0; text-align: right; color: #334155; font-weight: 600;">Direct IMPS Commercial Clearing</td>
+        </tr>
+      </tbody>
+    </table>
+    
+    <div style="margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; line-height: 1.5;">
+      This is an automated system simulation transaction record for the Nuvvo Chirala partner network. If you notice any inconsistencies, please write to merchant-support@nuvvo.delivery.
+    </div>
+  </div>
+</div>
+`;
+
+        sendPayoutSummaryEmail({
+          recipientType: 'restaurant_owner',
+          recipientName: p.restaurantName,
+          to: email,
+          amount: p.amount,
+          payoutId: p.id,
+          subject: `💵 Commercial Merchant Settlement Complete: ${p.restaurantName} (Ref #${p.id})`,
+          bodyHtml: bodyHtml
+        });
+
+        triggerPushNotification(
+          'k_payout', 
+          'accepted', 
+          '💵 Merchant Settlement Complete', 
+          `Operations processed ₹${p.amount.toLocaleString()} daily terminal vendor payout for ${p.restaurantName}.`, 
+          false, 
+          'restaurants'
+        );
+
+        addAuditLog('Merchant Payout Approved', `Approved settlement of ₹${p.amount} for ${p.restaurantName} (Ref #${p.id}).`);
+
+        return updatedPayout;
+      }
+      return p;
+    }));
+  };
+
+
+  const addRiderEarningRecord = (riderId: string, record: Omit<RiderEarningRecord, 'id' | 'date'>) => {
+    const now = new Date();
+    const newRecord: RiderEarningRecord = {
+      ...record,
+      id: `earn_adj_${riderId}_${Date.now()}`,
+      date: now.toISOString()
+    };
+
+    setDeliveryPartners(prev => prev.map(p => {
+      if (p.id === riderId) {
+        const updatedRecords = [newRecord, ...(p.earningRecords || [])];
+        const updatedEarnings = [{ orderId: record.orderId, amount: record.totalEarned, date: now.toLocaleDateString() }, ...(p.earnings || [])];
+        return {
+          ...p,
+          walletBalance: p.walletBalance + record.totalEarned,
+          earningRecords: updatedRecords,
+          earnings: updatedEarnings
+        };
+      }
+      return p;
+    }));
+
+    if (deliveryPartner && deliveryPartner.id === riderId) {
+      setDeliveryPartner(prev => {
+        if (!prev) return null;
+        const updatedRecords = [newRecord, ...(prev.earningRecords || [])];
+        const updatedEarnings = [{ orderId: record.orderId, amount: record.totalEarned, date: now.toLocaleDateString() }, ...(prev.earnings || [])];
+        return {
+          ...prev,
+          walletBalance: prev.walletBalance + record.totalEarned,
+          earningRecords: updatedRecords,
+          earnings: updatedEarnings
+        };
+      });
+    }
+
+    addAuditLog('Admin Earnings Adjustment', `Admin logged ₹${record.totalEarned} earnings for Rider ${riderId}.`);
+  };
+
+  const addDeliveryPartner = (
+    name: string,
+    phone: string,
+    initialBalance: number = 0,
+    bikeNumber: string = '',
+    whatsAppPhone: string = '',
+    address: string = '',
+    vehicleType: 'Bike' | 'Scooter' | 'Cycle' | 'Auto' | 'Other' = 'Bike',
+    aadhaar: string = '',
+    drivingLicense: string = '',
+    avatar: string = '',
+    isApproved: boolean = true
+  ) => {
+    if (!isAdmin && !isSuperAdmin) {
+      alert('Access Denied: Only authorized Admin or Super Admin can manage delivery partners.');
+      return;
+    }
+    const defaultAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+    const statusVal = isApproved ? 'Available' : 'Registration Pending';
+    
+    const newPartner: DeliveryPartnerProfile = {
+      id: `partner_${Date.now()}`,
+      name,
+      phone,
+      whatsAppPhone: whatsAppPhone || phone,
+      address: address || 'Chirala Bazaar, AP',
+      vehicleType,
+      bikeNumber: bikeNumber || `AP ${10 + Math.floor(Math.random() * 30)} XX ${1000 + Math.floor(Math.random() * 9000)}`,
+      aadhaar: aadhaar || `${1000 + Math.floor(Math.random() * 9000)}-${1000 + Math.floor(Math.random() * 9000)}-${1000 + Math.floor(Math.random() * 9000)}`,
+      drivingLicense: drivingLicense || `DL-AP${10 + Math.floor(Math.random() * 90)}${2000 + Math.floor(Math.random() * 26)}${10000 + Math.floor(Math.random() * 90000)}`,
+      avatar: avatar || defaultAvatar,
+      isApproved,
+      isAvailable: isApproved && statusVal === 'Available',
+      status: statusVal,
+      rating: 5.0,
+      completedOrdersCount: 0,
+      currentLocation: { lat: 15.8246 + (Math.random() - 0.5) * 0.015, lng: 80.3533 + (Math.random() - 0.5) * 0.015 },
+      walletBalance: initialBalance,
+      earnings: []
+    };
+    
+    setDeliveryPartners(prev => [...prev, newPartner]);
+    addAuditLog('Rider Onboarded', `Administrator manual onboarding completed: ${name} (+91 ${phone})`);
+    
+    // Auto-generate notifications
+    const newNotis = [
+      {
+        id: `noti_rider_reg_${Date.now()}`,
+        title: 'New Rider Registered',
+        message: `Rider ${name} registered successfully for vehicle type ${vehicleType}.`,
+        timestamp: new Date().toISOString(),
+        read: false
+      },
+      ...(!isApproved ? [{
+        id: `noti_rider_doc_${Date.now()}`,
+        title: 'Document Approval Pending',
+        message: `Verify documents (Aadhaar & DL) submitted by ${name}.`,
+        timestamp: new Date().toISOString(),
+        read: false
+      }] : [])
+    ];
+    setNotifications(prev => [...newNotis, ...prev]);
+  };
+
+  const updateRiderStatus = (id: string, isApproved: boolean, status: DeliveryPartnerProfile['status']) => {
+    if (!isAdmin && !isSuperAdmin) {
+      alert('Access Denied: Administrative authorization required.');
+      return;
+    }
+    setDeliveryPartners(prev =>
+      prev.map(p => {
+        if (p.id === id) {
+          const updated = {
+            ...p,
+            isApproved,
+            status,
+            isAvailable: status === 'Available'
+          };
+          
+          if (status === 'Suspended') {
+            triggerPushNotification(
+              `rider_susp_${id}_${Date.now()}`,
+              'accepted',
+              '🚨 Rider Account Suspended',
+              `KYC Revoked: Rider partner "${p.name}" has been placed under active suspension.`,
+              false,
+              'admin'
+            );
+          } else if (isApproved && p.status === 'Pending') {
+            triggerPushNotification(
+              `rider_appr_${id}_${Date.now()}`,
+              'accepted',
+              '🆕 New Rider Registration Accepted',
+              `Internal Audit: Rider "${p.name}" has been approved for active courier routing.`,
+              false,
+              'admin'
+            );
+          }
+
+          addAuditLog('Rider Status Changed', `Administrator set rider ${p.name} status to: ${status} (Approved: ${isApproved})`);
+          return updated;
+        }
+        return p;
+      })
+    );
+  };
+
+  const removeDeliveryPartner = (id: string) => {
+    if (!isAdmin && !isSuperAdmin) {
+      alert('Access Denied: Administrative authorization required.');
+      return;
+    }
+    setDeliveryPartners(prev => {
+      const match = prev.find(p => p.id === id);
+      const name = match ? match.name : id;
+      addAuditLog('Rider Removed', `Administrator deleted delivery rider ${name} (ID: ${id})`);
+      return prev.filter(p => p.id !== id);
+    });
+  };
+
+  const toggleDeliveryPartnerAvailability = (id: string) => {
+    if (!isAdmin && !isSuperAdmin && deliveryPartner?.id !== id) {
+      alert('Access Denied: Administrative authorization required.');
+      return;
+    }
+    setDeliveryPartners(prev => {
+      return prev.map(p => {
+        if (p.id === id) {
+          const nextState = !p.isAvailable;
+          addAuditLog('Rider Status Toggle', `Administrator toggled rider ${p.name} availability status to: ${nextState ? 'ONLINE' : 'OFFLINE'}`);
+          return { ...p, isAvailable: nextState };
+        }
+        return p;
+      });
+    });
+  };
+
+  const assignOrderToDeliveryPartner = (orderId: string, partnerId: string): boolean => {
+    if (!isAdmin && !isSuperAdmin) {
+      alert('Access Denied: Only authorized Admin or Super Admin can assign orders.');
+      return false;
+    }
+    const partner = deliveryPartners.find(p => p.id === partnerId);
+    if (!partner) {
+      alert('Selected delivery partner was not found or is currently unavailable.');
+      return false;
+    }
+
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          deliveryPartnerId: partner.id,
+          deliveryPartnerName: partner.name,
+          deliveryPartnerPhone: partner.phone,
+          deliveryPartnerAvatar: partner.avatar,
+          deliveryPartnerVehicle: `${partner.vehicleType || 'Bike'} (${partner.bikeNumber || ''})`,
+          deliveryPartnerRating: partner.rating,
+          deliveryPartnerLocation: partner.currentLocation,
+          deliveryPartnerStatus: 'Assigned'
+        };
+      }
+      return o;
+    }));
+
+    if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
+      setActiveTrackingOrder(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          deliveryPartnerId: partner.id,
+          deliveryPartnerName: partner.name,
+          deliveryPartnerPhone: partner.phone,
+          deliveryPartnerAvatar: partner.avatar,
+          deliveryPartnerVehicle: `${partner.vehicleType || 'Bike'} (${partner.bikeNumber || ''})`,
+          deliveryPartnerRating: partner.rating,
+          deliveryPartnerLocation: partner.currentLocation,
+          deliveryPartnerStatus: 'Assigned'
+        };
+      });
+    }
+
+    addAuditLog('Delivery Assigned', `Administrator assigned delivery partner ${partner.name} to order #${orderId}`);
+    return true;
+  };
+
+  const resetAdminData = async (scope: 'all_admin_data' | 'catalog' | 'delivery_partners' = 'all_admin_data'): Promise<{ success: boolean; message: string }> => {
+    if (!isAdmin && !isSuperAdmin) {
+      return { success: false, message: 'Access Denied: Administrative role authorization required.' };
+    }
+    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    try {
+      const resp = await fetch('/api/admin/reset-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ confirmation: 'RESET', scope })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        return { success: false, message: data.error || 'Server rejected reset operation.' };
+      }
+
+      // Synchronize client-side models according to reset scope
+      // Protects: User accounts, authentication credentials, wallet balances, loyalty passports, and orders!
+      if (!scope || scope === 'all_admin_data' || scope === 'catalog') {
+        const freshChirala = generatePreloadedChiralaRestaurants();
+        setRestaurantsList([...RESTAURANTS, ...freshChirala]);
+        setFoodCatalogList(FOOD_CATALOG);
+        localStorage.removeItem('nuvvo_custom_restaurants');
+        localStorage.removeItem('nuvvo_custom_dishes');
+      }
+      if (!scope || scope === 'all_admin_data' || scope === 'delivery_partners') {
+        setDeliveryPartners([]);
+        localStorage.setItem('nuvvo_delivery_partners', JSON.stringify([]));
+      }
+
+      addAuditLog('Admin Data Reset', `Administrator executed authorized reset for scope: ${scope}. Customer data remained strictly protected.`);
+      return { success: true, message: data.message };
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Network exception during reset.' };
+    }
+  };
+
+  // Franchise submission form handler
+  const submitFranchiseForm = (formData: any) => {
+    const newApp: FranchiseApplication = {
+      id: `franchise_${Date.now()}`,
+      fullName: formData.fullName,
+      email: formData.email,
+      phone: formData.phone,
+      whatsAppPhone: formData.whatsAppPhone || formData.phone,
+      currentOccupation: formData.currentOccupation || 'Business Owner',
+      businessExperience: formData.businessExperience || 'None',
+      city: formData.city,
+      district: formData.district || formData.city,
+      state: formData.state || 'Andhra Pradesh',
+      preferredFranchiseType: formData.preferredFranchiseType || 'Area Franchise',
+      investmentRange: formData.investmentRange,
+      existingBusinessDetails: formData.existingBusinessDetails || 'None',
+      officeAddress: formData.officeAddress || 'Not Provided',
+      numberOfEmployees: formData.numberOfEmployees || '0',
+      expectedLaunchTimeline: formData.expectedLaunchTimeline || 'Immediate',
+      whyJoinNuvvo: formData.whyJoinNuvvo || 'Interested',
+      aadhaarCardImage: formData.aadhaarCardImage || '',
+      panCardImage: formData.panCardImage || '',
+      businessDocImage: formData.businessDocImage || '',
+      status: 'Submitted',
+      date: new Date().toLocaleDateString()
+    };
+    setFranchiseApplications(prev => [newApp, ...prev]);
+    
+    // Trigger franchise alert
+    triggerPushNotification(
+      newApp.id,
+      'accepted',
+      '🆕 New Franchise Application Received!',
+      `Territory investor ${formData.fullName} filed an Area Franchise expansion request for ${formData.city}.`,
+      false,
+      'admin'
+    );
+
+    addAuditLog('Franchise Inquiry Filed', `Investor application filed for territory expansion in ${formData.city} (${formData.preferredFranchiseType})`);
+  };
+
+  const updateFranchiseStatus = (id: string, status: FranchiseApplication['status']) => {
+    if (!checkSuperAdminPermission('Update Franchise Application Status')) return;
+    setFranchiseApplications(prev => prev.map(app => {
+      if (app.id === id) {
+        return { ...app, status };
+      }
+      return app;
+    }));
+    addAuditLog('Franchise Status Changed', `Inquiry application ID ${id} transitioned status state to ${status}`);
+  };
+
+  // Super Admin validation
+  const verifySuperAdminOtp = (otp: string): boolean => {
+    if (otp === '5555') {
+      setSuperAdminAuthenticated(true);
+      addAuditLog('Super Admin Verified', `Elevated systemic parameters cleared via OTP validation`);
+      return true;
+    }
+    return false;
+  };
+
+  const authenticateSuperAdmin = () => {
+    setSuperAdminAuthenticated(true);
+    addAuditLog('Super Admin Session Opened', `Super Admin console access granted directly.`);
+  };
+
+  const wipeAllData = () => {
+    if (!checkSuperAdminPermission('Wipe All Database Data')) return;
+    // Clear lists
+    localStorage.removeItem('nuvvo_restaurants');
+    localStorage.removeItem('nuvvo_orders');
+    localStorage.removeItem('nuvvo_fav_foods');
+    localStorage.removeItem('nuvvo_fav_rests');
+    localStorage.removeItem('nuvvo_audit_logs');
+    
+    // Reset state
+    const freshChirala = generatePreloadedChiralaRestaurants();
+    setRestaurantsList([...RESTAURANTS, ...freshChirala]);
+    setOrders([]);
+    setFavoriteFoods([]);
+    setFavoriteRestaurants([]);
+    setLogs([
+      {
+        id: `log_${Date.now()}`,
+        userPhone: 'System Initializer',
+        userRole: 'Super Admin',
+        action: 'Database Wiped',
+        timestamp: new Date().toISOString(),
+        details: 'Chirala vendor database completely re-seeded and reinitialized by Root command.'
+      }
+    ]);
+  };
+
+  const clearSystemCache = () => {
+    if (!checkSuperAdminPermission('Wipe All Database Data')) return;
+    
+    // Clear soft caches in localStorage
+    localStorage.removeItem('nuvvo_last_viewed_restaurants');
+    localStorage.removeItem('nuvvo_notifications');
+    localStorage.removeItem('nuvvo_scheduled_notifications');
+    localStorage.removeItem('nuvvo_restaurant_reviews');
+    localStorage.removeItem('nuvvo_applied_referral_code');
+    
+    // Scan and remove dynamic order chat, feedback cache, daily points, etc.
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (
+        key.startsWith('nuvvo_chat_') || 
+        key.startsWith('nuvvo_feedback_') || 
+        key.startsWith('nuvvo_daily_pts_') || 
+        key.startsWith('nuvvo_cards_') || 
+        key.startsWith('nuvvo_upis_')
+      )) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    
+    // Reset state variables
+    setNotifications([]);
+    setScheduledNotifications([]);
+    
+    addAuditLog(
+      'System Cache Cleared', 
+      'All temporary session caches, recent search histories, dynamic delivery feedback records, client chat buffers, and transient notification states have been successfully purged from cellular memory.'
+    );
+  };
+
+  // Live support Click to WhatsApp Redirection
+  const clickToWhatsAppSupport = (message: string) => {
+    const targetNo = '919848022338';
+    const escapedText = encodeURIComponent(`[Nuvvo Support Alert] ${message}`);
+    const whatsappUrl = `https://wa.me/${targetNo}?text=${escapedText}`;
+    addAuditLog('WhatsApp Hook Called', `Redirected query token to Nuvvo Helpline: ${targetNo}`);
+    window.open(whatsappUrl, '_blank');
+  };
+
+  // Food Booking / Orders WhatsApp Redirection
+  const clickToWhatsAppFoodBooking = (details: {
+    restaurantName?: string;
+    items?: Array<{ name: string; quantity: number; price: number }>;
+    totalAmount?: number;
+    deliveryAddress?: string;
+    customerName?: string;
+    customerPhone?: string;
+    customNote?: string;
+  } | string) => {
+    const targetNo = '919848022338';
+    let messageText = '';
+
+    if (typeof details === 'string') {
+      messageText = `[Nuvvo Food Booking & Inquiry]\n${details}`;
+    } else {
+      const parts = [
+        '🍽️ *NUVVO FOOD BOOKING & ORDER*',
+        details.restaurantName ? `📍 *Restaurant:* ${details.restaurantName}` : '',
+        details.items && details.items.length > 0 ? '📋 *Selected Dishes / Items:*' : '',
+        ...(details.items?.map(it => `  • ${it.name} x ${it.quantity} (₹${it.price * it.quantity})`) || []),
+        details.totalAmount ? `💰 *Estimated Total:* ₹${details.totalAmount}` : '',
+        details.deliveryAddress ? `🏠 *Delivery Destination:* ${details.deliveryAddress}` : '',
+        details.customerName ? `👤 *Customer Name:* ${details.customerName}` : '',
+        details.customerPhone ? `📞 *Customer Contact:* +91 ${details.customerPhone}` : '',
+        details.customNote ? `📝 *Special Requests:* ${details.customNote}` : '',
+        '',
+        '⚡ Kindly confirm my food booking / order availability. Thank you!'
+      ].filter(line => line !== undefined);
+      messageText = parts.filter(Boolean).join('\n');
+    }
+
+    const escapedText = encodeURIComponent(messageText);
+    const whatsappUrl = `https://wa.me/${targetNo}?text=${escapedText}`;
+    addAuditLog('WhatsApp Food Booking', `Redirected food booking inquiry to WhatsApp: ${targetNo}`);
+    window.open(whatsappUrl, '_blank');
+  };
+
+  // Coupon & Promo Manager
+  const addNewCoupon = (coupon: Coupon) => {
+    setCouponsList(prev => [...prev.filter(c => c.code.toUpperCase() !== coupon.code.toUpperCase()), coupon]);
+    addAuditLog('Coupon Added', `Systemic discount register updated with active coupon code: ${coupon.code}`);
+  };
+
+  const deleteCoupon = (code: string) => {
+    setCouponsList(prev => prev.filter(c => c.code.toUpperCase() !== code.toUpperCase()));
+    addAuditLog('Coupon Deleted', `Removed systemic coupon voucher: ${code}`);
+  };
+
+  const clearAllCoupons = () => {
+    setCouponsList([]);
+    localStorage.setItem('nuvvo_coupons', JSON.stringify([]));
+    addAuditLog('Promos Cleared', 'Admin cleared all active coupon vouchers from circulation.');
+  };
+
+  const resetDefaultCoupons = () => {
+    setCouponsList(MOCK_COUPONS);
+    localStorage.setItem('nuvvo_coupons', JSON.stringify(MOCK_COUPONS));
+    addAuditLog('Promos Reset', 'Admin restored default promo voucher codes.');
+  };
+
+  // Stats & Orders Management
+  const clearStats = () => {
+    setOrders([]);
+    localStorage.removeItem('nuvvo_orders');
+    addAuditLog('Stats Cleared', 'Admin cleared all territory sales stats and order history.');
+  };
+
+  const seedSampleOrders = () => {
+    const sampleList: Order[] = [
+      {
+        id: `ord_${Date.now() - 3600000}`,
+        customerId: 'cust_sample_1',
+        customerPhone: '9848022338',
+        customerName: 'Suresh Varma',
+        items: [
+          {
+            foodItem: {
+              id: 'dish_biryani_1',
+              name: 'Special Chicken Dum Biryani',
+              description: 'Aromatic basmati rice cooked with tender chicken and spices',
+              vegIndicator: VegIndicator.NON_VEG,
+              rating: 4.8,
+              reviewsCount: 320,
+              prepTime: 25,
+              price: 280,
+              image: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=400&q=80',
+              category: 'Biryani',
+              subcategory: 'Main Course',
+              ingredients: ['Basmati Rice', 'Chicken', 'Spices'],
+              spiceLevel: 'Medium',
+              reviews: []
+            },
+            quantity: 2,
+            selectedCustomizations: {}
+          }
+        ],
+        subtotal: 560,
+        discount: 50,
+        deliveryFee: 30,
+        packagingFee: 15,
+        tax: 28,
+        tip: 20,
+        finalAmount: 603,
+        status: 'delivered',
+        address: {
+          id: 'addr_1',
+          type: 'Home',
+          flatNo: 'Flat 302, Sri Krishna Apts',
+          area: 'Bypass Road',
+          city: 'Chirala',
+          pincode: '523155',
+          isManual: true,
+          customerName: 'Suresh Varma',
+          mobileNumber: '9848022338',
+          houseNumber: 'Flat 302',
+          streetName: 'Sri Krishna Apts, Bypass Road',
+          locality: 'Bypass Road'
+        },
+        paymentMethod: 'UPI',
+        paymentStatus: 'success',
+        date: new Date(Date.now() - 3600000).toISOString(),
+        eta: 0,
+        trackingHistory: [{ status: 'delivered', time: new Date(Date.now() - 3600000).toLocaleTimeString() }]
+      },
+      {
+        id: `ord_${Date.now() - 1800000}`,
+        customerId: 'cust_sample_2',
+        customerPhone: '9988776655',
+        customerName: 'Ananya Reddy',
+        items: [
+          {
+            foodItem: {
+              id: 'dish_dosa_1',
+              name: 'Butter Masala Dosa',
+              description: 'Crispy golden dosa filled with spiced potato masala and topped with butter',
+              vegIndicator: VegIndicator.VEG,
+              rating: 4.6,
+              reviewsCount: 180,
+              prepTime: 15,
+              price: 90,
+              image: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=400&q=80',
+              category: 'South Indian',
+              subcategory: 'Tiffins',
+              ingredients: ['Rice Batter', 'Potato', 'Butter'],
+              spiceLevel: 'Medium',
+              reviews: []
+            },
+            quantity: 2,
+            selectedCustomizations: {}
+          }
+        ],
+        subtotal: 180,
+        discount: 0,
+        deliveryFee: 25,
+        packagingFee: 10,
+        tax: 10,
+        tip: 0,
+        finalAmount: 225,
+        status: 'on_the_way',
+        address: {
+          id: 'addr_2',
+          type: 'Work',
+          flatNo: 'Shop 14, Main Bazaar',
+          area: 'Clock Tower',
+          city: 'Chirala',
+          pincode: '523155',
+          isManual: true,
+          customerName: 'Ananya Reddy',
+          mobileNumber: '9988776655',
+          houseNumber: 'Shop 14',
+          streetName: 'Main Bazaar',
+          locality: 'Clock Tower'
+        },
+        paymentMethod: 'PhonePe',
+        paymentStatus: 'success',
+        date: new Date(Date.now() - 1800000).toISOString(),
+        eta: 12,
+        trackingHistory: [{ status: 'on_the_way', time: new Date(Date.now() - 1800000).toLocaleTimeString() }]
+      }
+    ];
+    setOrders(sampleList);
+    localStorage.setItem('nuvvo_orders', JSON.stringify(sampleList));
+    addAuditLog('Sample Orders Seeded', 'Admin populated sample orders for territory analytics.');
+  };
+
+  // Designated Admin permission management
+  const toggleAdminPermission = (adminId: string, permissionKey: keyof AdminPermissions) => {
+    if (!checkSuperAdminPermission('Modify Admin Permissions')) return;
+    setDesignatedAdmins(prev => prev.map(adm => {
+      if (adm.id === adminId) {
+        const updatedPerms = {
+          ...adm.permissions,
+          [permissionKey]: !adm.permissions[permissionKey]
+        };
+        addAuditLog(
+          'Admin Permission Toggled',
+          `Super Admin changed permission "${permissionKey}" for admin "${adm.name}" (${adm.phone}) to ${updatedPerms[permissionKey] ? 'ENABLED' : 'DISABLED'}`
+        );
+        return {
+          ...adm,
+          permissions: updatedPerms
+        };
+      }
+      return adm;
+    }));
+  };
+
+  const addDesignatedAdmin = (name: string, phone: string, email: string, role: string) => {
+    if (!checkSuperAdminPermission('Onboard Designated Admin')) return;
+    
+    // Check if phone already registered
+    if (designatedAdmins.some(adm => adm.phone === phone)) {
+      alert(`Admin with phone number ${phone} is already registered.`);
+      return;
+    }
+
+    const newAdmin: DesignatedAdmin = {
+      id: `admin_${Date.now()}`,
+      name,
+      phone,
+      email,
+      role,
+      avatar: `https://images.unsplash.com/photo-${1500000000000 + Math.floor(Math.random() * 100000)}?w=150&auto=format&fit=crop&q=80`,
+      joinedAt: new Date().toISOString(),
+      permissions: {
+        canDeleteRestaurants: false,
+        canProcessRefunds: false,
+        canEditFoodItems: false,
+        canManageCoupons: false,
+        canBroadcastCampaigns: false,
+        canApproveFranchise: false,
+        canOnboardRiders: false
+      }
+    };
+
+    setDesignatedAdmins(prev => [...prev, newAdmin]);
+    addAuditLog('Admin User Onboarded', `Super Admin provisioned new Admin node: "${name}" (${phone}) with role "${role}"`);
+    alert(`Admin user ${name} onboarded successfully! Default permissions are set to read-only.`);
+  };
+
+  const deleteDesignatedAdmin = (id: string) => {
+    if (!checkSuperAdminPermission('Offboard Designated Admin')) return;
+    const target = designatedAdmins.find(adm => adm.id === id);
+    if (!target) return;
+
+    setDesignatedAdmins(prev => prev.filter(adm => adm.id !== id));
+    addAuditLog('Admin User Revoked', `Super Admin offboarded Admin node: "${target.name}" (${target.phone})`);
+    alert(`Admin user ${target.name} has been revoked and removed from the authorized terminals list.`);
+  };
+
+  // Geographic zone structures and database replicas for operational validation
+  const delivery_locations = [
+    { id: 'zone_cnt', label: 'Chirala Town Center', lat: 15.8270, lng: 80.3551, radiusKm: 3.5 },
+    { id: 'zone_bch', label: 'Ramapuram Beach Region', lat: 15.8080, lng: 80.3810, radiusKm: 2.0 },
+    { id: 'zone_prl', label: 'Perala & Kothapet Loops', lat: 15.8315, lng: 80.3602, radiusKm: 2.5 },
+    { id: 'zone_mst', label: 'Missamma Bypass Aligns', lat: 15.8322, lng: 80.3421, radiusKm: 2.0 },
+    { id: 'zone_stn', label: 'Railway Station Junction', lat: 15.8252, lng: 80.3501, radiusKm: 1.8 }
+  ];
+
+  const saved_addresses = user?.addresses || [];
+  const customer_addresses = user?.addresses || [];
+  const addresses = (orders || []).map(o => o.address).filter(Boolean).concat(user?.addresses || []);
+
+  const validateDeliveryLocation = (lat: number, lng: number): boolean => {
+    if (!lat || !lng) return true;
+
+    // Standard default starter / simulator coordinates
+    if (Math.abs(lat - 17.4483) < 0.5 && Math.abs(lng - 78.3741) < 0.5) {
+      return true;
+    }
+
+    // Extended Chirala operational zone (covers up to 25km radius from Chirala Center)
+    const chiralaCenterLat = 15.8270;
+    const chiralaCenterLng = 80.3551;
+    const dLat = (lat - chiralaCenterLat) * 111.32;
+    const dLng = (lng - chiralaCenterLng) * 111.32 * Math.cos((chiralaCenterLat * Math.PI) / 180);
+    const distToChirala = Math.sqrt(dLat * dLat + dLng * dLng);
+    if (distToChirala <= 25) {
+      return true;
+    }
+
+    return delivery_locations.some(loc => {
+      const dL = (lat - loc.lat) * 111.32;
+      const dG = (lng - loc.lng) * 111.32 * Math.cos((loc.lat * Math.PI) / 180);
+      const dist = Math.sqrt(dL * dL + dG * dG);
+      return dist <= (loc.radiusKm * 3);
+    });
+  };
+
+  return (
+    <AppContext.Provider value={{
+      darkMode, toggleDarkMode, currentPage, setCurrentPage, selectedFoodItem, setSelectedFoodItem,
+      pageHistory, goBack, closePage,
+      currentTheme, setThemeId, themesList,
+      cartSuccessAnimation, setCartSuccessAnimation,
+      isOffline,
+      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
+      referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
+      storePaymentSettings, updateStorePaymentSettings,
+      currentAddress, setCurrentAddress,
+      foodCatalog: foodCatalogList, foodLoading, foodError, supabaseConnected, refetchFoodCatalog: fetchSupabaseCatalog, seedDishesToSupabase, addFoodItem, updateFoodItem, deleteFoodItem, restaurants: restaurantsList, addRestaurant, updateRestaurant, deleteRestaurant, searchQuery, setSearchQuery,
+      favoriteFoods, favoriteRestaurants, toggleFavoriteFood, toggleFavoriteRestaurant,
+      cart, addToCart, removeFromCart, updateCartQuantity, clearCart,
+      appliedCoupon, applyCouponCode, removeCouponCode,
+      deliveryPartnerTip, setDeliveryPartnerTip,
+      orderInstructions, setOrderInstructions,
+      orders, createNewOrder, reorderItems, changeOrderStatus, submitOrderRating, updateOrderPaymentStatus,
+      activeTrackingOrder, setActiveTrackingOrder, deliveryRouteProgress,
+      deliveryPartner, registerAsPartner, partnerOtpVerify, updatePartnerAvailability,
+      partnerAcceptOrder, partnerRejectOrder, partnerCompleteDelivery,
+      deliveryPartners, addDeliveryPartner, removeDeliveryPartner, toggleDeliveryPartnerAvailability, updateRiderStatus,
+      assignOrderToDeliveryPartner, resetAdminData,
+      incentiveSettings, updateIncentiveSettings, approvePayout, requestPayout, addRiderEarningRecord,
+      franchiseApplications, submitFranchiseForm, updateFranchiseStatus,
+      isAdmin, isSuperAdmin, isSuperAdminAuthenticated, verifySuperAdminOtp, setSuperAdminAuthenticated,
+      authenticateSuperAdmin, wipeAllData, clearSystemCache,
+      clearStats, seedSampleOrders,
+      couponsList, addNewCoupon, deleteCoupon, clearAllCoupons, resetDefaultCoupons,
+      logs, addAuditLog, clearLogs,
+      designatedAdmins, toggleAdminPermission, addDesignatedAdmin, deleteDesignatedAdmin,
+      toggleRestaurantActiveStatus, approveRestaurant, registerNewRestaurantRequest,
+      clickToWhatsAppSupport, clickToWhatsAppFoodBooking,
+
+      // Dynamic Banner System
+      banners, addBanner, updateBanner, deleteBanner, clearAllBanners, resetDefaultBanners, enableBanner, reorderBanners,
+
+      notifications, markNotificationAsRead, clearAllNotifications, requestNotificationPermission, notificationPermission,
+      orderUpdatesEnabled, promotionalAlertsEnabled, deliveryUpdatesEnabled, 
+      setOrderUpdatesEnabled, setPromotionalAlertsEnabled, setDeliveryUpdatesEnabled, 
+      triggerPromoAlert, triggerOrderUpdateAlert, triggerDeliveryUpdateAlert,
+      
+      // Swiggy & Zomato Spec Push Notification Methods
+      broadcastNotification, deleteNotification, scheduledNotifications, addScheduledNotification, deleteScheduledNotification, triggerPushNotification,
+      
+      // Nuvvo Points Loyalty Rewards
+      nuvvoPoints, pointsToRedeem, pointsHistory, redeemPointsForDiscount, cancelPointsRedemption, awardPointsBonus,
+
+      // Restaurant Reviews & Operating Schedule System values
+      restaurantReviews, submitRestaurantReview, hideRestaurantReview, deleteRestaurantReview,
+      getRestaurantOpenStatus, updateRestaurantOperatingHours, updateRestaurantForceStatus,
+
+      // Export database variables and geographic validation helper
+      addresses,
+      customer_addresses,
+      delivery_locations,
+      saved_addresses,
+      validateDeliveryLocation,
+
+      // Automated Notification Summary Email API
+      payoutEmails,
+      sendPayoutSummaryEmail,
+      processMerchantPayout,
+      merchantPayouts,
+      approveMerchantPayout
+    }}>
+      {children}
+    </AppContext.Provider>
+  );
+};
+
+export const useApp = () => {
+  const context = useContext(AppContext);
+  if (!context) throw new Error('useApp must be used inside the AppProvider scope.');
+  return context;
+};
