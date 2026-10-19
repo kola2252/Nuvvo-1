@@ -9,7 +9,7 @@ import {
   UtensilsCrossed, Building2, Store, Plus, Edit2, Trash2, CheckCircle2, 
   XCircle, Search, RefreshCw, AlertCircle, Sparkles, Image as ImageIcon,
   MapPin, Phone, DollarSign, Tag, ShieldCheck, X, Check,
-  Bike, RotateCcw, AlertTriangle, Clock, UserPlus
+  Bike, RotateCcw, AlertTriangle, Clock, UserPlus, Download
 } from 'lucide-react';
 
 interface HotelItem {
@@ -46,12 +46,54 @@ export default function AdminCatalogManager() {
   const [loading, setLoading] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [seedStatus, setSeedStatus] = useState<{ type: 'success' | 'error' | 'info'; text: string; details?: string } | null>(null);
+
   // Sync dishes list when central Supabase foodCatalog updates
   useEffect(() => {
     if (foodCatalog) {
       setDishesList(foodCatalog);
     }
   }, [foodCatalog]);
+
+  const handleSeedMenu = async () => {
+    if (!confirm('Populate Supabase public.food_items with the initial curated catalog dishes? Any existing custom dishes or edits will be preserved.')) {
+      setSeedStatus({ type: 'info', text: 'Seeding operation was cancelled by administrator.' });
+      return;
+    }
+
+    setIsSeeding(true);
+    setSeedStatus({ type: 'info', text: 'Connecting to Supabase public.food_items and inserting menu records...' });
+
+    try {
+      const res = await seedDishesToSupabase();
+      if (res.success) {
+        setSeedStatus({
+          type: 'success',
+          text: res.message || `Successfully seeded ${res.count} dishes into Supabase public.food_items!`
+        });
+        showFeedback(res.message || `Successfully seeded ${res.count} dishes into Supabase!`);
+        await refetchFoodCatalog();
+        await fetchDishes();
+      } else {
+        setSeedStatus({
+          type: 'error',
+          text: 'Database seeding failed.',
+          details: res.error || 'Server or Supabase rejected the request.'
+        });
+        showFeedback(res.error || 'Failed to seed dishes into Supabase', 'error');
+      }
+    } catch (err: any) {
+      setSeedStatus({
+        type: 'error',
+        text: 'Seeding exception encountered.',
+        details: err?.message || 'Network exception'
+      });
+      showFeedback(err?.message || 'Failed to seed dishes', 'error');
+    } finally {
+      setIsSeeding(false);
+    }
+  };
 
 
   // Search filter
@@ -137,24 +179,40 @@ export default function AdminCatalogManager() {
   // --- DISH ACTIONS (DIRECT SUPABASE public.food_items INTEGRATION) ---
   const handleSaveDish = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!editingItem?.name || !editingItem.name.trim()) {
+      showFeedback('Dish name is required.', 'error');
+      return;
+    }
+
+    const priceNum = Number(editingItem.price);
+    if (isNaN(priceNum) || priceNum <= 0) {
+      showFeedback('A valid positive price is required.', 'error');
+      return;
+    }
+
     setLoading(true);
     try {
       const isEdit = modalMode === 'edit' && editingItem?.id;
 
+      const payload = {
+        name: editingItem.name.trim(),
+        description: editingItem.description ? String(editingItem.description).trim() : '',
+        price: priceNum,
+        category: editingItem.category ? String(editingItem.category).trim() : 'Biryani & Rice',
+        subcategory: editingItem.subcategory ? String(editingItem.subcategory).trim() : 'Chef Special',
+        image: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+        image_url: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+        isAvailable: editingItem.isAvailable !== false,
+        is_available: editingItem.isAvailable !== false,
+        vegIndicator: editingItem.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
+        restaurantId: editingItem.restaurantId || restaurantsList[0]?.id || 'rest_1',
+        prepTime: Number(editingItem.prepTime) || 20,
+        spiceLevel: editingItem.spiceLevel || 'Medium'
+      };
+
       if (isEdit) {
         // Update in Supabase
-        const res = await updateFoodItem(editingItem.id, {
-          name: editingItem.name,
-          description: editingItem.description,
-          price: Number(editingItem.price),
-          category: editingItem.category,
-          image: editingItem.image,
-          image_url: editingItem.image,
-          isAvailable: editingItem.isAvailable !== false,
-          is_available: editingItem.isAvailable !== false,
-          vegIndicator: editingItem.vegIndicator,
-          restaurantId: editingItem.restaurantId
-        });
+        const res = await updateFoodItem(editingItem.id, payload);
 
         if (!res?.success) {
           showFeedback(res?.error || 'Failed to update dish in Supabase public.food_items', 'error');
@@ -163,23 +221,11 @@ export default function AdminCatalogManager() {
       } else {
         // Save new dish to Supabase public.food_items
         const res = await addFoodItem({
-          name: editingItem.name,
-          description: editingItem.description,
-          price: Number(editingItem.price),
-          category: editingItem.category,
-          image: editingItem.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
-          image_url: editingItem.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
-          isAvailable: editingItem.isAvailable !== false,
-          is_available: editingItem.isAvailable !== false,
-          vegIndicator: editingItem.vegIndicator,
+          ...payload,
           rating: 4.8,
           reviewsCount: 15,
-          prepTime: 20,
-          subcategory: 'Chef Special',
           ingredients: ['Fresh regional ingredients'],
-          spiceLevel: 'Medium',
-          reviews: [],
-          restaurantId: editingItem.restaurantId || undefined
+          reviews: []
         });
 
         if (!res?.success) {
@@ -582,11 +628,70 @@ export default function AdminCatalogManager() {
           <Plus className="w-3.5 h-3.5" />
           <span>Add New {activeTab === 'dishes' ? 'Dish' : activeTab === 'restaurants' ? 'Restaurant' : 'Hotel'}</span>
         </button>
+
+        {activeTab === 'dishes' && (
+          <button
+            type="button"
+            disabled={isSeeding || loading || foodLoading}
+            onClick={handleSeedMenu}
+            title="Seed Menu to Supabase"
+            className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-black text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+          >
+            {isSeeding ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>{isSeeding ? 'Seeding Database...' : 'Seed Menu to Supabase'}</span>
+          </button>
+        )}
       </div>
+
+      {/* Real-time Seed Status Banner */}
+      {seedStatus && (
+        <div className={`p-4 rounded-2xl text-xs font-bold border flex items-start justify-between gap-3 animate-fadeIn ${
+          seedStatus.type === 'success'
+            ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800'
+            : seedStatus.type === 'error'
+            ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800'
+            : 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800'
+        }`}>
+          <div className="flex items-start gap-2.5">
+            {seedStatus.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
+            {seedStatus.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />}
+            {seedStatus.type === 'info' && <RefreshCw className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 animate-spin" />}
+            <div>
+              <p className="font-extrabold text-[12px]">{seedStatus.text}</p>
+              {seedStatus.details && (
+                <p className="text-[11px] font-mono mt-1 opacity-90 break-words leading-relaxed">{seedStatus.details}</p>
+              )}
+            </div>
+          </div>
+          <button 
+            type="button" 
+            onClick={() => setSeedStatus(null)}
+            className="p-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-lg shrink-0 cursor-pointer text-xs"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* --- DISHES LIST VIEW (SUPABASE CENTRALIZED) --- */}
       {activeTab === 'dishes' && (
         <div className="space-y-2.5">
+          <div className="flex items-center justify-between text-[11px] px-1 font-semibold text-zinc-500">
+            <span className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${supabaseConnected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              {supabaseConnected 
+                ? `Supabase Connected (${dishesList.length} items cataloged)` 
+                : 'Offline / Cached Catalog'}
+            </span>
+            <span className="text-[10px] font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full">
+              table: public.food_items
+            </span>
+          </div>
+
           {foodLoading ? (
             <div className="text-center py-12 bg-slate-50 dark:bg-zinc-800/40 rounded-3xl border border-slate-100 dark:border-zinc-800 p-6 flex flex-col items-center justify-center gap-2">
               <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
@@ -601,18 +706,12 @@ export default function AdminCatalogManager() {
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
-                    onClick={async () => {
-                      if (!confirm('Populate Supabase public.food_items with the initial curated menu items?')) return;
-                      const res = await seedDishesToSupabase();
-                      if (res.success) {
-                        showFeedback(`Successfully seeded ${res.count} dishes into Supabase!`);
-                      } else {
-                        showFeedback(res.error || 'Failed to seed dishes', 'error');
-                      }
-                    }}
-                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-black text-xs rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                    disabled={isSeeding}
+                    onClick={handleSeedMenu}
+                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-black text-xs rounded-xl shadow-xs transition active:scale-95 cursor-pointer disabled:opacity-50"
                   >
-                    📥 Seed Initial Menu to Supabase
+                    {isSeeding ? <RefreshCw className="w-3.5 h-3.5 inline mr-1 animate-spin" /> : <Download className="w-3.5 h-3.5 inline mr-1" />}
+                    <span>Seed Menu to Supabase</span>
                   </button>
                   <button
                     type="button"
@@ -678,7 +777,24 @@ export default function AdminCatalogManager() {
                     </button>
                     <button
                       onClick={() => {
-                        setEditingItem({ ...dish });
+                        setEditingItem({
+                          id: dish.id,
+                          name: dish.name || '',
+                          description: dish.description || '',
+                          price: Number(dish.price) || 0,
+                          category: dish.category || 'Biryani & Rice',
+                          subcategory: dish.subcategory || 'Chef Special',
+                          restaurantId: dish.restaurantId || dish.restaurant_id || restaurantsList[0]?.id || '',
+                          restaurantName: dish.restaurantName || restaurantsList.find(r => r.id === (dish.restaurantId || dish.restaurant_id))?.name || '',
+                          vegIndicator: dish.vegIndicator || dish.veg_indicator || 'Veg',
+                          image: dish.image || dish.image_url || '',
+                          image_url: dish.image_url || dish.image || '',
+                          isAvailable: dish.isAvailable !== false && dish.is_available !== false,
+                          prepTime: Number(dish.prepTime || dish.prep_time) || 20,
+                          spiceLevel: dish.spiceLevel || dish.spice_level || 'Medium',
+                          rating: Number(dish.rating) || 4.8,
+                          reviewsCount: Number(dish.reviewsCount || dish.reviews_count) || 12
+                        });
                         setModalMode('edit');
                       }}
                       title="Edit Dish"
@@ -1034,6 +1150,17 @@ export default function AdminCatalogManager() {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Description</label>
+                  <textarea
+                    rows={2}
+                    value={editingItem.description || ''}
+                    onChange={e => setEditingItem({ ...editingItem, description: e.target.value })}
+                    placeholder="Preparation style, special ingredients, or chef details..."
+                    className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-medium text-xs resize-none"
+                  />
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Price (₹) *</label>
@@ -1063,6 +1190,32 @@ export default function AdminCatalogManager() {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Subcategory / Tag</label>
+                    <input
+                      type="text"
+                      value={editingItem.subcategory || ''}
+                      onChange={e => setEditingItem({ ...editingItem, subcategory: e.target.value })}
+                      placeholder="e.g. Signature Dum, Coastal"
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Spice Level</label>
+                    <select
+                      value={editingItem.spiceLevel || 'Medium'}
+                      onChange={e => setEditingItem({ ...editingItem, spiceLevel: e.target.value })}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-bold"
+                    >
+                      <option value="Mild">Mild</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Spicy">Spicy</option>
+                      <option value="Extra Spicy">Extra Spicy</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Associated Restaurant / Hotel *</label>
                   <select
@@ -1083,15 +1236,28 @@ export default function AdminCatalogManager() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Image URL</label>
-                  <input
-                    type="url"
-                    value={editingItem.image || ''}
-                    onChange={e => setEditingItem({ ...editingItem, image: e.target.value })}
-                    placeholder="https://..."
-                    className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-mono text-[11px]"
-                  />
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Image URL</label>
+                    <input
+                      type="url"
+                      value={editingItem.image || ''}
+                      onChange={e => setEditingItem({ ...editingItem, image: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-mono text-[11px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10.5px] font-bold text-zinc-500 mb-1">Prep Time (mins)</label>
+                    <input
+                      type="number"
+                      min="5"
+                      max="120"
+                      value={editingItem.prepTime || 20}
+                      onChange={e => setEditingItem({ ...editingItem, prepTime: Number(e.target.value) })}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-bold"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 pt-1">

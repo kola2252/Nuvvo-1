@@ -12,7 +12,7 @@ import NuvvoLogo from './NuvvoLogo';
 import { translations } from '../utils/translations';
 
 export default function Auth() {
-  const { loginWithPhone, verifyOtpAndLogin, completeUserProfile, user, setCurrentPage, language, setLanguage } = useApp();
+  const { loginWithPhone, verifyOtpAndLogin, completeUserProfile, user, setCurrentPage, language, setLanguage, otpCode } = useApp();
 
   const t = translations[language] || translations.en;
 
@@ -41,18 +41,18 @@ export default function Auth() {
     return () => clearInterval(interval);
   }, [step, resendTimer]);
 
-  // Simulate auto-detecting SMS OTP
+  // Simulate auto-detecting SMS OTP from server-issued code
   useEffect(() => {
-    if (step === 'otp') {
+    if (step === 'otp' && otpCode) {
       const detectTimer = setTimeout(() => {
-        setOtpValue('5555');
+        setOtpValue(otpCode);
         setSmsDetected(true);
-      }, 2000);
+      }, 1200);
       return () => clearTimeout(detectTimer);
-    } else {
+    } else if (step !== 'otp') {
       setSmsDetected(false);
     }
-  }, [step]);
+  }, [step, otpCode]);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();

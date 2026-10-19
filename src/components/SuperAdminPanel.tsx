@@ -341,7 +341,7 @@ export default function SuperAdminPanel() {
 
   const handleVerifyOtp = (e: React.FormEvent) => {
     e.preventDefault();
-    if (otpCode === '9063' || otpCode === '5555') {
+    if (otpCode === '9063') {
       authenticateSuperAdmin();
       setErrorMsg('');
     } else {

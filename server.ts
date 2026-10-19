@@ -6,7 +6,11 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { FOOD_CATALOG, RESTAURANTS } from "./src/data/catalog";
-import { createServerClient } from "./src/utils/supabase/server";
+import { 
+  getAdminSupabaseServerClient, 
+  getPublicSupabaseServerClient, 
+  createServerClient 
+} from "./src/utils/supabase/server";
 
 dotenv.config();
 
@@ -28,7 +32,32 @@ interface ServerSession {
   role: 'normal_user' | 'admin' | 'super_admin';
   createdAt: number;
 }
-const serverSessions = new Map<string, ServerSession>();
+const SESSIONS_FILE = path.join(process.cwd(), '.server_sessions.json');
+
+function loadSessions(): Map<string, ServerSession> {
+  const map = new Map<string, ServerSession>();
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+      for (const [k, v] of Object.entries(data)) {
+        map.set(k, v as ServerSession);
+      }
+    }
+  } catch {}
+  return map;
+}
+
+function persistSessions(map: Map<string, ServerSession>) {
+  try {
+    const obj: Record<string, ServerSession> = {};
+    for (const [k, v] of map.entries()) {
+      obj[k] = v;
+    }
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj), 'utf8');
+  } catch {}
+}
+
+const serverSessions = loadSessions();
 
 interface HotelRecord {
   id: string;
@@ -496,10 +525,79 @@ Current User Query: ${message}`;
   });
 
   // --- SECURE AUTHENTICATION & ROLE-BASED ACCESS CONTROL ---
+  interface ServerOtp {
+    codeHash: string;
+    salt: string;
+    expiresAt: number;
+    attempts: number;
+    createdAt: number;
+  }
+  const serverOtpStore = new Map<string, ServerOtp>();
+
+  // Periodically clean up expired OTP records
+  setInterval(() => {
+    const now = Date.now();
+    for (const [phone, record] of serverOtpStore.entries()) {
+      if (now > record.expiresAt) {
+        serverOtpStore.delete(phone);
+      }
+    }
+  }, 5 * 60 * 1000);
+
+  // Securely generate, hash, and issue dynamic single-use OTP
+  app.post("/api/auth/send-otp", (req, res) => {
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ success: false, error: "Phone number is required." });
+    }
+
+    const digits = String(phone).replace(/\D/g, '');
+    let cleanPhone = digits;
+    if (digits.length === 12 && digits.startsWith('91')) cleanPhone = digits.slice(2);
+    else if (digits.length === 11 && digits.startsWith('0')) cleanPhone = digits.slice(1);
+
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
+    }
+
+    // Rate limiting: enforce minimum 30 seconds interval per phone
+    const existing = serverOtpStore.get(cleanPhone);
+    if (existing && (Date.now() - existing.createdAt < 30 * 1000)) {
+      const waitSec = Math.ceil((30 * 1000 - (Date.now() - existing.createdAt)) / 1000);
+      return res.status(429).json({
+        success: false,
+        error: `Please wait ${waitSec} seconds before requesting a new OTP.`
+      });
+    }
+
+    // Generate cryptographically secure 4-digit code (1000-9999)
+    const generatedOtp = String(crypto.randomInt(1000, 10000));
+    const salt = crypto.randomBytes(16).toString('hex');
+    const codeHash = crypto.pbkdf2Sync(generatedOtp, salt, 1000, 32, 'sha256').toString('hex');
+
+    serverOtpStore.set(cleanPhone, {
+      codeHash,
+      salt,
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes expiration
+      attempts: 0,
+      createdAt: Date.now()
+    });
+
+    console.log(`[AUTH] Dynamic OTP issued for phone ending in ...${cleanPhone.slice(-4)}`);
+
+    // In dev / non-production mode, supply devOtp for smooth verification testing
+    const isDev = process.env.NODE_ENV !== 'production';
+    return res.json({
+      success: true,
+      message: "Security OTP generated and dispatched successfully.",
+      ...(isDev ? { devOtp: generatedOtp } : {})
+    });
+  });
+
   app.post("/api/auth/verify-otp", (req, res) => {
     const { phone, otp, requestedRole } = req.body;
-    if (!phone || otp !== '5555') {
-      return res.status(400).json({ error: "Invalid OTP credentials." });
+    if (!phone || !otp) {
+      return res.status(400).json({ success: false, error: "Phone number and OTP code are required." });
     }
 
     // Normalize phone number on the server
@@ -507,6 +605,46 @@ Current User Query: ${message}`;
     let cleanPhone = digits;
     if (digits.length === 12 && digits.startsWith('91')) cleanPhone = digits.slice(2);
     else if (digits.length === 11 && digits.startsWith('0')) cleanPhone = digits.slice(1);
+
+    const record = serverOtpStore.get(cleanPhone);
+    if (!record) {
+      return res.status(400).json({
+        success: false,
+        error: "No active OTP request found for this phone number. Please click 'Get OTP' to request a new code."
+      });
+    }
+
+    if (Date.now() > record.expiresAt) {
+      serverOtpStore.delete(cleanPhone);
+      return res.status(400).json({
+        success: false,
+        error: "The OTP has expired (5 minute validity). Please request a new code."
+      });
+    }
+
+    if (record.attempts >= 5) {
+      serverOtpStore.delete(cleanPhone);
+      return res.status(429).json({
+        success: false,
+        error: "Too many failed attempts. This OTP has been invalidated. Please request a new one."
+      });
+    }
+
+    // Timing-safe cryptographic comparison of PBKDF2 hash
+    const inputHash = crypto.pbkdf2Sync(String(otp).trim(), record.salt, 1000, 32, 'sha256').toString('hex');
+    const isMatch = crypto.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash));
+
+    if (!isMatch) {
+      record.attempts += 1;
+      const remaining = 5 - record.attempts;
+      return res.status(400).json({
+        success: false,
+        error: `The verification OTP code is incorrect. ${remaining} attempts remaining.`
+      });
+    }
+
+    // Invalidate immediately upon successful verification (single-use token)
+    serverOtpStore.delete(cleanPhone);
 
     // Secure server-side check against protected administrator configuration
     let role: 'normal_user' | 'admin' | 'super_admin' = 'normal_user';
@@ -526,6 +664,7 @@ Current User Query: ${message}`;
       role,
       createdAt: Date.now()
     });
+    persistSessions(serverSessions);
 
     // Return the authorization role and token without ever revealing the administrator phone
     res.json({
@@ -551,6 +690,7 @@ Current User Query: ${message}`;
     }
     res.json({
       role: session.role,
+      phone: session.phone,
       isAuthorizedAdmin: session.role === 'admin' || session.role === 'super_admin'
     });
   });
@@ -751,7 +891,8 @@ Current User Query: ${message}`;
   // --- DISHES MANAGEMENT APIS (SUPABASE public.food_items INTEGRATED) ---
   app.get("/api/dishes", async (_req, res) => {
     try {
-      const { data, error } = await supabaseServer
+      const publicClient = getPublicSupabaseServerClient();
+      const { data, error } = await publicClient
         .from('food_items')
         .select('*')
         .order('created_at', { ascending: false });
@@ -794,9 +935,22 @@ Current User Query: ${message}`;
   });
 
   app.post("/api/admin/dishes", requireAdminAuth, async (req, res) => {
-    const { name, description, price, image, image_url, category, subcategory, restaurantId, isAvailable, is_available, vegIndicator, spiceLevel } = req.body;
+    const { 
+      name, description, price, image, image_url, category, subcategory, 
+      restaurantId, restaurant_id, isAvailable, is_available, vegIndicator, veg_indicator,
+      prepTime, prep_time, spiceLevel, spice_level, rating, reviewsCount, reviews_count
+    } = req.body;
+
     if (!name || price === undefined) {
       return res.status(400).json({ success: false, error: "Dish name and price are required." });
+    }
+
+    const { client: adminClient, error: clientErr } = getAdminSupabaseServerClient();
+    if (!adminClient || clientErr) {
+      return res.status(503).json({
+        success: false,
+        error: clientErr || "Privileged database access is unconfigured on the server. SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY required."
+      });
     }
 
     const payload = {
@@ -807,16 +961,16 @@ Current User Query: ${message}`;
       subcategory: String(subcategory || 'Chef Special').trim(),
       image_url: image_url || image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
       is_available: isAvailable !== false && is_available !== false,
-      veg_indicator: vegIndicator === 'Veg' || vegIndicator === 'veg' ? 'Veg' : 'NonVeg',
-      rating: 4.8,
-      reviews_count: 12,
-      prep_time: 20,
-      spice_level: spiceLevel || 'Medium',
-      restaurant_id: restaurantId || 'rest_1'
+      veg_indicator: (veg_indicator || vegIndicator) === 'Veg' || (veg_indicator || vegIndicator) === 'veg' ? 'Veg' : 'NonVeg',
+      rating: Number(rating) || 4.8,
+      reviews_count: Number(reviews_count || reviewsCount) || 12,
+      prep_time: Number(prep_time || prepTime) || 20,
+      spice_level: spice_level || spiceLevel || 'Medium',
+      restaurant_id: restaurant_id || restaurantId || 'rest_1'
     };
 
     try {
-      const { data, error } = await supabaseServer
+      const { data, error } = await adminClient
         .from('food_items')
         .insert([payload])
         .select();
@@ -853,25 +1007,49 @@ Current User Query: ${message}`;
   app.put("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
     const { id } = req.params;
 
+    const { client: adminClient, error: clientErr } = getAdminSupabaseServerClient();
+    if (!adminClient || clientErr) {
+      return res.status(503).json({
+        success: false,
+        error: clientErr || "Privileged database access is unconfigured on the server. SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY required."
+      });
+    }
+
     const payload: any = {};
-    if (req.body.name !== undefined) payload.name = req.body.name;
-    if (req.body.description !== undefined) payload.description = req.body.description;
+    if (req.body.name !== undefined) payload.name = String(req.body.name).trim();
+    if (req.body.description !== undefined) payload.description = String(req.body.description).trim();
     if (req.body.price !== undefined) payload.price = Number(req.body.price);
-    if (req.body.category !== undefined) payload.category = req.body.category;
-    if (req.body.subcategory !== undefined) payload.subcategory = req.body.subcategory;
+    if (req.body.category !== undefined) payload.category = String(req.body.category).trim();
+    if (req.body.subcategory !== undefined) payload.subcategory = String(req.body.subcategory).trim();
     if (req.body.image !== undefined || req.body.image_url !== undefined) {
       payload.image_url = req.body.image_url || req.body.image;
     }
     if (req.body.isAvailable !== undefined || req.body.is_available !== undefined) {
-      payload.is_available = req.body.is_available !== undefined ? req.body.is_available : req.body.isAvailable;
+      payload.is_available = req.body.is_available !== undefined ? Boolean(req.body.is_available) : Boolean(req.body.isAvailable);
     }
     if (req.body.vegIndicator !== undefined || req.body.veg_indicator !== undefined) {
-      payload.veg_indicator = req.body.veg_indicator || req.body.vegIndicator;
+      const val = req.body.veg_indicator || req.body.vegIndicator;
+      payload.veg_indicator = (val === 'Veg' || val === 'veg') ? 'Veg' : 'NonVeg';
+    }
+    if (req.body.restaurantId !== undefined || req.body.restaurant_id !== undefined) {
+      payload.restaurant_id = req.body.restaurant_id || req.body.restaurantId;
+    }
+    if (req.body.prepTime !== undefined || req.body.prep_time !== undefined) {
+      payload.prep_time = Number(req.body.prep_time || req.body.prepTime);
+    }
+    if (req.body.spiceLevel !== undefined || req.body.spice_level !== undefined) {
+      payload.spice_level = req.body.spice_level || req.body.spiceLevel;
+    }
+    if (req.body.rating !== undefined) {
+      payload.rating = Number(req.body.rating);
+    }
+    if (req.body.reviewsCount !== undefined || req.body.reviews_count !== undefined) {
+      payload.reviews_count = Number(req.body.reviews_count || req.body.reviewsCount);
     }
     payload.updated_at = new Date().toISOString();
 
     try {
-      const { data, error } = await supabaseServer
+      const { data, error } = await adminClient
         .from('food_items')
         .update(payload)
         .eq('id', id)
@@ -905,8 +1083,16 @@ Current User Query: ${message}`;
   app.delete("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
     const { id } = req.params;
 
+    const { client: adminClient, error: clientErr } = getAdminSupabaseServerClient();
+    if (!adminClient || clientErr) {
+      return res.status(503).json({
+        success: false,
+        error: clientErr || "Privileged database access is unconfigured on the server. SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY required."
+      });
+    }
+
     try {
-      const { error } = await supabaseServer
+      const { error } = await adminClient
         .from('food_items')
         .delete()
         .eq('id', id);
@@ -929,42 +1115,79 @@ Current User Query: ${message}`;
   });
 
   app.post("/api/admin/dishes/seed", requireAdminAuth, async (_req, res) => {
+    const { client: adminClient, error: clientErr } = getAdminSupabaseServerClient();
+    if (!adminClient || clientErr) {
+      return res.status(503).json({
+        success: false,
+        error: clientErr || "Privileged database access is unconfigured on the server. SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY required."
+      });
+    }
+
     try {
-      const defaultPool = [...FOOD_CATALOG.slice(0, 25)];
-      const payload = defaultPool.map((item: any) => ({
-        name: item.name,
-        description: item.description || '',
-        price: Number(item.price) || 0,
-        category: item.category || 'Specialty',
-        subcategory: item.subcategory || 'Signature',
-        image_url: item.image || item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
-        is_available: item.isAvailable !== false,
-        veg_indicator: item.vegIndicator === 'veg' || item.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
-        rating: item.rating || 4.7,
-        reviews_count: item.reviewsCount || 15,
-        prep_time: item.prepTime || 20,
-        spice_level: item.spiceLevel || 'Medium',
-        restaurant_id: item.restaurantId || 'rest_1'
-      }));
-
-      const { data, error } = await supabaseServer
+      // 1. Fetch existing dishes to prevent duplicates and preserve admin customizations
+      const { data: existingRows, error: fetchErr } = await adminClient
         .from('food_items')
-        .insert(payload)
-        .select();
+        .select('name');
 
-      if (error) {
-        console.error('Supabase seed error:', error);
-        return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
-          success: false,
-          error: error.message,
-          code: error.code
+      if (fetchErr) {
+        console.error('Supabase seed check error:', fetchErr);
+        return res.status(500).json({ success: false, error: fetchErr.message });
+      }
+
+      const existingNames = new Set((existingRows || []).map((r: any) => String(r.name || '').trim().toLowerCase()));
+
+      const defaultPool = [...FOOD_CATALOG];
+      const payload = defaultPool
+        .map((item: any) => ({
+          name: item.name,
+          description: item.description || '',
+          price: Number(item.price) || 0,
+          category: item.category || 'Specialty',
+          subcategory: item.subcategory || 'Signature',
+          image_url: item.image || item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+          is_available: item.isAvailable !== false,
+          veg_indicator: item.vegIndicator === 'veg' || item.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
+          rating: item.rating || 4.7,
+          reviews_count: item.reviewsCount || 15,
+          prep_time: item.prepTime || 20,
+          spice_level: item.spiceLevel || 'Medium',
+          restaurant_id: item.restaurantId || 'rest_1'
+        }))
+        .filter((item: any) => !existingNames.has(item.name.toLowerCase()));
+
+      if (payload.length === 0) {
+        return res.json({ 
+          success: true, 
+          count: 0, 
+          message: "All initial catalog dishes are already present in Supabase. Existing custom edits and prices were preserved." 
         });
       }
 
-      return res.json({ success: true, count: data?.length || 0 });
+      // Insert in safe batches of 50 to guarantee smooth database execution
+      let insertedCount = 0;
+      const chunkSize = 50;
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const chunk = payload.slice(i, i + chunkSize);
+        const { data, error } = await adminClient
+          .from('food_items')
+          .insert(chunk)
+          .select();
+
+        if (error) {
+          console.error('Supabase seed error:', error);
+          return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
+            success: false,
+            error: error.message,
+            code: error.code
+          });
+        }
+        insertedCount += data?.length || 0;
+      }
+      broadcastCatalogSSE('catalog_seeded', { count: insertedCount });
+      return res.json({ success: true, count: insertedCount, message: `Successfully seeded ${insertedCount} new dishes into Supabase.` });
     } catch (e: any) {
       console.error('Exception in /api/admin/dishes/seed:', e);
-      return res.status(500).json({ success: false, error: e?.message || "Internal server error" });
+      return res.status(500).json({ success: false, error: e?.message || "Internal server error during seeding" });
     }
   });
 

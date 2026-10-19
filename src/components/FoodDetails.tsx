@@ -9,7 +9,7 @@ import { motion } from 'motion/react';
 import { Star, Clock, X, Flame, ShieldAlert, BadgeInfo, CheckCircle, Sparkles, ChevronLeft } from 'lucide-react';
 import { VegIndicator } from '../types';
 
-export default function FoodDetails() {
+function FoodDetails() {
   const { selectedFoodItem, setSelectedFoodItem, addToCart, cart, updateCartQuantity } = useApp();
   const [spice, setSpice] = useState<'None' | 'Medium' | 'High'>('Medium');
   const [extraCheese, setExtraCheese] = useState(false);
@@ -309,3 +309,5 @@ export default function FoodDetails() {
     </div>
   );
 }
+
+export default React.memo(FoodDetails);

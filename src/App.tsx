@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, Suspense, lazy } from 'react';
 import { useApp } from './context/AppContext';
 import { Bell, X, WifiOff, Utensils } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -65,13 +65,25 @@ export default function App() {
     }
   }, [notifications]);
 
-  // Show Splash welcome animation screen at startup
-  if (showSplash) {
-    return <Splash />;
-  }
+  // Memoize toast event handlers
+  const handleToastClick = useCallback(() => {
+    if (!activeToast) return;
+    markNotificationAsRead(activeToast.id);
+    if (activeToast.orderId) {
+      setCurrentPage('orders');
+    } else {
+      setCurrentPage('home');
+    }
+    setActiveToast(null);
+  }, [activeToast, markNotificationAsRead, setCurrentPage]);
 
-  // 3. Main views
-  const renderCurrentPage = () => {
+  const handleToastDismiss = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActiveToast(null);
+  }, []);
+
+  // Memoize rendered active view so App-level toast/cart/notification updates don't cause page re-renders
+  const renderedPage = useMemo(() => {
     if (!user) {
       return <Auth />;
     }
@@ -109,10 +121,14 @@ export default function App() {
       default:
         return <Home />;
     }
-  };
+  }, [user, currentPage, isAdmin, isSuperAdmin]);
+
+  // Show Splash welcome animation screen at startup
+  if (showSplash) {
+    return <Splash />;
+  }
 
   // Determine if we should show standard persistent bottom nav bar
-  // The bottom nav makes sense on Home, Orders/Tracking, Favorites, Cart, Account pages
   const showBottomNav = true;
 
   return (
@@ -132,22 +148,13 @@ export default function App() {
       )}
 
       {/* Real-time Toast push alert banners */}
-      {/* Real-time Toast push alert banners */}
       {activeToast && (
         <motion.div
           initial={{ opacity: 0, y: -80, scale: 0.95, x: '-50%' }}
           animate={{ opacity: 1, y: 0, scale: 1, x: '-50%' }}
           exit={{ opacity: 0, y: -40, scale: 0.95, x: '-50%' }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-          onClick={() => {
-            markNotificationAsRead(activeToast.id);
-            if (activeToast.orderId) {
-              setCurrentPage('orders');
-            } else {
-              setCurrentPage('home');
-            }
-            setActiveToast(null);
-          }}
+          onClick={handleToastClick}
           className="fixed top-4 left-1/2 z-100 w-[92%] max-w-sm bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-orange-500/25 dark:border-orange-500/20 p-4 rounded-3xl shadow-xl shadow-zinc-950/20 flex gap-3 items-start cursor-pointer active:scale-98 transition-all"
         >
           <div className="p-2 bg-orange-500/10 text-orange-500 rounded-2xl relative shrink-0">
@@ -167,10 +174,7 @@ export default function App() {
                 {activeToast.status === 'menu_update' || activeToast.foodId ? '⚡ Live Menu Update' : 'Real-time Order Alert'}
               </span>
               <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveToast(null);
-                }}
+                onClick={handleToastDismiss}
                 className="p-1 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded bg-transparent text-zinc-400 hover:text-zinc-650 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
@@ -201,7 +205,13 @@ export default function App() {
 
       {/* Dynamic Viewport */}
       <main className="w-full">
-        {renderCurrentPage()}
+        <Suspense fallback={
+          <div className="min-h-[70vh] flex flex-col items-center justify-center p-8">
+            <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          {renderedPage}
+        </Suspense>
       </main>
 
       {/* Global Product Customization overlay */}

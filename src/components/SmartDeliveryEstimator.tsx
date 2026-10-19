@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Clock, MapPin, Activity, CloudSun, AlertCircle, Navigation, Info, Sparkles, ThumbsUp } from 'lucide-react';
 import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import { Restaurant, Address } from '../types';
@@ -152,8 +152,11 @@ export default function SmartDeliveryEstimator({ restaurant, currentAddress }: S
   const [apiError, setApiError] = useState<string | null>(null);
 
   // Setup Coordinate points
-  const restaurantCoords = getSeedCoordinates(restaurant.id, 10);
-  const destinationCoords = currentAddress?.gpsCoordinates || getSeedCoordinates(currentAddress?.id || 'default_cust', 25);
+  const restaurantCoords = useMemo(() => getSeedCoordinates(restaurant.id, 10), [restaurant.id]);
+  const addressId = currentAddress?.id || 'default_cust';
+  const destinationCoords = useMemo(() => {
+    return currentAddress?.gpsCoordinates || getSeedCoordinates(addressId, 25);
+  }, [currentAddress?.gpsCoordinates, addressId]);
 
   // Multipliers for smart estimation
   const getTrafficMultiplier = () => {

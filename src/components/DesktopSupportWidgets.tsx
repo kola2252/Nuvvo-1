@@ -10,7 +10,7 @@ interface ChatMessage {
   timestamp: string;
 }
 
-export default function DesktopSupportWidgets() {
+function DesktopSupportWidgets() {
   const { clickToWhatsAppSupport, isOffline } = useApp();
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
@@ -353,3 +353,5 @@ export default function DesktopSupportWidgets() {
     </>
   );
 }
+
+export default React.memo(DesktopSupportWidgets);

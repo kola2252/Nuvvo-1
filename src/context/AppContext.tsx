@@ -78,8 +78,8 @@ interface AppContextProps {
   setLanguage: (lang: AppLanguage) => void;
   otpCode: string;
   setOtpCode: (code: string) => void;
-  loginWithPhone: (phone: string, role?: string) => Promise<boolean>;
-  verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<boolean>;
+  loginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; error?: string }>;
+  verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
   completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => void;
   updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => void;
   logoutUser: () => void;
@@ -104,7 +104,7 @@ interface AppContextProps {
   foodError: string | null;
   supabaseConnected: boolean;
   refetchFoodCatalog: () => Promise<void>;
-  seedDishesToSupabase: () => Promise<{ success: boolean; count?: number; error?: string }>;
+  seedDishesToSupabase: () => Promise<{ success: boolean; count?: number; message?: string; error?: string }>;
   addFoodItem: (item: Omit<FoodItem, 'id'>) => Promise<{ success: boolean; data?: FoodItem; error?: string }>;
   updateFoodItem: (id: string, updatedFields: Partial<FoodItem>) => Promise<{ success: boolean; data?: FoodItem; error?: string }>;
   deleteFoodItem: (id: string) => Promise<{ success: boolean; error?: string }>;
@@ -1453,6 +1453,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const interval = setInterval(() => {
       const now = new Date();
       setScheduledNotifications(prev => {
+        if (!prev || prev.length === 0 || !prev.some(item => item.status === 'pending')) {
+          return prev;
+        }
+        const now = new Date();
         let changed = false;
         const mapped = prev.map(item => {
           if (item.status === 'pending') {
@@ -1998,11 +2002,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Seed default preloaded dishes to Supabase public.food_items
-  const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; error?: string }> => {
-    if (!checkSuperAdminPermission('Seed Food Items')) return { success: false, error: 'Unauthorized: Admin role required' };
+  const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; message?: string; error?: string }> => {
+    if (!isAdminRole(user?.role) || !isAuthorizedAdminPhone(user?.phone)) {
+      return { success: false, error: 'Unauthorized: Admin privileges required to seed database.' };
+    }
+
+    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    if (!token) {
+      return { success: false, error: 'No active session token found. Please log in with phone 9063692135 to establish an administrator session.' };
+    }
+
     setFoodLoading(true);
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
       const res = await fetch('/api/admin/dishes/seed', {
         method: 'POST',
         headers: {
@@ -2019,7 +2030,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       await fetchSupabaseCatalog();
       addAuditLog('Menu Seeded', `Successfully inserted ${json.count} dishes into Supabase public.food_items.`);
-      return { success: true, count: json.count };
+      return { success: true, count: json.count, message: json.message };
     } catch (err: any) {
       return { success: false, error: err.message };
     } finally {
@@ -2488,21 +2499,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLogs([]);
   };
 
-  // OTP Login Routine
+  // OTP Login Routine with Secure Server-Side Dispatch & Verification
   const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<boolean> => {
-    // Generate randomized OTP code, or fix at 5555 for quick validation testing
-    const simulatedOtp = '5555';
-    setOtpCode(simulatedOtp);
-    addAuditLog('OTP Sent', `Successfully generated dynamic security pass to user cell ${phone}`);
-    return true; 
+    try {
+      const cleanPhone = normalizePhoneNumber(phone);
+      const resp = await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.success) {
+        addAuditLog('OTP Failed', `Failed OTP generation for ${cleanPhone}: ${data.error || 'Server error'}`);
+        return false;
+      }
+
+      if (data.devOtp) {
+        setOtpCode(data.devOtp);
+      } else {
+        setOtpCode('');
+      }
+
+      addAuditLog('OTP Sent', `Successfully generated dynamic security OTP for user cell ${cleanPhone}`);
+      return true;
+    } catch (e: any) {
+      console.error('Failed to request OTP from server:', e);
+      return false;
+    }
   };
 
   const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<boolean> => {
-    if (otp !== '5555') {
-      addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${phone}`);
-      return false;
-    }
-
     const cleanPhone = normalizePhoneNumber(phone);
     let resolvedRole: any = 'Customer';
 
@@ -2512,28 +2538,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: cleanPhone, otp, requestedRole: role })
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.token) {
-          localStorage.setItem('nuvvo_auth_token', data.token);
-        }
-        if (data.role === 'super_admin') {
-          resolvedRole = 'Super Admin';
-        } else if (data.role === 'admin') {
-          resolvedRole = 'Admin';
-        } else if (role === 'Delivery Partner') {
-          resolvedRole = 'Delivery Partner';
-        } else if (role === 'Franchise') {
-          resolvedRole = 'Franchise';
-        } else {
-          resolvedRole = 'Customer';
-        }
+
+      const data = await resp.json();
+      if (!resp.ok || !data.success) {
+        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${data.error || 'Invalid OTP'}`);
+        return false;
       }
-    } catch (e) {
+
+      if (data.token) {
+        localStorage.setItem('nuvvo_auth_token', data.token);
+      }
+      if (data.role === 'super_admin') {
+        resolvedRole = 'Super Admin';
+      } else if (data.role === 'admin') {
+        resolvedRole = 'Admin';
+      } else if (role === 'Delivery Partner') {
+        resolvedRole = 'Delivery Partner';
+      } else if (role === 'Franchise') {
+        resolvedRole = 'Franchise';
+      } else {
+        resolvedRole = 'Customer';
+      }
+    } catch (e: any) {
       console.warn('Backend verify-otp notice:', e);
-      if (role === 'Delivery Partner') resolvedRole = 'Delivery Partner';
-      else if (role === 'Franchise') resolvedRole = 'Franchise';
-      else resolvedRole = 'Customer';
+      return false;
     }
 
     const existingUserStr = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
@@ -4233,9 +4261,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Super Admin validation
   const verifySuperAdminOtp = (otp: string): boolean => {
-    if (otp === '5555') {
+    const adminPasskey = '9063';
+    if (otp === adminPasskey) {
       setSuperAdminAuthenticated(true);
-      addAuditLog('Super Admin Verified', `Elevated systemic parameters cleared via OTP validation`);
+      addAuditLog('Super Admin Verified', `Elevated systemic parameters cleared via passkey validation`);
       return true;
     }
     return false;

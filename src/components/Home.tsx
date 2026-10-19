@@ -20,7 +20,7 @@ import PromotionalCarousel from './PromotionalCarousel';
 import { LazyImage } from './LazyImage';
 import { isSuperAdminRole, isAuthorizedAdminPhone } from '../config/authConfig';
 
-export default function Home() {
+function Home() {
   const { 
     user, toggleDarkMode, darkMode,
     foodCatalog, restaurants, isOffline, foodLoading, foodError, seedDishesToSupabase,
@@ -50,16 +50,53 @@ export default function Home() {
   const [restDishSearch, setRestDishSearch] = useState<string>('');
   const [restDishVegOnly, setRestDishVegOnly] = useState<boolean>(false);
 
+  // O(1) Pre-indexed lookup maps to eliminate CPU lags and heavy repeated linear searches
+  const foodItemRestaurantMap = useMemo(() => {
+    const map = new Map<string, any>();
+    if (!restaurants || restaurants.length === 0) return map;
+    const restById = new Map(restaurants.map(r => [r.id, r]));
+    for (const item of foodCatalog) {
+      if (item.restaurantId && restById.has(item.restaurantId)) {
+        map.set(item.id, restById.get(item.restaurantId));
+      } else {
+        const match = item.id.match(/\d+/);
+        const num = match ? parseInt(match[0], 10) : 0;
+        map.set(item.id, restaurants[num % restaurants.length]);
+      }
+    }
+    return map;
+  }, [foodCatalog, restaurants]);
+
+  const getFoodItemRestaurant = (foodId: string) => {
+    if (!restaurants || restaurants.length === 0) return null;
+    return foodItemRestaurantMap.get(foodId) || restaurants[0] || null;
+  };
+
+  const restaurantDishesMap = useMemo(() => {
+    const map = new Map<string, FoodItem[]>();
+    for (const rest of restaurants) {
+      map.set(rest.id, []);
+    }
+    for (const item of foodCatalog) {
+      const rest = foodItemRestaurantMap.get(item.id);
+      if (rest) {
+        const arr = map.get(rest.id) || [];
+        arr.push(item);
+        map.set(rest.id, arr);
+      }
+    }
+    return map;
+  }, [foodCatalog, restaurants, foodItemRestaurantMap]);
+
+  const restaurantsByIdMap = useMemo(() => {
+    return new Map(restaurants.map(r => [r.id, r]));
+  }, [restaurants]);
+
   // Compute all dishes belonging to or served by the currently inspected restaurant
   const selectedRestaurantDishes = useMemo(() => {
     if (!selectedRestaurant) return [];
-    const directMatches = foodCatalog.filter(item => item.restaurantId === selectedRestaurant.id);
-    if (directMatches.length > 0) return directMatches;
-    return foodCatalog.filter(item => {
-      const r = getFoodItemRestaurant(item.id);
-      return r && r.id === selectedRestaurant.id;
-    });
-  }, [selectedRestaurant, foodCatalog, restaurants]);
+    return restaurantDishesMap.get(selectedRestaurant.id) || [];
+  }, [selectedRestaurant, restaurantDishesMap]);
 
   // Clear legacy recent searches from storage to keep top position pristine
   useEffect(() => {
@@ -295,17 +332,6 @@ export default function Home() {
     }
   }, []);
 
-  const getFoodItemRestaurant = (foodId: string) => {
-    if (!restaurants || restaurants.length === 0) return null;
-    const foodItem = foodCatalog?.find(f => f.id === foodId);
-    if (foodItem?.restaurantId) {
-      const rest = restaurants.find(r => r.id === foodItem.restaurantId);
-      if (rest) return rest;
-    }
-    const match = foodId.match(/\d+/);
-    const num = match ? parseInt(match[0], 10) : 0;
-    return restaurants[num % restaurants.length];
-  };
 
   // Restaurant Filter states
   const [restSearch, setRestSearch] = useState('');
@@ -342,13 +368,12 @@ export default function Home() {
         const matchCuisine = r.cuisines ? r.cuisines.some(c => c.toLowerCase().includes(q)) : false;
         
         // 3. Matches dishes served
-        const matchDishes = foodCatalog.some(item => {
-          const itemRest = getFoodItemRestaurant(item.id);
-          return itemRest && itemRest.id === r.id && 
-            (item.name.toLowerCase().includes(q) || 
-             item.category.toLowerCase().includes(q) || 
-             item.description.toLowerCase().includes(q));
-        });
+        const kitchenDishes = restaurantDishesMap.get(r.id) || [];
+        const matchDishes = kitchenDishes.some(item => 
+          item.name.toLowerCase().includes(q) || 
+          item.category.toLowerCase().includes(q) || 
+          item.description.toLowerCase().includes(q)
+        );
 
         return matchName || matchCuisine || matchDishes;
       });
@@ -660,10 +685,19 @@ export default function Home() {
     setVoiceToast: setVoiceToast
   });
 
-  // Helper dictionary checking quantities
+  // Helper dictionary checking quantities in O(1)
+  const cartQuantityMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of cart) {
+      if (c?.foodItem?.id) {
+        map.set(c.foodItem.id, c.quantity);
+      }
+    }
+    return map;
+  }, [cart]);
+
   const getCartQuantityOfItem = (itemId: string) => {
-    const item = cart.find(c => c.foodItem.id === itemId);
-    return item ? item.quantity : 0;
+    return cartQuantityMap.get(itemId) || 0;
   };
 
   const handleScrollToTop = () => {
@@ -801,11 +835,7 @@ export default function Home() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {customerRestaurants.map(rest => {
-            const servesDishes = foodCatalog.filter(item => item.restaurantId === rest.id);
-            const kitchenDishes = servesDishes.length > 0 ? servesDishes : foodCatalog.filter(item => {
-              const r = getFoodItemRestaurant(item.id);
-              return r && r.id === rest.id;
-            });
+            const kitchenDishes = restaurantDishesMap.get(rest.id) || [];
             const popularDishes = kitchenDishes.slice(0, 3);
 
             // Highlight matching dish name if any
@@ -1301,7 +1331,7 @@ export default function Home() {
 
                   <div>
                     {(() => {
-                      const restOfFood = restaurants.find(r => r.id === food.restaurantId);
+                      const restOfFood = restaurantsByIdMap.get(food.restaurantId);
                       const isRestClosed = restOfFood ? getRestaurantOpenStatus(restOfFood).status !== 'open' : false;
                       
                       if (isRestClosed) {
@@ -1973,7 +2003,7 @@ export default function Home() {
 
                       <div>
                         {(() => {
-                          const restOfFood = restaurants.find(r => r.id === food.restaurantId);
+                          const restOfFood = restaurantsByIdMap.get(food.restaurantId);
                           const isRestClosed = restOfFood ? getRestaurantOpenStatus(restOfFood).status !== 'open' : false;
                           
                           if (isRestClosed) {
@@ -2872,3 +2902,5 @@ export default function Home() {
     </div>
   );
 }
+
+export default React.memo(Home);

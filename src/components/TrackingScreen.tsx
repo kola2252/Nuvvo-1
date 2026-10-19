@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -192,12 +192,17 @@ export default function TrackingScreen() {
 
   const restaurantId = activeTrackingOrder?.items[0]?.foodItem?.restaurantId || 'rest_1';
   const restaurantName = restaurants.find(r => r.id === restaurantId)?.name || 'Nuvvo Kitchens';
-  const restaurantCoords = getSeedCoordinates(restaurantId, 10);
-  const rawDestinationCoords = activeTrackingOrder?.address?.gpsCoordinates || getSeedCoordinates(activeTrackingOrder?.address?.id || 'default_cust', 25);
+  const restaurantCoords = useMemo(() => getSeedCoordinates(restaurantId, 10), [restaurantId]);
+  const addressId = activeTrackingOrder?.address?.id || 'default_cust';
+  const rawDestinationCoords = useMemo(() => {
+    return activeTrackingOrder?.address?.gpsCoordinates || getSeedCoordinates(addressId, 25);
+  }, [activeTrackingOrder?.address?.gpsCoordinates, addressId]);
   // Auto-snap destination if they are way too far apart (e.g. Hyderabad vs Chirala)
-  const destinationCoords = Math.abs(rawDestinationCoords.lat - restaurantCoords.lat) > 0.5
-    ? getSeedCoordinates(activeTrackingOrder?.address?.id || 'default_cust', 25)
-    : rawDestinationCoords;
+  const destinationCoords = useMemo(() => {
+    return Math.abs(rawDestinationCoords.lat - restaurantCoords.lat) > 0.5
+      ? getSeedCoordinates(addressId, 25)
+      : rawDestinationCoords;
+  }, [rawDestinationCoords, restaurantCoords, addressId]);
 
   const [simulatedDistance, setSimulatedDistance] = useState(2.8); // in km
   const [etaRemaining, setEtaRemaining] = useState(24); // in minutes
@@ -290,7 +295,7 @@ export default function TrackingScreen() {
     }, 2000); // Polling every 2 seconds
 
     return () => clearInterval(interval);
-  }, [isPolling, deliveryRouteProgress, restaurantCoords, destinationCoords, activeTrackingOrder]);
+  }, [isPolling, deliveryRouteProgress, restaurantCoords, destinationCoords, activeTrackingOrder?.id]);
   
   // Post-order feedback states - Rate Food, Rate Restaurant, Rate Delivery Partner
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);

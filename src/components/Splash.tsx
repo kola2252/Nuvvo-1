@@ -8,7 +8,7 @@ import { useApp } from '../context/AppContext';
 import { motion } from 'motion/react';
 import NuvvoLogo from './NuvvoLogo';
 
-export default function Splash() {
+function Splash() {
   const { setCurrentPage, user } = useApp();
   const [progress, setProgress] = useState(0);
 
@@ -58,3 +58,5 @@ export default function Splash() {
     </div>
   );
 }
+
+export default React.memo(Splash);
