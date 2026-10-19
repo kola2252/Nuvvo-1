@@ -15,7 +15,7 @@ import {
 import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
 import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
 import { APP_THEMES } from '../data/themes';
-import { isAdminRole, isSuperAdminRole, normalizePhoneNumber } from '../config/authConfig';
+import { isAdminRole, isSuperAdminRole, normalizePhoneNumber, isAuthorizedAdminPhone } from '../config/authConfig';
 import { 
   getFoodItemsFromSupabase, 
   insertFoodItemToSupabase, 
@@ -105,9 +105,9 @@ interface AppContextProps {
   supabaseConnected: boolean;
   refetchFoodCatalog: () => Promise<void>;
   seedDishesToSupabase: () => Promise<{ success: boolean; count?: number; error?: string }>;
-  addFoodItem: (item: Omit<FoodItem, 'id'>) => Promise<FoodItem | null | void> | void;
-  updateFoodItem: (id: string, updatedFields: Partial<FoodItem>) => Promise<void> | void;
-  deleteFoodItem: (id: string) => Promise<boolean | void> | void;
+  addFoodItem: (item: Omit<FoodItem, 'id'>) => Promise<{ success: boolean; data?: FoodItem; error?: string }>;
+  updateFoodItem: (id: string, updatedFields: Partial<FoodItem>) => Promise<{ success: boolean; data?: FoodItem; error?: string }>;
+  deleteFoodItem: (id: string) => Promise<{ success: boolean; error?: string }>;
   restaurants: Restaurant[];
   addRestaurant: (restaurant: Restaurant) => void;
   updateRestaurant: (id: string, updatedFields: Partial<Restaurant>) => void;
@@ -420,7 +420,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const defaultUser: User = {
       id: 'usr_default',
-      name: 'Demo Customer',
+      name: 'Nuvvo Customer',
       phone: '9999911111',
       email: 'customer@nuvvo.cloud',
       addresses: [
@@ -444,7 +444,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('nuvvo_user', JSON.stringify(defaultUser));
     return defaultUser;
   });
-  const [otpCode, setOtpCode] = useState<string>('5555'); // Default simulated auto-filled OTP
+  const [otpCode, setOtpCode] = useState<string>(''); // Clean OTP state
 
   const checkSuperAdminPermission = (actionName: string): boolean => {
     if (!isSuperAdminRole(user?.role)) {
@@ -1014,17 +1014,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
   });
 
-  // Strict admin authorization: exclusively determined by server-verified role
-  const isSuperAdmin = isSuperAdminRole(user?.role);
-  const isAdmin = isAdminRole(user?.role);
+  // Strict admin authorization: exclusively granted if phone is 9063692135 AND role is server-verified
+  const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
+  const isSuperAdmin = isSuperAdminRole(user?.role) && isAuthorizedPhone;
+  const isAdmin = isAdminRole(user?.role) && isAuthorizedPhone;
 
   // Security Route Guard: Direct URL or state navigation to admin/super-admin
   // by unauthorized users must be immediately bounced to the Settings ('account') page
   useEffect(() => {
-    if ((currentPage === 'admin' || currentPage === 'super-admin') && !isAdminRole(user?.role)) {
+    if ((currentPage === 'admin' || currentPage === 'super-admin') && (!isAdminRole(user?.role) || !isAuthorizedAdminPhone(user?.phone))) {
       setCurrentPage('account');
     }
-  }, [currentPage, user?.role]);
+  }, [currentPage, user?.role, user?.phone]);
   const [couponsList, setCouponsList] = useState<Coupon[]>(() => {
     return safeParse<Coupon[]>('nuvvo_coupons', MOCK_COUPONS);
   });
@@ -1643,19 +1644,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setFoodError(null);
     try {
       const { data, error } = await getFoodItemsFromSupabase();
-      if (error) {
-        console.error('Failed to load food items from Supabase:', error);
-        const errMsg = error.message || 'Error connecting to Supabase food_items table';
-        setFoodError(errMsg);
-        setSupabaseConnected(false);
+      if (error || !data || data.length === 0) {
+        if (error) {
+          const errMsg = error.message || 'Error connecting to Supabase food_items table';
+          setFoodError(errMsg);
+          setSupabaseConnected(false);
+        } else {
+          setSupabaseConnected(true);
+        }
+
+        // Fetch from backend /api/dishes so any dishes saved by Admin are immediately visible to all customers
+        try {
+          const serverRes = await fetch('/api/dishes');
+          if (serverRes.ok) {
+            const serverData = await serverRes.json();
+            if (Array.isArray(serverData) && serverData.length > 0) {
+              setFoodCatalogList(serverData);
+            }
+          }
+        } catch {}
       } else {
         setSupabaseConnected(true);
-        if (data && data.length > 0) {
-          setFoodCatalogList(data);
-          try {
-            localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(data));
-          } catch {}
-        }
+        setFoodCatalogList(data);
+        try {
+          localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(data));
+        } catch {}
       }
     } catch (err: any) {
       console.error('Supabase food_items query exception:', err);
@@ -1885,157 +1898,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Add Food Item: Save directly to Supabase public.food_items + Instant Broadcast Fallback
-  // Add Food Item: Save to Supabase public.food_items + Instant Broadcast & Play Store Sync
-  const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<FoodItem | null> => {
-    if (!checkSuperAdminPermission('Add Food Item')) return null;
+  // Add Food Item: Persist to Supabase public.food_items via authenticated admin route
+  const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
+    if (!checkSuperAdminPermission('Add Food Item')) return { success: false, error: 'Unauthorized: Admin role required' };
 
     try {
-      const { data: savedRecord, error } = await insertFoodItemToSupabase(item);
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const res = await fetch('/api/admin/dishes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(item)
+      });
 
-      let activeItem: FoodItem;
-      if (savedRecord) {
-        activeItem = savedRecord;
-      } else {
-        // High-reliability fallback if Supabase table RLS is active:
-        // Generate valid dish item with permanent ID
-        activeItem = {
-          ...item,
-          id: `dish_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          rating: item.rating || 4.8,
-          reviewsCount: item.reviewsCount || 16,
-          prepTime: item.prepTime || 20,
-          isAvailable: item.isAvailable !== false,
-          is_available: item.isAvailable !== false,
-        } as FoodItem;
-
-        // Persist in local storage custom dishes
-        try {
-          const stored = localStorage.getItem('nuvvo_custom_dishes');
-          const list = stored ? JSON.parse(stored) : [];
-          localStorage.setItem('nuvvo_custom_dishes', JSON.stringify([activeItem, ...list]));
-        } catch {}
-
-        // Notify server API proxy for server-side persistence and SSE broadcast
-        try {
-          fetch('/api/admin/dishes', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${localStorage.getItem('nuvvo_auth_token') || ''}`
-            },
-            body: JSON.stringify(activeItem)
-          }).catch(() => {});
-        } catch {}
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        const errMsg = json.error || `Database error (${res.status})`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
 
+      const activeItem = mapSupabaseRowToFoodItem(json.dish);
       setFoodCatalogList(prev => [activeItem, ...prev.filter(d => String(d.id) !== String(activeItem.id))]);
-      
-      // Update cached catalog
-      try {
-        const stored = localStorage.getItem('nuvo_cached_food_catalog');
-        const list = stored ? JSON.parse(stored) : [];
-        localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify([activeItem, ...list.filter((d: any) => String(d.id) !== String(activeItem.id))]));
-      } catch {}
-
-      addAuditLog('Menu Updated', `Registered new dish "${activeItem.name}".`);
-
-      // Broadcast immediately across all connected devices (Play Store Android app + Web)
       broadcastFoodMutation('INSERT', { item: activeItem });
-
-      return activeItem;
+      addAuditLog('Menu Updated', `Registered new dish "${activeItem.name}" in Supabase.`);
+      return { success: true, data: activeItem };
     } catch (err: any) {
-      console.error('Exception during addFoodItem:', err);
-      // Even in error, create and broadcast so app never drops user input
-      const fallbackItem: FoodItem = {
-        ...item,
-        id: `dish_${Date.now()}`,
-        rating: item.rating || 4.8,
-        reviewsCount: 12,
-        prepTime: 20,
-        isAvailable: true,
-        is_available: true
-      } as FoodItem;
-      setFoodCatalogList(prev => [fallbackItem, ...prev]);
-      broadcastFoodMutation('INSERT', { item: fallbackItem });
-      return fallbackItem;
+      console.error('Exception during addFoodItem to Supabase:', err);
+      setFoodError(err.message);
+      return { success: false, error: err.message };
     }
   };
 
-  // Update Food Item: Update in Supabase public.food_items + Instant Broadcast Fallback
-  const updateFoodItem = async (id: string, updatedFields: Partial<FoodItem>) => {
-    if (!checkSuperAdminPermission('Update Food Item')) return;
-
-    // Optimistic UI update
-    setFoodCatalogList(prev => prev.map(item => {
-      if (String(item.id) === String(id)) {
-        return { ...item, ...updatedFields };
-      }
-      return item;
-    }));
-
-    // Broadcast immediately to connected peer devices
-    broadcastFoodMutation('UPDATE', { id, updatedFields });
+  // Update Food Item: Update in Supabase public.food_items via authenticated admin route
+  const updateFoodItem = async (id: string, updatedFields: Partial<FoodItem>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
+    if (!checkSuperAdminPermission('Update Food Item')) return { success: false, error: 'Unauthorized: Admin role required' };
 
     try {
-      const { data: updatedRecord, error } = await updateFoodItemInSupabase(id, updatedFields);
-      if (error) {
-        console.error('Supabase updateFoodItem error:', error);
-        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
-        const alertMsg = isRls
-          ? '⚠️ Supabase RLS Note: Please ensure an UPDATE policy exists for public.food_items in Supabase.'
-          : (error.message || 'Failed to update record in Supabase');
-        setFoodError(alertMsg);
-      } else if (updatedRecord) {
-        setFoodCatalogList(prev => prev.map(item => String(item.id) === String(id) ? updatedRecord : item));
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const res = await fetch(`/api/admin/dishes/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(updatedFields)
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        const errMsg = json.error || `Database update failed (${res.status})`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
+
+      const updatedRecord = mapSupabaseRowToFoodItem(json.dish);
+      setFoodCatalogList(prev => prev.map(item => String(item.id) === String(id) ? updatedRecord : item));
+      broadcastFoodMutation('UPDATE', { id, updatedFields });
       addAuditLog('Menu Updated', `Updated dish ID ${id} in Supabase.`);
+      return { success: true, data: updatedRecord };
     } catch (err: any) {
       console.error('Exception during updateFoodItem in Supabase:', err);
       setFoodError(err.message);
+      return { success: false, error: err.message };
     }
   };
 
-  // Delete Food Item: Remove from Supabase public.food_items + Instant Broadcast Fallback
-  const deleteFoodItem = async (id: string) => {
-    if (!checkSuperAdminPermission('Delete Food Item')) return;
-
-    // Optimistic removal
-    setFoodCatalogList(prev => prev.filter(item => String(item.id) !== String(id)));
-
-    // Broadcast immediately to connected peer devices
-    broadcastFoodMutation('DELETE', { id });
+  // Delete Food Item: Remove from Supabase public.food_items via authenticated admin route
+  const deleteFoodItem = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    if (!checkSuperAdminPermission('Delete Food Item')) return { success: false, error: 'Unauthorized: Admin role required' };
 
     try {
-      const { error } = await deleteFoodItemFromSupabase(id);
-      if (error) {
-        console.error('Supabase deleteFoodItem error:', error);
-        setFoodError(error.message);
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const res = await fetch(`/api/admin/dishes/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        const errMsg = json.error || `Database delete failed (${res.status})`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
-      addAuditLog('Menu Updated', `Removed dish ID ${id} from Supabase.`);
+
+      setFoodCatalogList(prev => prev.filter(item => String(item.id) !== String(id)));
+      broadcastFoodMutation('DELETE', { id });
+      addAuditLog('Menu Updated', `Permanently removed dish ID ${id} from Supabase.`);
+      return { success: true };
     } catch (err: any) {
       console.error('Exception during deleteFoodItem in Supabase:', err);
       setFoodError(err.message);
+      return { success: false, error: err.message };
     }
   };
 
   // Seed default preloaded dishes to Supabase public.food_items
   const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; error?: string }> => {
-    if (!checkSuperAdminPermission('Seed Food Items')) return { success: false, error: 'Unauthorized' };
+    if (!checkSuperAdminPermission('Seed Food Items')) return { success: false, error: 'Unauthorized: Admin role required' };
     setFoodLoading(true);
     try {
-      const defaultPool: FoodItem[] = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
-      const { count, error } = await seedFoodItemsToSupabase(defaultPool);
-      if (error) {
-        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
-        const msg = isRls
-          ? 'RLS Policy Error: Please disable RLS or add an INSERT policy on public.food_items in your Supabase Dashboard SQL Editor.'
-          : (error.message || 'Failed to seed database');
-        setFoodError(msg);
-        return { success: false, error: msg };
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const res = await fetch('/api/admin/dishes/seed', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        const errMsg = json.error || `Database seeding failed (${res.status})`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
+
       await fetchSupabaseCatalog();
-      addAuditLog('Menu Seeded', `Successfully inserted ${count} dishes into Supabase public.food_items.`);
-      return { success: true, count };
+      addAuditLog('Menu Seeded', `Successfully inserted ${json.count} dishes into Supabase public.food_items.`);
+      return { success: true, count: json.count };
     } catch (err: any) {
       return { success: false, error: err.message };
     } finally {

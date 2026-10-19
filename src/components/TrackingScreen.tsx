@@ -1315,33 +1315,6 @@ export default function TrackingScreen() {
             Seals are 100% verified on leaving the kitchen. Do not accept parcel packs with compromised outer adhesive tapes or barcodes.
           </div>
         </div>
-
-        {/* FORCE TRANSITION TRIGGERS (ONLY FOR EASY DEMO REVIEWING) */}
-        <div className="bg-slate-100 dark:bg-zinc-900/50 p-4 rounded-2xl border space-y-2">
-          <p className="text-[9px] font-bold font-mono tracking-wider text-zinc-500 uppercase text-center">Developer/Review Speed Dial Controls</p>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <button 
-              onClick={() => changeOrderStatus(activeTrackingOrder.id, 'picked')}
-              className="p-2 bg-white dark:bg-zinc-800 rounded-lg shadow-sm border font-bold text-center"
-            >
-              Skip: Picked Up 📦
-            </button>
-            <button 
-              onClick={() => changeOrderStatus(activeTrackingOrder.id, 'on_the_way')}
-              className="p-2 bg-white dark:bg-zinc-800 rounded-lg shadow-sm border font-bold text-center"
-            >
-              Skip: On the way ⚡
-            </button>
-          </div>
-          <button
-            id="instant-delivered-feedback-btn"
-            onClick={() => changeOrderStatus(activeTrackingOrder.id, 'delivered')}
-            className="w-full text-center p-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold rounded-lg text-xs cursor-pointer transition-colors"
-          >
-            Instantly set status to Delivered (Triggers Feedback Modal) ⭐
-          </button>
-        </div>
-
       </div>
 
       {/* FLOATING ACTION CHAT SUPPORT TRIGGER BUTTON */}

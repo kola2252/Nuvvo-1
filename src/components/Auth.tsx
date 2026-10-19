@@ -95,7 +95,7 @@ export default function Auth() {
       }
       setStep('profile');
     } else {
-      setErrorMsg('The verification OTP code is incorrect. Use "5555" for testing.');
+      setErrorMsg('The verification OTP code is incorrect. Please check the code and try again.');
     }
   };
 
@@ -120,12 +120,6 @@ export default function Auth() {
 
     completeUserProfile(fullName, emailAddress, homeAddress, language);
     setCurrentPage('home');
-  };
-
-  // Helper pre-fills for review tests
-  const prefillTestNumber = (phone: string, role: string) => {
-    setPhoneNumber(phone);
-    setRoleOption(role);
   };
 
   return (
@@ -228,35 +222,6 @@ export default function Auth() {
                   {t.getOtp}
                 </button>
               </form>
-
-              {/* DEMO SHORTCUT HELPERS */}
-              <div className="mt-8 border-t border-slate-100 dark:border-zinc-800 pt-5">
-                <p className="text-[10px] font-bold font-mono tracking-widest text-zinc-400 dark:text-zinc-500 uppercase text-center mb-3">{t.quickDemoFill}</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button 
-                    type="button" 
-                    onClick={() => prefillTestNumber('9999911111', 'Customer')}
-                    className="p-2.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-300 rounded-xl font-semibold text-left flex items-center justify-between cursor-pointer"
-                  >
-                    <div>
-                      <span className="block font-bold">Customer</span>
-                      <span className="text-[9.5px] text-zinc-400 font-mono">9999911111</span>
-                    </div>
-                    <span className="text-[10px] bg-slate-200 dark:bg-zinc-700 px-1.5 py-0.5 rounded text-zinc-500">Auto</span>
-                  </button>
-                  <button 
-                    type="button" 
-                    onClick={() => prefillTestNumber('9888822222', 'Delivery Partner')}
-                    className="p-2.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-300 rounded-xl font-semibold text-left flex items-center justify-between cursor-pointer"
-                  >
-                    <div>
-                      <span className="block font-bold">Partner</span>
-                      <span className="text-[9.5px] text-zinc-400 font-mono">9888822222</span>
-                    </div>
-                    <span className="text-[10px] bg-slate-200 dark:bg-zinc-700 px-1.5 py-0.5 rounded text-zinc-500">Auto</span>
-                  </button>
-                </div>
-              </div>
             </motion.div>
           )}
 
@@ -289,7 +254,6 @@ export default function Auth() {
                       className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 pl-11 pr-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500 text-center text-xl font-extrabold tracking-widest font-mono"
                     />
                   </div>
-                  <p className="text-zinc-400 text-[10px] text-right mt-1">Simulated fallback test OTP is <span className="font-mono font-bold text-orange-500">5555</span></p>
                 </div>
 
                 <button 

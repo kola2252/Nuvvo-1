@@ -401,7 +401,7 @@ export default function AdminPanel() {
                     type="button"
                     onClick={() => seedSampleOrders()}
                     className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
-                    title="Populate realistic demo orders for testing"
+                    title="Seed Sample Orders"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     <span>Seed Sample Stats</span>

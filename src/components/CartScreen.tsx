@@ -60,8 +60,8 @@ export default function CartScreen() {
     try {
       const stored = localStorage.getItem(`nuvvo_cards_${user.phone}`);
       return stored ? JSON.parse(stored) : [
-        { id: 'card_demo_1', cardHolder: user.name || 'John Doe', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
-        { id: 'card_demo_2', cardHolder: user.name || 'John Doe', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
+        { id: 'card_saved_1', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
+        { id: 'card_saved_2', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
       ];
     } catch {
       return [];
@@ -80,8 +80,8 @@ export default function CartScreen() {
     try {
       const stored = localStorage.getItem(`nuvvo_upis_${user.phone}`);
       return stored ? JSON.parse(stored) : [
-        { id: 'upi_demo_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
-        { id: 'upi_demo_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
+        { id: 'upi_saved_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
+        { id: 'upi_saved_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
       ];
     } catch {
       return [];

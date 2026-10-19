@@ -78,17 +78,6 @@ export default function PartnerScreen() {
   // Active unassigned or preparing/picked orders for driver assignment
   const pendingJobs = orders.filter(o => o.status === 'accepted' || o.status === 'preparing');
 
-  const handleDemoBypass = () => {
-    registerAsPartner("Srinivas Rao (Demo Rider)", "9988776655", {
-      licenseUrl: "DL-AP39X4859",
-      aadhaarUrl: "3948-2849-1058",
-      vehicleDocsUrl: "RC-AP39-9521",
-      bankAccount: "918239485901",
-      bankIfsc: "SBIN0005012"
-    });
-    setIsLogged(true);
-  };
-
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
     if (!partnerName.trim() || !phoneNumber.trim()) return;
@@ -277,19 +266,6 @@ export default function PartnerScreen() {
                 </button>
               </form>
             )}
-
-            {/* Quick Demo Bypass Access Panel */}
-            <div className="mt-4 pt-4 border-t border-slate-100 dark:border-zinc-800 text-center">
-              <p className="text-[10px] text-zinc-400 font-extrabold uppercase tracking-widest">Testing / Demonstration Access</p>
-              <button
-                type="button"
-                onClick={handleDemoBypass}
-                className="mt-2 w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition flex items-center justify-center gap-2 border-0"
-              >
-                <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
-                Bypass & Launch Demo Rider Panel 🚀
-              </button>
-            </div>
           </div>
         ) : (
           <div className="space-y-4">

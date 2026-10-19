@@ -143,7 +143,7 @@ export default function AdminCatalogManager() {
 
       if (isEdit) {
         // Update in Supabase
-        await updateFoodItem(editingItem.id, {
+        const res = await updateFoodItem(editingItem.id, {
           name: editingItem.name,
           description: editingItem.description,
           price: Number(editingItem.price),
@@ -155,9 +155,14 @@ export default function AdminCatalogManager() {
           vegIndicator: editingItem.vegIndicator,
           restaurantId: editingItem.restaurantId
         });
+
+        if (!res?.success) {
+          showFeedback(res?.error || 'Failed to update dish in Supabase public.food_items', 'error');
+          return;
+        }
       } else {
         // Save new dish to Supabase public.food_items
-        const saved = await addFoodItem({
+        const res = await addFoodItem({
           name: editingItem.name,
           description: editingItem.description,
           price: Number(editingItem.price),
@@ -177,23 +182,10 @@ export default function AdminCatalogManager() {
           restaurantId: editingItem.restaurantId || undefined
         });
 
-        if (!saved) {
-          // If insert failed or not permitted, abort without closing modal or showing false success
+        if (!res?.success) {
+          showFeedback(res?.error || 'Failed to save dish to Supabase public.food_items', 'error');
           return;
         }
-      }
-
-      // Also notify backend API proxy for complete persistence sync
-      try {
-        const url = isEdit ? `/api/admin/dishes/${editingItem.id}` : '/api/admin/dishes';
-        const method = isEdit ? 'PUT' : 'POST';
-        await fetch(url, {
-          method,
-          headers: getAuthHeaders(),
-          body: JSON.stringify(editingItem)
-        });
-      } catch {
-        // API sync failure is non-blocking since Supabase is primary
       }
 
       showFeedback(`Dish "${editingItem.name}" saved to Supabase food_items successfully!`);
@@ -212,15 +204,11 @@ export default function AdminCatalogManager() {
     setLoading(true);
     try {
       if (deleteFoodItem) {
-        await deleteFoodItem(dishId);
-      }
-      try {
-        await fetch(`/api/admin/dishes/${dishId}`, {
-          method: 'DELETE',
-          headers: getAuthHeaders()
-        });
-      } catch {
-        // non-blocking
+        const res = await deleteFoodItem(dishId);
+        if (!res?.success) {
+          showFeedback(res?.error || 'Failed to delete dish from Supabase', 'error');
+          return;
+        }
       }
       showFeedback(`Dish "${name}" removed from Supabase.`);
       await refetchFoodCatalog();
@@ -234,18 +222,13 @@ export default function AdminCatalogManager() {
   const handleToggleDishAvailability = async (dish: any) => {
     try {
       const nextStatus = dish.isAvailable !== false && dish.is_available !== false ? false : true;
-      await updateFoodItem(dish.id, {
+      const res = await updateFoodItem(dish.id, {
         isAvailable: nextStatus,
         is_available: nextStatus
       });
-      try {
-        await fetch(`/api/admin/dishes/${dish.id}`, {
-          method: 'PUT',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ isAvailable: nextStatus, is_available: nextStatus })
-        });
-      } catch {
-        // non-blocking
+      if (!res?.success) {
+        showFeedback(res?.error || 'Failed to toggle availability in Supabase', 'error');
+        return;
       }
       showFeedback(`Dish availability updated to ${nextStatus ? 'Available' : 'Unavailable'} in Supabase.`);
     } catch (e: any) {

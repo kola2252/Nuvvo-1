@@ -82,14 +82,22 @@ export function mapFoodItemToSupabaseRow(item: Partial<FoodItem>): Partial<Supab
       : true;
 
   const imageUrl = item.image_url || item.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80';
+  const isVeg = item.vegIndicator === VegIndicator.VEG || String(item.vegIndicator || '').toLowerCase() === 'veg';
 
   return {
     name: item.name ? String(item.name).trim() : 'Specialty Dish',
     description: item.description ? String(item.description).trim() : '',
     price: Number(item.price) || 0,
     category: item.category ? String(item.category).trim() : 'Specialty',
+    subcategory: item.subcategory ? String(item.subcategory).trim() : 'Classic',
     image_url: imageUrl,
-    is_available: isAvailable
+    is_available: isAvailable,
+    veg_indicator: isVeg ? 'Veg' : 'NonVeg',
+    rating: Number(item.rating) || 4.8,
+    reviews_count: Number(item.reviewsCount) || 12,
+    prep_time: Number(item.prepTime) || 20,
+    spice_level: item.spiceLevel || 'Medium',
+    restaurant_id: item.restaurantId || 'rest_1'
   };
 }
 

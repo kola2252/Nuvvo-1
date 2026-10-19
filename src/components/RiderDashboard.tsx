@@ -30,7 +30,7 @@ export default function RiderDashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Generate fallback data if deliveryPartner or fields aren't initialized yet
-  const partnerName = deliveryPartner?.name || "Demo Rider Specialist";
+  const partnerName = deliveryPartner?.name || "Delivery Partner";
   const partnerRating = deliveryPartner?.rating || 4.90;
   const isOnline = deliveryPartner?.isAvailable || false;
 

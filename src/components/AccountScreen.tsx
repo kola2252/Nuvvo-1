@@ -17,7 +17,7 @@ import {
 import { Address, SavedCard, SavedUPI } from '../types';
 import OrderHistory from './OrderHistory';
 import AdminCatalogManager from './AdminCatalogManager';
-import { isAdminRole, isSuperAdminRole } from '../config/authConfig';
+import { isAdminRole, isSuperAdminRole, isAuthorizedAdminPhone } from '../config/authConfig';
 
 export default function AccountScreen() {
   const { 
@@ -34,9 +34,10 @@ export default function AccountScreen() {
     referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints
   } = useApp();
 
-  // Role-based authorization verified securely on the server
-  const isAuthorizedAdmin = isAdmin || isAdminRole(user?.role);
-  const isSuperAdminCell = isSuperAdmin || isSuperAdminRole(user?.role);
+  // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
+  const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
+  const isAuthorizedAdmin = (isAdmin || isAdminRole(user?.role)) && isAuthorizedPhone;
+  const isSuperAdminCell = (isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedPhone;
 
   const [isEditingInfo, setIsEditingInfo] = useState(false);
   const [profileSavedSuccess, setProfileSavedSuccess] = useState(false);
@@ -320,8 +321,8 @@ Thank you for dining with Nuvvo Gourmet!`;
     try {
       const stored = localStorage.getItem(`nuvvo_cards_${user.phone}`);
       return stored ? JSON.parse(stored) : [
-        { id: 'card_demo_1', cardHolder: user.name || 'John Doe', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
-        { id: 'card_demo_2', cardHolder: user.name || 'John Doe', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
+        { id: 'card_saved_1', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
+        { id: 'card_saved_2', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
       ];
     } catch {
       return [];
@@ -340,8 +341,8 @@ Thank you for dining with Nuvvo Gourmet!`;
     try {
       const stored = localStorage.getItem(`nuvvo_upis_${user.phone}`);
       return stored ? JSON.parse(stored) : [
-        { id: 'upi_demo_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
-        { id: 'upi_demo_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
+        { id: 'upi_saved_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
+        { id: 'upi_saved_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
       ];
     } catch {
       return [];

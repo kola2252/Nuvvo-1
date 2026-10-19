@@ -34,7 +34,6 @@ export interface TranslationDictionary {
   customer: string;
   deliveryPartner: string;
   franchise: string;
-  quickDemoFill: string;
   referralTitle: string;
   referralSubtitle: string;
   referralBalance: string;
@@ -84,11 +83,10 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     areaStreet: 'Area / Street Address',
     city: 'City / Town',
     saveAndStart: 'Create Profile & Explore Food',
-    chooseRole: 'Select Role to Test',
+    chooseRole: 'Account Type',
     customer: 'Customer',
     deliveryPartner: 'Delivery Partner',
     franchise: 'Franchise Partner',
-    quickDemoFill: 'Quick Demo Logins',
     referralTitle: 'Referral Rewards Program',
     referralSubtitle: 'Invite friends and earn points',
     referralBalance: 'Referral Wallet Balance',
@@ -136,11 +134,10 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     areaStreet: 'ప్రాంతం / వీధి పేరు (Area / Street)',
     city: 'నగరం / పట్టణం (City)',
     saveAndStart: 'ప్రొఫైల్ సేవ్ చేసి ప్రారంభించండి',
-    chooseRole: 'లాగిన్ రోల్ ఎంచుకోండి',
+    chooseRole: 'ఖాతా రకం ఎంచుకోండి',
     customer: 'కస్టమర్ (Customer)',
     deliveryPartner: 'డెలివరీ బాయ్ (Partner)',
     franchise: 'ఫ్రాంచైజ్ (Franchise)',
-    quickDemoFill: 'డెమో లాగిన్స్',
     referralTitle: 'రెఫరల్ రివార్డ్స్ ప్రోగ్రామ్',
     referralSubtitle: 'స్నేహితులను ఆహ్వానించి పాయింట్స్ సంపాదించండి',
     referralBalance: 'రెఫరల్ వాలెట్ బ్యాలెన్స్',
@@ -188,11 +185,10 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     areaStreet: 'क्षेत्र / गली का नाम',
     city: 'शहर / कस्बा',
     saveAndStart: 'प्रोफ़ाइल सहेजें और शुरू करें',
-    chooseRole: 'लॉगिन भूमिका चुनें',
+    chooseRole: 'खाता प्रकार चुनें',
     customer: 'ग्राहक (Customer)',
     deliveryPartner: 'डिलीवरी पार्टनर (Rider)',
     franchise: 'फ्रेंचाइजी पार्टनर',
-    quickDemoFill: 'त्वरित डेमो लॉगिन',
     referralTitle: 'रेफरल पुरस्कार कार्यक्रम',
     referralSubtitle: 'दोस्तों को आमंत्रित करें और अंक अर्जित करें',
     referralBalance: 'रेफरल वॉलेट बैलेंस',

@@ -1124,7 +1124,7 @@ export default function SuperAdminPanel() {
             <form onSubmit={handleVerifyOtp} className="space-y-3">
               <div>
                 <label className="block text-[10px] uppercase font-bold text-zinc-500 mb-1 text-center font-mono">
-                  Input Pass-Key (Hint: 9063 or 5555)
+                  Input Security Pass-Key
                 </label>
                 <input 
                   type="password" 

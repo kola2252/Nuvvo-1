@@ -17,6 +17,17 @@ export type AppUserRole = 'normal_user' | 'admin' | 'super_admin' | 'Customer' |
 export function isAdminRole(role?: string | null): boolean {
   if (!role) return false;
   const normalized = role.toLowerCase().replace(/[\s_-]/g, '');
+  // Explicitly deny any access to Customer, Delivery Partner/Rider, Franchise, or normal_user
+  if (
+    normalized.includes('customer') ||
+    normalized.includes('delivery') ||
+    normalized.includes('rider') ||
+    normalized.includes('partner') ||
+    normalized.includes('franchise') ||
+    normalized === 'normaluser'
+  ) {
+    return false;
+  }
   return normalized === 'admin' || normalized === 'superadmin';
 }
 
@@ -26,6 +37,17 @@ export function isAdminRole(role?: string | null): boolean {
 export function isSuperAdminRole(role?: string | null): boolean {
   if (!role) return false;
   const normalized = role.toLowerCase().replace(/[\s_-]/g, '');
+  // Explicitly deny any access to Customer, Delivery Partner/Rider, Franchise, or normal_user
+  if (
+    normalized.includes('customer') ||
+    normalized.includes('delivery') ||
+    normalized.includes('rider') ||
+    normalized.includes('partner') ||
+    normalized.includes('franchise') ||
+    normalized === 'normaluser'
+  ) {
+    return false;
+  }
   return normalized === 'superadmin';
 }
 
@@ -38,11 +60,14 @@ export function normalizePhoneNumber(phone?: string | null): string {
 }
 
 /**
- * Backward compatibility stub for cached client modules.
- * Note: Administrative authorization is strictly verified on the backend.
+ * Master administrator authorized phone number.
+ * Exclusively 9063692135 possesses Admin and Super Admin access.
  */
-export const AUTHORIZED_ADMIN_PHONE = '';
-export function isAuthorizedAdminPhone(_phone?: string | null): boolean {
-  return false;
+export const AUTHORIZED_ADMIN_PHONE = '9063692135';
+
+export function isAuthorizedAdminPhone(phone?: string | null): boolean {
+  if (!phone) return false;
+  const digits = normalizePhoneNumber(phone);
+  return digits === AUTHORIZED_ADMIN_PHONE || digits === `91${AUTHORIZED_ADMIN_PHONE}` || digits.endsWith(AUTHORIZED_ADMIN_PHONE);
 }
 

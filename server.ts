@@ -1,4 +1,6 @@
 import express from "express";
+import crypto from "crypto";
+import fs from "fs";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -8,7 +10,14 @@ import { createServerClient } from "./src/utils/supabase/server";
 
 dotenv.config();
 
-const supabaseServer = createServerClient();
+// Dynamic server-side Supabase client reading latest environment keys per request
+const supabaseServer = new Proxy({} as ReturnType<typeof createServerClient>, {
+  get(_target, prop) {
+    const client = createServerClient();
+    const value = (client as any)[prop];
+    return typeof value === 'function' ? value.bind(client) : value;
+  }
+});
 
 // Protected administrator identity stored securely on the server
 // The client never receives or inspects this value.
@@ -67,7 +76,6 @@ const INITIAL_HOTELS: HotelRecord[] = [
 
 let serverRestaurants: any[] = [...RESTAURANTS];
 let serverHotels: HotelRecord[] = [...INITIAL_HOTELS];
-let serverDishes: any[] = [...FOOD_CATALOG];
 
 // Helper to perform robust model calls with a lightweight backup and automatic retry
 async function callGeminiWithFallback(ai: any, params: { model?: string; contents: any; config?: any }) {
@@ -116,7 +124,7 @@ async function startServer() {
     try {
       const activeCatalog = (catalog && Array.isArray(catalog) && catalog.length > 0) 
         ? catalog 
-        : (serverDishes && serverDishes.length > 0 ? serverDishes : FOOD_CATALOG);
+        : FOOD_CATALOG;
 
       if (!activeCatalog || activeCatalog.length === 0) {
         return res.status(400).json({ error: "Catalog is empty" });
@@ -211,7 +219,7 @@ You MUST respond strictly with a valid JSON document matching this schema:
       try {
         const fallbackCatalog = (catalog && Array.isArray(catalog) && catalog.length > 0)
           ? catalog
-          : (serverDishes && serverDishes.length > 0 ? serverDishes : FOOD_CATALOG);
+          : FOOD_CATALOG;
         if (fallbackCatalog && fallbackCatalog.length > 0) {
           const fallbackItem = fallbackCatalog.find((f: any) => f.isBestSeller || f.rating >= 4.5) || fallbackCatalog[0];
           return res.json({
@@ -512,7 +520,7 @@ Current User Query: ${message}`;
       role = 'normal_user';
     }
 
-    const token = `nuvvo_sec_${Date.now()}_${Math.random().toString(36).substring(2, 12)}`;
+    const token = `nuvvo_sec_${Date.now()}_${crypto.randomBytes(24).toString('hex')}`;
     serverSessions.set(token, {
       phone: cleanPhone,
       role,
@@ -528,13 +536,19 @@ Current User Query: ${message}`;
     });
   });
 
+  const MAX_SESSION_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days session validity
+
   app.post("/api/auth/verify-role", (req, res) => {
     const authHeader = req.headers.authorization;
-    const token = authHeader?.replace('Bearer ', '') || req.body?.token;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : req.body?.token;
     if (!token || !serverSessions.has(token)) {
       return res.json({ role: 'normal_user', isAuthorizedAdmin: false });
     }
     const session = serverSessions.get(token)!;
+    if (Date.now() - session.createdAt > MAX_SESSION_AGE_MS) {
+      serverSessions.delete(token);
+      return res.json({ role: 'normal_user', isAuthorizedAdmin: false });
+    }
     res.json({
       role: session.role,
       isAuthorizedAdmin: session.role === 'admin' || session.role === 'super_admin'
@@ -544,18 +558,25 @@ Current User Query: ${message}`;
   // Middleware to strictly enforce administrator privileges on server endpoints
   function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
     const authHeader = req.headers.authorization;
-    const token = authHeader?.replace('Bearer ', '') || (req.query?.token as string);
-    // Allow if session exists or token is valid admin token pattern
-    if (token && (token.startsWith('nuvvo_sec_') || token.startsWith('admin_') || token === 'admin-master')) {
-      return next();
-    }
-    if (!token || !serverSessions.has(token)) {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: "Unauthorized: Active administrator authorization token required." });
     }
+
+    const token = authHeader.substring(7).trim();
+    if (!token || !serverSessions.has(token)) {
+      return res.status(401).json({ error: "Unauthorized: Invalid or expired administrator session." });
+    }
+
     const session = serverSessions.get(token)!;
+    if (Date.now() - session.createdAt > MAX_SESSION_AGE_MS) {
+      serverSessions.delete(token);
+      return res.status(401).json({ error: "Unauthorized: Session expired. Please log in again." });
+    }
+
     if (session.role !== 'admin' && session.role !== 'super_admin') {
       return res.status(403).json({ error: "Forbidden: Administrative privileges required." });
     }
+
     next();
   }
 
@@ -655,8 +676,36 @@ Current User Query: ${message}`;
 
   // Comprehensive catalog snapshot for instant Play Store / mobile sync
   app.get("/api/catalog/sync", async (_req, res) => {
+    let dishes: any[] = [];
+    try {
+      const { data } = await supabaseServer
+        .from('food_items')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (data && data.length > 0) {
+        dishes = data.map((row: any) => ({
+          id: String(row.id),
+          name: row.name,
+          description: row.description || '',
+          price: Number(row.price) || 0,
+          category: row.category || 'Specialty',
+          subcategory: row.subcategory || 'Classic',
+          image: row.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+          image_url: row.image_url,
+          isAvailable: row.is_available !== false,
+          is_available: row.is_available !== false,
+          vegIndicator: row.veg_indicator || row.vegIndicator || 'Veg',
+          rating: Number(row.rating) || 4.8,
+          reviewsCount: Number(row.reviews_count) || 12,
+          prepTime: Number(row.prep_time) || 20,
+          spiceLevel: row.spice_level || 'Medium',
+          restaurantId: row.restaurant_id || 'rest_1'
+        }));
+      }
+    } catch {}
+
     res.json({
-      dishes: serverDishes,
+      dishes,
       restaurants: serverRestaurants,
       hotels: serverHotels,
       timestamp: Date.now()
@@ -707,112 +756,121 @@ Current User Query: ${message}`;
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        const mapped = data.map((row: any) => ({
-          id: String(row.id),
-          name: row.name,
-          description: row.description || '',
-          price: Number(row.price) || 0,
-          category: row.category || 'Specialty',
-          image: row.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
-          image_url: row.image_url,
-          isAvailable: row.is_available !== false,
-          is_available: row.is_available !== false,
-          vegIndicator: row.vegIndicator || 'Veg',
-          rating: 4.8,
-          votes: 12
-        }));
-        return res.json(mapped);
+      if (error) {
+        console.error('Server /api/dishes Supabase fetch error:', error);
+        return res.status(error.code === 'PGRST205' ? 404 : 500).json({
+          error: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        });
       }
-    } catch (e) {
-      console.error('Server /api/dishes Supabase fetch error:', e);
+
+      const mapped = (data || []).map((row: any) => ({
+        id: String(row.id),
+        name: row.name,
+        description: row.description || '',
+        price: Number(row.price) || 0,
+        category: row.category || 'Specialty',
+        subcategory: row.subcategory || 'Classic',
+        image: row.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+        image_url: row.image_url,
+        isAvailable: row.is_available !== false,
+        is_available: row.is_available !== false,
+        vegIndicator: row.veg_indicator || row.vegIndicator || 'Veg',
+        rating: Number(row.rating) || 4.8,
+        reviewsCount: Number(row.reviews_count) || 12,
+        prepTime: Number(row.prep_time) || 20,
+        spiceLevel: row.spice_level || 'Medium',
+        restaurantId: row.restaurant_id || 'rest_1',
+        created_at: row.created_at
+      }));
+
+      return res.json(mapped);
+    } catch (e: any) {
+      console.error('Exception in GET /api/dishes:', e);
+      return res.status(500).json({ error: e?.message || "Internal server error connecting to Supabase" });
     }
-    res.json(serverDishes);
   });
 
   app.post("/api/admin/dishes", requireAdminAuth, async (req, res) => {
-    const { name, description, price, image, category, restaurantId, restaurantName, isAvailable, vegIndicator } = req.body;
+    const { name, description, price, image, image_url, category, subcategory, restaurantId, isAvailable, is_available, vegIndicator, spiceLevel } = req.body;
     if (!name || price === undefined) {
-      return res.status(400).json({ error: "Dish name and price are required." });
+      return res.status(400).json({ success: false, error: "Dish name and price are required." });
     }
-    const newDish = {
-      id: `dish_${Date.now()}`,
+
+    const payload = {
       name: String(name).trim(),
       description: String(description || '').trim(),
       price: Number(price),
-      image: image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
-      image_url: image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
       category: String(category || 'Specialty').trim(),
-      restaurantId: restaurantId || serverRestaurants[0]?.id || 'rest_1',
-      restaurantName: restaurantName || serverRestaurants[0]?.name || 'Partner Kitchen',
-      isAvailable: isAvailable !== false,
-      is_available: isAvailable !== false,
-      vegIndicator: vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
+      subcategory: String(subcategory || 'Chef Special').trim(),
+      image_url: image_url || image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+      is_available: isAvailable !== false && is_available !== false,
+      veg_indicator: vegIndicator === 'Veg' || vegIndicator === 'veg' ? 'Veg' : 'NonVeg',
       rating: 4.8,
-      votes: 12
+      reviews_count: 12,
+      prep_time: 20,
+      spice_level: spiceLevel || 'Medium',
+      restaurant_id: restaurantId || 'rest_1'
     };
 
     try {
       const { data, error } = await supabaseServer
         .from('food_items')
-        .insert([{
-          name: newDish.name,
-          description: newDish.description,
-          price: newDish.price,
-          category: newDish.category,
-          image_url: newDish.image,
-          is_available: newDish.isAvailable
-        }])
+        .insert([payload])
         .select();
 
-      if (!error && data && data[0]) {
-        const savedDish = {
-          ...newDish,
-          id: String(data[0].id)
-        };
-        serverDishes = [savedDish, ...serverDishes];
-        broadcastCatalogSSE('dish_created', savedDish);
-        return res.status(201).json({ success: true, dish: savedDish });
+      if (error) {
+        console.error('Supabase insert failed in /api/admin/dishes:', error);
+        return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+          hint: error.hint
+        });
       }
 
-      console.error('Supabase insert failed in /api/admin/dishes:', error);
-      const isRls = error?.code === '42501' || String(error?.message || '').includes('row-level security');
-      return res.status(isRls ? 403 : 500).json({
-        error: isRls
-          ? "Database permission denied: Supabase Row-Level Security restricts INSERT on public.food_items."
-          : (error?.message || "Failed to commit dish to Supabase public.food_items"),
-        code: error?.code
-      });
+      if (!data || data.length === 0) {
+        return res.status(500).json({
+          success: false,
+          error: "Database insert returned no record from Supabase public.food_items."
+        });
+      }
+
+      const savedDish = data[0];
+      broadcastCatalogSSE('dish_created', savedDish);
+      return res.status(201).json({ success: true, dish: savedDish });
     } catch (e: any) {
-      console.error('Supabase exception in /api/admin/dishes:', e);
+      console.error('Exception in /api/admin/dishes:', e);
       return res.status(500).json({
-        error: e?.message || "Server exception during dish creation"
+        success: false,
+        error: e?.message || "Server exception during Supabase dish creation"
       });
     }
   });
 
   app.put("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
     const { id } = req.params;
-    const index = serverDishes.findIndex((d: any) => String(d.id) === String(id));
-    if (index !== -1) {
-      serverDishes[index] = {
-        ...serverDishes[index],
-        ...req.body,
-        id: serverDishes[index].id
-      };
+
+    const payload: any = {};
+    if (req.body.name !== undefined) payload.name = req.body.name;
+    if (req.body.description !== undefined) payload.description = req.body.description;
+    if (req.body.price !== undefined) payload.price = Number(req.body.price);
+    if (req.body.category !== undefined) payload.category = req.body.category;
+    if (req.body.subcategory !== undefined) payload.subcategory = req.body.subcategory;
+    if (req.body.image !== undefined || req.body.image_url !== undefined) {
+      payload.image_url = req.body.image_url || req.body.image;
     }
+    if (req.body.isAvailable !== undefined || req.body.is_available !== undefined) {
+      payload.is_available = req.body.is_available !== undefined ? req.body.is_available : req.body.isAvailable;
+    }
+    if (req.body.vegIndicator !== undefined || req.body.veg_indicator !== undefined) {
+      payload.veg_indicator = req.body.veg_indicator || req.body.vegIndicator;
+    }
+    payload.updated_at = new Date().toISOString();
 
     try {
-      const payload: any = {};
-      if (req.body.name !== undefined) payload.name = req.body.name;
-      if (req.body.description !== undefined) payload.description = req.body.description;
-      if (req.body.price !== undefined) payload.price = req.body.price;
-      if (req.body.category !== undefined) payload.category = req.body.category;
-      if (req.body.image !== undefined || req.body.image_url !== undefined) payload.image_url = req.body.image_url || req.body.image;
-      if (req.body.isAvailable !== undefined || req.body.is_available !== undefined) {
-        payload.is_available = req.body.is_available !== undefined ? req.body.is_available : req.body.isAvailable;
-      }
-
       const { data, error } = await supabaseServer
         .from('food_items')
         .update(payload)
@@ -821,21 +879,26 @@ Current User Query: ${message}`;
 
       if (error) {
         console.error('Supabase update failed in /api/admin/dishes/:id:', error);
-        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
-        return res.status(isRls ? 403 : 500).json({
-          error: isRls
-            ? "Database permission denied: Supabase Row-Level Security restricts UPDATE on public.food_items."
-            : (error.message || "Failed to update dish in database"),
+        return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
+          success: false,
+          error: error.message,
           code: error.code
         });
       }
 
-      const updated = (data && data[0]) ? { ...serverDishes[index], ...data[0] } : (serverDishes[index] || req.body);
+      if (!data || data.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: `Dish with ID ${id} not found in Supabase public.food_items.`
+        });
+      }
+
+      const updated = data[0];
       broadcastCatalogSSE('dish_updated', updated);
       return res.json({ success: true, dish: updated });
     } catch (e: any) {
-      console.error('Supabase update notice in /api/admin/dishes/:id:', e);
-      return res.status(500).json({ error: e?.message || "Server exception during dish update" });
+      console.error('Exception in PUT /api/admin/dishes/:id:', e);
+      return res.status(500).json({ success: false, error: e?.message || "Server exception during Supabase dish update" });
     }
   });
 
@@ -850,21 +913,58 @@ Current User Query: ${message}`;
 
       if (error) {
         console.error('Supabase delete failed in /api/admin/dishes/:id:', error);
-        const isRls = error.code === '42501' || String(error.message || '').includes('row-level security');
-        return res.status(isRls ? 403 : 500).json({
-          error: isRls
-            ? "Database permission denied: Supabase Row-Level Security restricts DELETE on public.food_items."
-            : (error.message || "Failed to delete dish in database"),
+        return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
+          success: false,
+          error: error.message,
           code: error.code
         });
       }
 
-      serverDishes = serverDishes.filter((d: any) => String(d.id) !== String(id));
       broadcastCatalogSSE('dish_deleted', { id });
-      return res.json({ success: true, message: "Dish removed successfully." });
+      return res.json({ success: true, message: `Dish ${id} permanently removed from Supabase.` });
     } catch (e: any) {
-      console.error('Supabase delete notice in /api/admin/dishes/:id:', e);
-      return res.status(500).json({ error: e?.message || "Server exception during dish deletion" });
+      console.error('Exception in DELETE /api/admin/dishes/:id:', e);
+      return res.status(500).json({ success: false, error: e?.message || "Server exception during Supabase dish deletion" });
+    }
+  });
+
+  app.post("/api/admin/dishes/seed", requireAdminAuth, async (_req, res) => {
+    try {
+      const defaultPool = [...FOOD_CATALOG.slice(0, 25)];
+      const payload = defaultPool.map((item: any) => ({
+        name: item.name,
+        description: item.description || '',
+        price: Number(item.price) || 0,
+        category: item.category || 'Specialty',
+        subcategory: item.subcategory || 'Signature',
+        image_url: item.image || item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+        is_available: item.isAvailable !== false,
+        veg_indicator: item.vegIndicator === 'veg' || item.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
+        rating: item.rating || 4.7,
+        reviews_count: item.reviewsCount || 15,
+        prep_time: item.prepTime || 20,
+        spice_level: item.spiceLevel || 'Medium',
+        restaurant_id: item.restaurantId || 'rest_1'
+      }));
+
+      const { data, error } = await supabaseServer
+        .from('food_items')
+        .insert(payload)
+        .select();
+
+      if (error) {
+        console.error('Supabase seed error:', error);
+        return res.status(error.code === '42501' ? 403 : error.code === 'PGRST205' ? 404 : 500).json({
+          success: false,
+          error: error.message,
+          code: error.code
+        });
+      }
+
+      return res.json({ success: true, count: data?.length || 0 });
+    } catch (e: any) {
+      console.error('Exception in /api/admin/dishes/seed:', e);
+      return res.status(500).json({ success: false, error: e?.message || "Internal server error" });
     }
   });
 
@@ -937,7 +1037,6 @@ Current User Query: ${message}`;
     if (!scope || scope === 'all_admin_data' || scope === 'catalog') {
       serverRestaurants = [...RESTAURANTS];
       serverHotels = [...INITIAL_HOTELS];
-      serverDishes = [...FOOD_CATALOG];
     }
 
     if (!scope || scope === 'all_admin_data' || scope === 'delivery_partners') {
@@ -950,22 +1049,23 @@ Current User Query: ${message}`;
       message: "Administrator-managed configuration successfully reset to pristine system baseline.",
       deliveryPartnersCount: serverDeliveryPartners.length,
       restaurantsCount: serverRestaurants.length,
-      hotelsCount: serverHotels.length,
-      dishesCount: serverDishes.length
+      hotelsCount: serverHotels.length
     });
   });
 
-  // Vite middleware setup
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware setup (dev mode) vs Static asset serving (production)
+  const distPath = path.join(process.cwd(), 'dist');
+  const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === 'dev' || !fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (isDev) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -18,7 +18,7 @@ import AddressSelectorModal from './AddressSelectorModal';
 import { useBannerActions } from './BannerSlider';
 import PromotionalCarousel from './PromotionalCarousel';
 import { LazyImage } from './LazyImage';
-import { isSuperAdminRole } from '../config/authConfig';
+import { isSuperAdminRole, isAuthorizedAdminPhone } from '../config/authConfig';
 
 export default function Home() {
   const { 
@@ -1471,7 +1471,7 @@ export default function Home() {
             {darkMode ? <Sun className="w-4.5 h-4.5" /> : <Moon className="w-4.5 h-4.5" />}
           </button>
           
-          {(isSuperAdmin || isSuperAdminRole(user?.role)) && (
+          {(isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedAdminPhone(user?.phone) && (
             <button
               onClick={() => setCurrentPage('super-admin')}
               aria-label="Access Super Admin Master Control Panel"
