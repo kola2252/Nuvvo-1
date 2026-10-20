@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
-import { Home as HomeIcon, ShoppingBag, Settings, Bike, Building, Compass } from 'lucide-react';
+import { Home as HomeIcon, ShoppingBag, Settings, Bike, Building, Compass, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
+import { isAuthorizedAdminPhone, isAdminRole } from '../config/authConfig';
 
 interface TabButtonProps {
   id: string;
@@ -74,7 +75,11 @@ const TabButton = React.memo(function TabButton({
 });
 
 function BottomNav() {
-  const { currentPage, setCurrentPage, cart, currentTheme } = useApp();
+  const { currentPage, setCurrentPage, cart, currentTheme, user, isAdmin, isSuperAdmin } = useApp();
+
+  const isMasterAdmin = useMemo(() => {
+    return isAdmin || isSuperAdmin || isAdminRole(user?.role) || isAuthorizedAdminPhone(user?.phone);
+  }, [isAdmin, isSuperAdmin, user?.role, user?.phone]);
 
   const cartCount = useMemo(() => cart.reduce((temp, item) => temp + item.quantity, 0), [cart]);
 
@@ -96,14 +101,22 @@ function BottomNav() {
     setCurrentPage(id);
   }, [setCurrentPage]);
 
-  const tabs = useMemo(() => [
-    { id: 'home', label: 'Home', icon: HomeIcon },
-    { id: 'cart', label: 'Cart', icon: ShoppingBag, badge: cartCount },
-    { id: 'partner', label: 'Rider', icon: Bike },
-    { id: 'account', label: 'Settings', icon: Settings },
-    { id: 'franchise', label: 'Franchise', icon: Building },
-    { id: 'delivery-options', label: 'Delivery Options', icon: Compass },
-  ], [cartCount]);
+  const tabs = useMemo(() => {
+    const list = [
+      { id: 'home', label: 'Home', icon: HomeIcon },
+      { id: 'cart', label: 'Cart', icon: ShoppingBag, badge: cartCount },
+    ];
+    if (isMasterAdmin) {
+      list.push({ id: 'admin', label: 'Admin Settings', icon: ShieldCheck });
+    }
+    list.push(
+      { id: 'account', label: 'Settings', icon: Settings },
+      { id: 'partner', label: 'Rider', icon: Bike },
+      { id: 'franchise', label: 'Franchise', icon: Building },
+      { id: 'delivery-options', label: 'Delivery', icon: Compass },
+    );
+    return list;
+  }, [cartCount, isMasterAdmin]);
 
   return (
     <nav role="navigation" aria-label="Bottom navigation menu" className="fixed bottom-0 left-0 right-0 bg-white dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-800 py-2.5 px-4 shadow-[0_-10px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_-10px_40px_rgba(0,0,0,0.5)] flex justify-around items-center z-[150] transition-all duration-300">

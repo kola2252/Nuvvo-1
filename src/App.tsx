@@ -17,6 +17,7 @@ import CartScreen from './components/CartScreen';
 import AccountScreen from './components/AccountScreen';
 import DeliveryOptionsScreen from './components/DeliveryOptionsScreen';
 import DesktopSupportWidgets from './components/DesktopSupportWidgets';
+import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
 
 // Code-split heavy secondary screens to speed up initial bundle load
@@ -237,6 +238,10 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Global Admin & Super Admin Save Warning Modal & Live Alert Banner */}
+      <AdminSaveWarningModal />
+      <AdminSaveAlertBanner />
       
     </div>
   );

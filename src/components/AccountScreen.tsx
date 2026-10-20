@@ -31,7 +31,8 @@ export default function AccountScreen() {
     nuvvoPoints, pointsHistory, awardPointsBonus, updateUserProfile,
     currentTheme, setThemeId, themesList, requestNotificationPermission, notificationPermission,
     pageHistory, goBack, closePage, language, setLanguage,
-    referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints
+    referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
+    requestAdminSaveConfirmation
   } = useApp();
 
   // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
@@ -433,17 +434,25 @@ Thank you for dining with Nuvvo Gourmet!`;
       cardBrand: cardBrand
     };
 
-    const updated = [...savedCards, newCard];
-    setSavedCards(updated);
-    localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
+    const executeSaveCard = () => {
+      const updated = [...savedCards, newCard];
+      setSavedCards(updated);
+      localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
 
-    // Reset Form
-    setCardHolder('');
-    setCardNumber('');
-    setCardExpiry('');
-    setCardCvv('');
-    setShowPayForm(null);
-    alert('💳 Card pre-authorized and securely saved inside your profile.');
+      // Reset Form
+      setCardHolder('');
+      setCardNumber('');
+      setCardExpiry('');
+      setCardCvv('');
+      setShowPayForm(null);
+    };
+
+    requestAdminSaveConfirmation({
+      title: `Save Payment Card: ${cardBrand} (${hiddenNum})`,
+      itemType: 'Payment Method (చెల్లింపు కార్డు వివరాలు)',
+      description: `Cardholder: ${cardHolder.trim()} • Expiration: ${cardExpiry}`,
+      onConfirm: executeSaveCard
+    });
   };
 
   const handleSaveUPI = (e: React.FormEvent) => {
@@ -469,15 +478,23 @@ Thank you for dining with Nuvvo Gourmet!`;
       provider: upiProvider
     };
 
-    const updated = [...savedUPIs, newUpi];
-    setSavedUPIs(updated);
-    localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
+    const executeSaveUPI = () => {
+      const updated = [...savedUPIs, newUpi];
+      setSavedUPIs(updated);
+      localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
 
-    // Reset Form
-    setUpiLabel('');
-    setUpiIdInput('');
-    setShowPayForm(null);
-    alert('⚡ Secure UPI profile created and saved for direct one-tap checkout!');
+      // Reset Form
+      setUpiLabel('');
+      setUpiIdInput('');
+      setShowPayForm(null);
+    };
+
+    requestAdminSaveConfirmation({
+      title: `Save UPI ID: "${upiLabel.trim()}" (${upiIdInput.trim().toLowerCase()})`,
+      itemType: 'UPI Profile (యూపీఐ వివరాలు)',
+      description: `Provider: ${upiProvider} • ID: ${upiIdInput.trim().toLowerCase()}`,
+      onConfirm: executeSaveUPI
+    });
   };
 
   const handleDeleteCard = (cardId: string) => {
@@ -583,33 +600,42 @@ Thank you for dining with Nuvvo Gourmet!`;
       isDefault: addrIsDefault
     };
 
-    let updatedList: Address[] = [];
-    if (editingAddrId) {
-      updatedList = preSavedAddresses.map(a => a.id === editingAddrId ? newAddr : a);
-    } else {
-      updatedList = [...preSavedAddresses, newAddr];
-    }
-
-    if (addrIsDefault) {
-      updatedList = updatedList.map(a => ({
-        ...a,
-        isDefault: a.id === newAddr.id
-      }));
-      setCurrentAddress(newAddr);
-    } else {
-      if (updatedList.length === 1) {
-        updatedList[0].isDefault = true;
-        setCurrentAddress(updatedList[0]);
+    const executeSaveAddress = () => {
+      let updatedList: Address[] = [];
+      if (editingAddrId) {
+        updatedList = preSavedAddresses.map(a => a.id === editingAddrId ? newAddr : a);
+      } else {
+        updatedList = [...preSavedAddresses, newAddr];
       }
-    }
 
-    updateUserAddresses(updatedList);
-    setShowAddrForm(false);
-    setEditingAddrId(null);
-    setAddressSuccessMsg(editingAddrId ? "Address updated successfully." : "New delivery location successfully stored in your profile.");
-    setTimeout(() => {
-      setAddressSuccessMsg(null);
-    }, 4000);
+      if (addrIsDefault) {
+        updatedList = updatedList.map(a => ({
+          ...a,
+          isDefault: a.id === newAddr.id
+        }));
+        setCurrentAddress(newAddr);
+      } else {
+        if (updatedList.length === 1) {
+          updatedList[0].isDefault = true;
+          setCurrentAddress(updatedList[0]);
+        }
+      }
+
+      updateUserAddresses(updatedList);
+      setShowAddrForm(false);
+      setEditingAddrId(null);
+      setAddressSuccessMsg(editingAddrId ? "Address updated successfully." : "New delivery location successfully stored in your profile.");
+      setTimeout(() => {
+        setAddressSuccessMsg(null);
+      }, 4000);
+    };
+
+    requestAdminSaveConfirmation({
+      title: `${editingAddrId ? 'Update Delivery Address' : 'Save New Delivery Address'}: ${addrFlatNo}, ${addrArea}`,
+      itemType: 'Delivery Location (డెలివరీ చిరునామా సేవ్)',
+      description: `Type: ${addrType} • City: ${addrCity} • Landmark: ${addrLandmark || 'N/A'}`,
+      onConfirm: executeSaveAddress
+    });
   };
 
   const handleUpdateProfile = (e: React.FormEvent) => {
@@ -623,46 +649,55 @@ Thank you for dining with Nuvvo Gourmet!`;
       return;
     }
 
-    let updatedAddresses = user?.addresses ? [...user.addresses] : [];
-    if (profileFlatNo.trim() || profileArea.trim()) {
-      const primaryAddr = user?.addresses?.find(a => a.isDefault) || user?.addresses?.[0];
-      if (primaryAddr) {
-        const updatedAddr: Address = {
-          ...primaryAddr,
-          flatNo: profileFlatNo.trim() || primaryAddr.flatNo,
-          area: profileArea.trim() || primaryAddr.area,
-          city: profileCity.trim() || primaryAddr.city
-        };
-        updatedAddresses = updatedAddresses.map(a => a.id === primaryAddr.id ? updatedAddr : a);
-        setCurrentAddress(updatedAddr);
-      } else {
-        const newAddr: Address = {
-          id: `addr_${Date.now()}`,
-          type: 'Home',
-          flatNo: profileFlatNo.trim() || 'N/A',
-          area: profileArea.trim() || 'Chirala Delivery Point',
-          city: profileCity.trim() || 'Chirala',
-          isDefault: true
-        };
-        updatedAddresses = [newAddr];
-        setCurrentAddress(newAddr);
+    const executeUpdateProfile = () => {
+      let updatedAddresses = user?.addresses ? [...user.addresses] : [];
+      if (profileFlatNo.trim() || profileArea.trim()) {
+        const primaryAddr = user?.addresses?.find(a => a.isDefault) || user?.addresses?.[0];
+        if (primaryAddr) {
+          const updatedAddr: Address = {
+            ...primaryAddr,
+            flatNo: profileFlatNo.trim() || primaryAddr.flatNo,
+            area: profileArea.trim() || primaryAddr.area,
+            city: profileCity.trim() || primaryAddr.city
+          };
+          updatedAddresses = updatedAddresses.map(a => a.id === primaryAddr.id ? updatedAddr : a);
+          setCurrentAddress(updatedAddr);
+        } else {
+          const newAddr: Address = {
+            id: `addr_${Date.now()}`,
+            type: 'Home',
+            flatNo: profileFlatNo.trim() || 'N/A',
+            area: profileArea.trim() || 'Chirala Delivery Point',
+            city: profileCity.trim() || 'Chirala',
+            isDefault: true
+          };
+          updatedAddresses = [newAddr];
+          setCurrentAddress(newAddr);
+        }
       }
-    }
 
-    // Single atomic update ensuring name, email and addresses persist together
-    updateUserProfile(
-      trimmedName, 
-      trimmedEmail, 
-      user?.avatar, 
-      profilePhone.trim() || user?.phone, 
-      updatedAddresses.length ? updatedAddresses : undefined
-    );
+      // Single atomic update ensuring name, email and addresses persist together
+      updateUserProfile(
+        trimmedName, 
+        trimmedEmail, 
+        user?.avatar, 
+        profilePhone.trim() || user?.phone, 
+        updatedAddresses.length ? updatedAddresses : undefined
+      );
 
-    setProfileSavedSuccess(true);
-    setTimeout(() => {
-      setProfileSavedSuccess(false);
-    }, 4000);
-    setIsEditingInfo(false);
+      setProfileSavedSuccess(true);
+      setTimeout(() => {
+        setProfileSavedSuccess(false);
+      }, 4000);
+      setIsEditingInfo(false);
+    };
+
+    requestAdminSaveConfirmation({
+      title: `Save Profile Details: "${trimmedName}"`,
+      itemType: 'User Profile (ఖాతా ప్రొఫైల్ వివరాలు)',
+      description: `Phone: ${profilePhone.trim() || user?.phone} • Email: ${trimmedEmail || 'Not Provided'}`,
+      onConfirm: executeUpdateProfile
+    });
   };
 
   const handleSelfRegister = (e: React.FormEvent) => {
@@ -985,6 +1020,24 @@ Thank you for dining with Nuvvo Gourmet!`;
                     <span className="text-[9px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-bold uppercase animate-pulse">Super Master</span>
                   )}
                 </div>
+                {isAuthorizedAdmin && (
+                  <div className="mt-2.5 p-2.5 bg-gradient-to-r from-red-500/15 to-rose-500/15 border border-red-500/30 rounded-xl flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                      <div>
+                        <p className="text-[11px] font-black text-red-700 dark:text-red-300">Master Admin Clearance</p>
+                        <p className="text-[9.5px] text-zinc-500">+91 9063692135</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage('admin')}
+                      className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-black text-[10.5px] rounded-lg shadow-xs transition active:scale-95 cursor-pointer shrink-0 flex items-center gap-1"
+                    >
+                      <Settings className="w-3 h-3" /> Admin Settings
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1816,14 +1869,21 @@ Thank you for dining with Nuvvo Gourmet!`;
                 <button
                   type="button"
                   onClick={() => {
-                    const success = updateReferralSettings({
-                      referrerBonusPoints: adminReferrerBonus,
-                      refereeBonusPoints: adminRefereeBonus
+                    requestAdminSaveConfirmation({
+                      title: `Update Referral & Loyalty Bonus Rules`,
+                      itemType: 'Platform Referral Rules (లాయల్టీ బోనస్ నిబంధనలు)',
+                      description: `Referrer Bonus: ₹${adminReferrerBonus} • Referee Bonus: ₹${adminRefereeBonus}`,
+                      onConfirm: () => {
+                        const success = updateReferralSettings({
+                          referrerBonusPoints: adminReferrerBonus,
+                          refereeBonusPoints: adminRefereeBonus
+                        });
+                        if (success) {
+                          setAdminReferralStatusMsg('Referral bonus rules saved successfully!');
+                          setTimeout(() => setAdminReferralStatusMsg(null), 3000);
+                        }
+                      }
                     });
-                    if (success) {
-                      setAdminReferralStatusMsg('Referral bonus rules saved successfully!');
-                      setTimeout(() => setAdminReferralStatusMsg(null), 3000);
-                    }
                   }}
                   className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white font-black text-[10px] uppercase rounded-xl transition cursor-pointer shadow-sm"
                 >

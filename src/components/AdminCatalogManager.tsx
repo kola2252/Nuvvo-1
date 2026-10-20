@@ -30,7 +30,8 @@ export default function AdminCatalogManager() {
     addRestaurant, updateRestaurant, deleteRestaurant,
     deliveryPartners, addDeliveryPartner, removeDeliveryPartner, 
     toggleDeliveryPartnerAvailability, updateRiderStatus,
-    orders, assignOrderToDeliveryPartner, resetAdminData 
+    orders, assignOrderToDeliveryPartner, resetAdminData,
+    requestAdminSaveConfirmation
   } = useApp();
   const [activeTab, setActiveTab] = useState<'dishes' | 'restaurants' | 'hotels' | 'riders'>('dishes');
 
@@ -190,59 +191,70 @@ export default function AdminCatalogManager() {
       return;
     }
 
-    setLoading(true);
-    try {
-      const isEdit = modalMode === 'edit' && editingItem?.id;
+    const isEdit = modalMode === 'edit' && editingItem?.id;
+    const dishTitle = editingItem.name.trim();
 
-      const payload = {
-        name: editingItem.name.trim(),
-        description: editingItem.description ? String(editingItem.description).trim() : '',
-        price: priceNum,
-        category: editingItem.category ? String(editingItem.category).trim() : 'Biryani & Rice',
-        subcategory: editingItem.subcategory ? String(editingItem.subcategory).trim() : 'Chef Special',
-        image: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
-        image_url: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
-        isAvailable: editingItem.isAvailable !== false,
-        is_available: editingItem.isAvailable !== false,
-        vegIndicator: editingItem.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
-        restaurantId: editingItem.restaurantId || restaurantsList[0]?.id || 'rest_1',
-        prepTime: Number(editingItem.prepTime) || 20,
-        spiceLevel: editingItem.spiceLevel || 'Medium'
-      };
+    const executeSaveDish = async () => {
+      setLoading(true);
+      try {
+        const payload = {
+          name: dishTitle,
+          description: editingItem.description ? String(editingItem.description).trim() : '',
+          price: priceNum,
+          category: editingItem.category ? String(editingItem.category).trim() : 'Biryani & Rice',
+          subcategory: editingItem.subcategory ? String(editingItem.subcategory).trim() : 'Chef Special',
+          image: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+          image_url: editingItem.image || editingItem.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+          isAvailable: editingItem.isAvailable !== false,
+          is_available: editingItem.isAvailable !== false,
+          vegIndicator: editingItem.vegIndicator === 'Veg' ? 'Veg' : 'NonVeg',
+          restaurantId: editingItem.restaurantId || restaurantsList[0]?.id || 'rest_1',
+          prepTime: Number(editingItem.prepTime) || 20,
+          spiceLevel: editingItem.spiceLevel || 'Medium'
+        };
 
-      if (isEdit) {
-        // Update in Supabase
-        const res = await updateFoodItem(editingItem.id, payload);
+        if (isEdit) {
+          // Update in Supabase
+          const res = await updateFoodItem(editingItem.id, payload);
 
-        if (!res?.success) {
-          showFeedback(res?.error || 'Failed to update dish in Supabase public.food_items', 'error');
-          return;
+          if (!res?.success) {
+            showFeedback(res?.error || 'Failed to update dish in Supabase public.food_items', 'error');
+            return;
+          }
+        } else {
+          // Save new dish to Supabase public.food_items
+          const res = await addFoodItem({
+            ...payload,
+            rating: 4.8,
+            reviewsCount: 15,
+            ingredients: ['Fresh regional ingredients'],
+            reviews: []
+          });
+
+          if (!res?.success) {
+            showFeedback(res?.error || 'Failed to save dish to Supabase public.food_items', 'error');
+            return;
+          }
         }
-      } else {
-        // Save new dish to Supabase public.food_items
-        const res = await addFoodItem({
-          ...payload,
-          rating: 4.8,
-          reviewsCount: 15,
-          ingredients: ['Fresh regional ingredients'],
-          reviews: []
-        });
 
-        if (!res?.success) {
-          showFeedback(res?.error || 'Failed to save dish to Supabase public.food_items', 'error');
-          return;
-        }
+        showFeedback(`Dish "${dishTitle}" saved to Supabase food_items successfully!`);
+        setModalMode(null);
+        setEditingItem(null);
+        await refetchFoodCatalog();
+      } catch (err: any) {
+        showFeedback(err.message || 'Operation failed', 'error');
+      } finally {
+        setLoading(false);
       }
+    };
 
-      showFeedback(`Dish "${editingItem.name}" saved to Supabase food_items successfully!`);
-      setModalMode(null);
-      setEditingItem(null);
-      await refetchFoodCatalog();
-    } catch (err: any) {
-      showFeedback(err.message || 'Operation failed', 'error');
-    } finally {
-      setLoading(false);
-    }
+    // Trigger Admin & Super Admin Warning Confirmation
+    requestAdminSaveConfirmation({
+      title: `${isEdit ? 'Update Dish' : 'Add New Dish'}: "${dishTitle}"`,
+      itemType: 'Dish / Menu Catalog (ఆహార పదార్థం)',
+      description: `Price: ₹${priceNum} • Category: ${editingItem.category || 'Biryani & Rice'} • Veg/Non-Veg: ${editingItem.vegIndicator || 'NonVeg'}`,
+      onConfirm: executeSaveDish
+    });
   };
 
   const handleDeleteDish = async (dishId: string, name: string) => {
@@ -266,72 +278,95 @@ export default function AdminCatalogManager() {
   };
 
   const handleToggleDishAvailability = async (dish: any) => {
-    try {
-      const nextStatus = dish.isAvailable !== false && dish.is_available !== false ? false : true;
-      const res = await updateFoodItem(dish.id, {
-        isAvailable: nextStatus,
-        is_available: nextStatus
-      });
-      if (!res?.success) {
-        showFeedback(res?.error || 'Failed to toggle availability in Supabase', 'error');
-        return;
+    const nextStatus = dish.isAvailable !== false && dish.is_available !== false ? false : true;
+    requestAdminSaveConfirmation({
+      title: `${nextStatus ? 'Enable Dish' : 'Disable Dish'}: "${dish.name}"`,
+      itemType: 'Dish Live Availability (లభ్యత స్థితి)',
+      description: `Dish "${dish.name}" will be marked as ${nextStatus ? 'AVAILABLE for customers to order' : 'UNAVAILABLE / OUT OF STOCK'}.`,
+      onConfirm: async () => {
+        try {
+          const res = await updateFoodItem(dish.id, {
+            isAvailable: nextStatus,
+            is_available: nextStatus
+          });
+          if (!res?.success) {
+            showFeedback(res?.error || 'Failed to toggle availability in Supabase', 'error');
+            return;
+          }
+          showFeedback(`Dish availability updated to ${nextStatus ? 'Available' : 'Unavailable'} in Supabase.`);
+        } catch (e: any) {
+          showFeedback(e?.message || 'Update failed', 'error');
+        }
       }
-      showFeedback(`Dish availability updated to ${nextStatus ? 'Available' : 'Unavailable'} in Supabase.`);
-    } catch (e: any) {
-      showFeedback(e?.message || 'Update failed', 'error');
-    }
+    });
   };
 
   // --- RESTAURANT ACTIONS ---
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    try {
-      const isEdit = modalMode === 'edit' && editingItem?.id;
-
-      if (isEdit) {
-        if (updateRestaurant) {
-          updateRestaurant(editingItem.id, editingItem);
-        }
-      } else {
-        const newRestaurant = {
-          ...editingItem,
-          id: editingItem.id || `chirala_rest_${Date.now()}`,
-          rating: Number(editingItem.rating) || 4.3,
-          reviewsCount: Number(editingItem.reviewsCount) || 12,
-          deliveryTime: Number(editingItem.deliveryTime) || 30,
-          costForTwo: Number(editingItem.costForTwo) || 250,
-          cuisines: Array.isArray(editingItem.cuisines)
-            ? editingItem.cuisines
-            : String(editingItem.cuisines || 'Local Cuisine').split(',').map((c: string) => c.trim()),
-          isApproved: true,
-          isActive: true
-        };
-        if (addRestaurant) {
-          addRestaurant(newRestaurant);
-        }
-      }
-
-      // Also sync to server API
-      try {
-        const url = isEdit ? `/api/admin/restaurants/${editingItem.id}` : '/api/admin/restaurants';
-        const method = isEdit ? 'PUT' : 'POST';
-        await fetch(url, {
-          method,
-          headers: getAuthHeaders(),
-          body: JSON.stringify(editingItem)
-        });
-      } catch {}
-
-      showFeedback(`Restaurant "${editingItem.name}" saved & live broadcasted to all customer & Play Store apps!`);
-      setModalMode(null);
-      setEditingItem(null);
-      fetchRestaurants();
-    } catch (err: any) {
-      showFeedback(err.message || 'Operation failed', 'error');
-    } finally {
-      setLoading(false);
+    if (!editingItem?.name || !editingItem.name.trim()) {
+      showFeedback('Restaurant name is required.', 'error');
+      return;
     }
+
+    const isEdit = modalMode === 'edit' && editingItem?.id;
+    const restName = editingItem.name.trim();
+
+    const executeSaveRestaurant = async () => {
+      setLoading(true);
+      try {
+        if (isEdit) {
+          if (updateRestaurant) {
+            updateRestaurant(editingItem.id, editingItem);
+          }
+        } else {
+          const newRestaurant = {
+            ...editingItem,
+            id: editingItem.id || `chirala_rest_${Date.now()}`,
+            rating: Number(editingItem.rating) || 4.3,
+            reviewsCount: Number(editingItem.reviewsCount) || 12,
+            deliveryTime: Number(editingItem.deliveryTime) || 30,
+            costForTwo: Number(editingItem.costForTwo) || 250,
+            cuisines: Array.isArray(editingItem.cuisines)
+              ? editingItem.cuisines
+              : String(editingItem.cuisines || 'Local Cuisine').split(',').map((c: string) => c.trim()),
+            isApproved: true,
+            isActive: true
+          };
+          if (addRestaurant) {
+            addRestaurant(newRestaurant);
+          }
+        }
+
+        // Also sync to server API
+        try {
+          const url = isEdit ? `/api/admin/restaurants/${editingItem.id}` : '/api/admin/restaurants';
+          const method = isEdit ? 'PUT' : 'POST';
+          await fetch(url, {
+            method,
+            headers: getAuthHeaders(),
+            body: JSON.stringify(editingItem)
+          });
+        } catch {}
+
+        showFeedback(`Restaurant "${restName}" saved & live broadcasted to all customer & Play Store apps!`);
+        setModalMode(null);
+        setEditingItem(null);
+        fetchRestaurants();
+      } catch (err: any) {
+        showFeedback(err.message || 'Operation failed', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Trigger Admin Save Warning Confirmation
+    requestAdminSaveConfirmation({
+      title: `${isEdit ? 'Update Restaurant' : 'Add New Restaurant'}: "${restName}"`,
+      itemType: 'Restaurant Profile (రెస్టారెంట్ వివరాలు)',
+      description: `Phone: ${editingItem.phone || 'N/A'} • Cost for two: ₹${editingItem.costForTwo || '250'} • Rating: ${editingItem.rating || '4.5'}`,
+      onConfirm: executeSaveRestaurant
+    });
   };
 
   const handleDeleteRestaurant = async (id: string, name: string) => {
@@ -359,32 +394,49 @@ export default function AdminCatalogManager() {
   // --- HOTEL ACTIONS ---
   const handleSaveHotel = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    try {
-      const isEdit = modalMode === 'edit' && editingItem?.id;
-      const url = isEdit ? `/api/admin/hotels/${editingItem.id}` : '/api/admin/hotels';
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: getAuthHeaders(),
-        body: JSON.stringify(editingItem)
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Authorization rejected.' }));
-        throw new Error(err.error || 'Failed to save hotel');
-      }
-
-      showFeedback(`Hotel "${editingItem.name}" saved successfully!`);
-      setModalMode(null);
-      setEditingItem(null);
-      fetchHotels();
-    } catch (err: any) {
-      showFeedback(err.message || 'Operation failed', 'error');
-    } finally {
-      setLoading(false);
+    if (!editingItem?.name || !editingItem.name.trim()) {
+      showFeedback('Hotel name is required.', 'error');
+      return;
     }
+
+    const isEdit = modalMode === 'edit' && editingItem?.id;
+    const hotelName = editingItem.name.trim();
+
+    const executeSaveHotel = async () => {
+      setLoading(true);
+      try {
+        const url = isEdit ? `/api/admin/hotels/${editingItem.id}` : '/api/admin/hotels';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+          method,
+          headers: getAuthHeaders(),
+          body: JSON.stringify(editingItem)
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Authorization rejected.' }));
+          throw new Error(err.error || 'Failed to save hotel');
+        }
+
+        showFeedback(`Hotel "${hotelName}" saved successfully!`);
+        setModalMode(null);
+        setEditingItem(null);
+        fetchHotels();
+      } catch (err: any) {
+        showFeedback(err.message || 'Operation failed', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Trigger Admin Save Warning Confirmation
+    requestAdminSaveConfirmation({
+      title: `${isEdit ? 'Update Hotel' : 'Add New Hotel'}: "${hotelName}"`,
+      itemType: 'Hotel / Hospitality Partner (హోటల్ పార్టనర్)',
+      description: `Address: ${editingItem.address || 'Chirala'} • Phone: ${editingItem.phone || 'N/A'}`,
+      onConfirm: executeSaveHotel
+    });
   };
 
   const handleDeleteHotel = async (id: string, name: string) => {

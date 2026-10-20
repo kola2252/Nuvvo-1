@@ -11,7 +11,7 @@ import {
   Settings, Save, PieChart, BarChart2, DollarSign, Bike, Check, Flame, Upload, ShieldAlert,
   Briefcase, MapPin, Download, Send, Globe, Award, Ban, Phone, MessageSquare, FileText, X,
   Image as ImageIcon, Camera, RefreshCw, Trash2, AlertTriangle, Sparkles, Percent,
-  QrCode, Copy, CheckCircle2, ShieldCheck, IndianRupee, ExternalLink, Smartphone
+  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { VegIndicator, FranchiseApplication } from '../types';
@@ -27,10 +27,12 @@ export default function AdminPanel() {
     addFoodItem, updateFoodItem, deleteFoodItem, foodLoading, foodError, supabaseConnected, seedDishesToSupabase, refetchFoodCatalog,
     franchiseApplications, deliveryPartner, user, updateFranchiseStatus,
     restaurants, registerNewRestaurantRequest, approveRestaurant, isAdmin, isSuperAdmin, setCurrentPage,
-    updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings
+    updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings,
+    requestAdminSaveConfirmation
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>('analytics');
+  const [activeTab, setActiveTab] = useState<'settings' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>('settings');
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'initiated' | 'awaiting_confirmation' | 'confirmed' | 'failed'>('all');
 
   // PhonePe UPI & Bank Account Configuration States
@@ -76,16 +78,23 @@ export default function AdminPanel() {
       alert('Please enter a valid PhonePe UPI ID (e.g. mobile@ybl or username@axl)');
       return;
     }
-    updateStorePaymentSettings({
-      upiId: adminPhonePeUpiId.trim().toLowerCase(),
-      bankName: adminBankName.trim() || 'Karur Vysya Bank - 4761',
-      merchantName: adminMerchantName.trim() || 'Nuvvo Food & Hospitality',
-      phonePeNumber: adminPhonePePhone.trim() || '9876543210',
-      accountHolderName: adminAccountHolder.trim() || 'Arjun Gorrepati (Nuvvo Foods)'
+
+    requestAdminSaveConfirmation({
+      title: `PhonePe Merchant Settings (${adminPhonePeUpiId.trim().toLowerCase()})`,
+      itemType: 'Payment Gateway (PhonePe UPI అకౌంట్)',
+      description: `Bank: ${adminBankName.trim() || 'Karur Vysya Bank'} • Merchant: ${adminMerchantName.trim()} • Receiver Mobile: ${adminPhonePePhone.trim()}`,
+      onConfirm: () => {
+        updateStorePaymentSettings({
+          upiId: adminPhonePeUpiId.trim().toLowerCase(),
+          bankName: adminBankName.trim() || 'Karur Vysya Bank - 4761',
+          merchantName: adminMerchantName.trim() || 'Nuvvo Food & Hospitality',
+          phonePeNumber: adminPhonePePhone.trim() || '9876543210',
+          accountHolderName: adminAccountHolder.trim() || 'Arjun Gorrepati (Nuvvo Foods)'
+        });
+        setIsSavedSuccess(true);
+        setTimeout(() => setIsSavedSuccess(false), 4000);
+      }
     });
-    setIsSavedSuccess(true);
-    setTimeout(() => setIsSavedSuccess(false), 4000);
-    alert(`✓ PhonePe Account Settings Saved Successfully!\n\nAll customer food bill payments will now directly transfer to:\n• PhonePe UPI ID: ${adminPhonePeUpiId.trim().toLowerCase()}\n• Connected Bank: ${adminBankName.trim()}\n• Receiver Name: ${adminMerchantName.trim()}`);
   };
 
   // FRANCHISE MANAGEMENT STATES
@@ -196,56 +205,69 @@ export default function AdminPanel() {
       }
     }
 
-    const savedFood = await addFoodItem({
-      name: newFoodName,
-      price: parseFloat(newFoodPrice),
-      category: newFoodCategory,
-      subcategory: 'Classic Signature',
-      description: '',
-      vegIndicator: newFoodVeg,
-      rating: 4.8,
-      prepTime: 25,
-      spiceLevel: 'Medium',
-      image: newFoodImg,
-      ingredients: ['Cottage Cheese', 'Indian Spices', 'Artisan Butter'],
-      restaurantId: targetRestaurantId || undefined,
-      is_available: true,
-      isAvailable: true
+    const executeAddDish = async () => {
+      const savedFood = await addFoodItem({
+        name: newFoodName,
+        price: parseFloat(newFoodPrice),
+        category: newFoodCategory,
+        subcategory: 'Classic Signature',
+        description: '',
+        vegIndicator: newFoodVeg,
+        rating: 4.8,
+        prepTime: 25,
+        spiceLevel: 'Medium',
+        image: newFoodImg,
+        ingredients: ['Cottage Cheese', 'Indian Spices', 'Artisan Butter'],
+        restaurantId: targetRestaurantId || undefined,
+        is_available: true,
+        isAvailable: true
+      });
+
+      if (!savedFood) {
+        return;
+      }
+
+      setNewFoodName('');
+      setNewFoodDesc('');
+      setDirectRestaurantNameInput('');
+      setIsAddingNewRestaurant(false);
+      setSelectedRestaurantId('');
+      setNewRestaurantName('');
+      setNewRestaurantCuisines('Local Special, Coastal Delights');
+      setNewRestaurantCostForTwo('250');
+      setNewRestaurantPhone('');
+    };
+
+    requestAdminSaveConfirmation({
+      title: `Register New Dish: "${newFoodName}"`,
+      itemType: 'Dish Registration (నూతన వంటకం సేవ్)',
+      description: `Category: ${newFoodCategory} • Price: ₹${newFoodPrice} • Veg/Non-Veg: ${newFoodVeg}`,
+      onConfirm: executeAddDish
     });
-
-    if (!savedFood) {
-      // Dish could not be saved to Supabase (error already alerted)
-      return;
-    }
-
-    setNewFoodName('');
-    setNewFoodDesc('');
-    setDirectRestaurantNameInput('');
-    setIsAddingNewRestaurant(false);
-    setSelectedRestaurantId('');
-    setNewRestaurantName('');
-    setNewRestaurantCuisines('Local Special, Coastal Delights');
-    setNewRestaurantCostForTwo('250');
-    setNewRestaurantPhone('');
-    alert(`Dish "${savedFood.name}" successfully registered and saved to Supabase public.food_items!`);
   };
 
   const handleAddCoupon = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCouponCode.trim()) return;
 
-    addCoupon({
-      code: newCouponCode.toUpperCase(),
-      discountType: 'percentage',
-      value: parseFloat(newCouponVal),
-      description: newCouponDesc,
-      minOrder: 150,
-      expiryDate: '2026-12-31'
+    requestAdminSaveConfirmation({
+      title: `Create Promo Coupon: "${newCouponCode.toUpperCase()}"`,
+      itemType: 'Promotional Discount (కూపన్ కోడ్ సేవ్)',
+      description: `Value: ${newCouponVal}% Off • Min Order: ₹150 • Description: ${newCouponDesc}`,
+      onConfirm: () => {
+        addCoupon({
+          code: newCouponCode.toUpperCase(),
+          discountType: 'percentage',
+          value: parseFloat(newCouponVal),
+          description: newCouponDesc,
+          minOrder: 150,
+          expiryDate: '2026-12-31'
+        });
+        setNewCouponCode('');
+        setNewCouponVal('10');
+        setNewCouponDesc('');
+      }
     });
-
-    setNewCouponCode('');
-    setNewCouponDesc('');
-    alert('Coupon code live authorized!');
   };
 
   const [diagnosticRunning, setDiagnosticRunning] = useState(false);
@@ -261,13 +283,15 @@ export default function AdminPanel() {
         }
       });
       const data = await res.json();
+      setDiagnosticResult(data);
       console.log('[SUPABASE DIAGNOSTIC STATUS]:', data);
       if (data.success && data.databaseAccess) {
         console.log('✅ Supabase server client successfully initialized using SERVICE_ROLE_KEY and accessing database.');
       } else {
         console.warn('⚠️ Supabase server client diagnostic warning/failure:', data.message || data.error);
       }
-    } catch (err) {
+    } catch (err: any) {
+      setDiagnosticResult({ success: false, error: err?.message || String(err) });
       console.error('[SUPABASE DIAGNOSTIC ERROR] Network/server exception:', err);
     } finally {
       setDiagnosticRunning(false);
@@ -388,12 +412,13 @@ export default function AdminPanel() {
         </div>
 
         {/* Core panel tabs */}
-        <div className="grid grid-cols-5 bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
+        <div className="grid grid-cols-3 sm:grid-cols-6 bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
           {[
-            { id: 'analytics', label: 'Stats' },
-            { id: 'catalog', label: user?.role === 'Customer' ? 'Dishes 🔒' : 'Dishes' },
+            { id: 'settings', label: 'Admin Settings ⚙️' },
+            { id: 'analytics', label: 'Stats 📊' },
+            { id: 'catalog', label: user?.role === 'Customer' ? 'Dishes 🔒' : 'Dishes 🍛' },
             { id: 'payments', label: 'PhonePe 💳' },
-            { id: 'coupons', label: 'Promos' },
+            { id: 'coupons', label: 'Promos 🏷️' },
             { id: 'franchise', label: 'Franchise 🏢' }
           ].map(tab => (
             <button
@@ -409,6 +434,147 @@ export default function AdminPanel() {
             </button>
           ))}
         </div>
+
+        {/* ADMIN SETTINGS & CONTROLS SECTION */}
+        {activeTab === 'settings' && (
+          <div className="space-y-4">
+            {/* Master Admin Identity Card */}
+            <div className="bg-gradient-to-r from-red-500/10 via-rose-500/10 to-amber-500/10 border-2 border-red-500/30 dark:border-red-500/20 rounded-3xl p-5 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-rose-600 text-white rounded-2xl flex items-center justify-center shadow-md">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-black text-zinc-900 dark:text-zinc-50">
+                        Nuvvo Master Admin Console
+                      </h3>
+                      <span className="bg-rose-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse">
+                        Super Admin
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                      Configured Authorized Cell: <span className="font-mono font-bold text-rose-600 dark:text-rose-400">+91 9063692135</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="hidden sm:block text-right">
+                  <span className="text-[10px] font-mono text-zinc-400">Server Authorization: Active</span>
+                </div>
+              </div>
+
+              {/* Quick status cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Access Role</p>
+                  <p className="text-sm font-black text-rose-600 dark:text-rose-400 mt-0.5">Super Master</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Target Phone</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">9063692135</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Orders In Hub</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{orders.length}</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Catalog Items</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{foodCatalog.length}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Server Supabase & Service Role Key Diagnostics */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-orange-500" />
+                    Supabase Database & Server Diagnostics
+                  </h4>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Verifies that the server-side Supabase client is initialized using the elevated SERVICE_ROLE_KEY.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={runSupabaseDiagnostic}
+                  disabled={diagnosticRunning}
+                  className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${diagnosticRunning ? 'animate-spin' : ''}`} />
+                  <span>{diagnosticRunning ? 'Verifying...' : 'Run Diagnostics'}</span>
+                </button>
+              </div>
+
+              {diagnosticResult && (
+                <div className={`p-4 rounded-2xl text-xs font-mono space-y-1.5 border ${
+                  diagnosticResult.databaseAccess
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800'
+                }`}>
+                  <div className="flex items-center gap-2 font-bold font-sans">
+                    {diagnosticResult.databaseAccess ? '✅ Connection Verified' : '⚠️ Diagnostic Alert'}
+                  </div>
+                  <div>• Service Role Configured: <span className="font-bold">{diagnosticResult.isServiceRoleConfigured ? 'YES' : 'NO'}</span></div>
+                  <div>• Database Read/Write Access: <span className="font-bold">{diagnosticResult.databaseAccess ? 'HEALTHY' : 'UNREACHABLE'}</span></div>
+                  {diagnosticResult.message && <div>• Details: {diagnosticResult.message}</div>}
+                  {diagnosticResult.error && <div>• Notice: {diagnosticResult.error}</div>}
+                </div>
+              )}
+            </div>
+
+            {/* Quick Navigation to Admin Modules */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                <Settings className="w-4 h-4 text-orange-500" />
+                Admin Operations & Settings Modules
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('catalog')}
+                  className="p-3.5 rounded-2xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <ShoppingBag className="w-5 h-5 text-amber-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Dishes & Catalog</div>
+                  <div className="text-[10px] text-zinc-500">Edit menu items & pricing</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('payments')}
+                  className="p-3.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <DollarSign className="w-5 h-5 text-indigo-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">PhonePe UPI Gateway</div>
+                  <div className="text-[10px] text-zinc-500">Bank accounts & UPI ID</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('coupons')}
+                  className="p-3.5 rounded-2xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <Tag className="w-5 h-5 text-rose-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Promo Coupons</div>
+                  <div className="text-[10px] text-zinc-500">Discounts & cashback</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('franchise')}
+                  className="p-3.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <Building className="w-5 h-5 text-emerald-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Franchise & Kitchens</div>
+                  <div className="text-[10px] text-zinc-500">Review partner applications</div>
+                </button>
+              </div>
+            </div>
+
+            {/* Embedded Catalog Manager inside Admin Settings */}
+            <AdminCatalogManager />
+          </div>
+        )}
 
         {/* ANALYTICS SECTION */}
         {activeTab === 'analytics' && (
@@ -1345,20 +1511,28 @@ export default function AdminPanel() {
                               
                               <button 
                                 type="button"
-                                onClick={async () => {
-                                  await updateFoodItem(item.id, { 
-                                    name: replaceDishName || item.name,
-                                    price: replacePrice ? parseFloat(replacePrice) : item.price,
-                                    image: replaceImgUrl || item.image,
-                                    image_url: replaceImgUrl || item.image,
-                                    is_available: replaceAvailability,
-                                    isAvailable: replaceAvailability,
-                                    restaurantId: replaceRestaurantId || undefined
+                                onClick={() => {
+                                  const updatedName = replaceDishName || item.name;
+                                  const updatedPrice = replacePrice ? parseFloat(replacePrice) : item.price;
+                                  requestAdminSaveConfirmation({
+                                    title: `Update Dish Details: "${updatedName}"`,
+                                    itemType: 'Dish Details (వంటకం వివరాలు సవరణ)',
+                                    description: `Price: ₹${updatedPrice} • Live Status: ${replaceAvailability ? 'Available' : 'Unavailable'}`,
+                                    onConfirm: async () => {
+                                      await updateFoodItem(item.id, { 
+                                        name: updatedName,
+                                        price: updatedPrice,
+                                        image: replaceImgUrl || item.image,
+                                        image_url: replaceImgUrl || item.image,
+                                        is_available: replaceAvailability,
+                                        isAvailable: replaceAvailability,
+                                        restaurantId: replaceRestaurantId || undefined
+                                      });
+                                      setActiveReplaceId(null);
+                                      setReplaceImgUrl('');
+                                      setReplaceRestaurantId('');
+                                    }
                                   });
-                                  setActiveReplaceId(null);
-                                  setReplaceImgUrl('');
-                                  setReplaceRestaurantId('');
-                                  alert(`Dish "${replaceDishName || item.name}" details updated in Supabase successfully!`);
                                 }}
                                 className="bg-orange-500 hover:bg-orange-655 text-white font-black text-[10px] px-3.5 py-1.5 rounded-lg uppercase tracking-wider transition-all shadow-md active:scale-95 cursor-pointer"
                               >
@@ -2099,11 +2273,17 @@ export default function AdminPanel() {
                     };
 
                     const handleSaveTerritory = () => {
-                      setTerritoryUpdates(prev => ({
-                        ...prev,
-                        [app.id]: localTerritory
-                      }));
-                      alert(`Territory parameters safely mapped for ${app.fullName}: ${localTerritory.city}, ${localTerritory.district}, ${localTerritory.state}.`);
+                      requestAdminSaveConfirmation({
+                        title: `Territory Assignment: "${app.fullName}"`,
+                        itemType: 'Franchise Geographic Territory (ప్రాంతీయ కేటాయింపు)',
+                        description: `City: ${localTerritory.city} • District: ${localTerritory.district} • State: ${localTerritory.state}`,
+                        onConfirm: () => {
+                          setTerritoryUpdates(prev => ({
+                            ...prev,
+                            [app.id]: localTerritory
+                          }));
+                        }
+                      });
                     };
 
                     return (

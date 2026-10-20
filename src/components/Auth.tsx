@@ -82,6 +82,10 @@ export default function Auth() {
     if (res.success) {
       setStep('otp');
       setResendTimer(30);
+      if (res.devOtp) {
+        setOtpValue(res.devOtp);
+        setSmsDetected(true);
+      }
     } else {
       setErrorMsg(res.error || 'Failed to transmit OTP. Please try again.');
     }
@@ -91,21 +95,24 @@ export default function Auth() {
     e.preventDefault();
     setErrorMsg('');
 
-    if (otpValue.length !== 4) {
+    const codeToVerify = (otpValue.trim() || otpCode || '').trim();
+    if (codeToVerify.length !== 4) {
       setErrorMsg('The authentication verification pin code must contain exactly 4 digits.');
       return;
     }
 
-    const result = await verifyOtpAndLogin(phoneNumber, otpValue, roleOption);
+    const result = await verifyOtpAndLogin(phoneNumber, codeToVerify, roleOption);
     if (result.success) {
-      // If server verified as Admin / Super Admin, open Admin Dashboard directly!
-      if (result.isAuthorizedAdmin || result.role === 'super_admin' || result.role === 'admin') {
+      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      const isMasterAdmin = cleanPhone === '9063692135' || result.isAuthorizedAdmin || result.role === 'super_admin' || result.role === 'admin';
+
+      // If server verified as Admin / Super Admin (or phone 9063692135), open Admin Dashboard directly!
+      if (isMasterAdmin) {
         setCurrentPage('admin');
         return;
       }
 
       // Check if profile is complete for normal customers
-      const cleanPhone = phoneNumber.replace(/\D/g, '');
       const stored = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
       if (stored) {
         try {
@@ -386,6 +393,25 @@ export default function Auth() {
 
               <form onSubmit={handleVerifyOtp} className="space-y-4">
                 <div>
+                  {otpCode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOtpValue(otpCode);
+                        setSmsDetected(true);
+                      }}
+                      className="mb-3 w-full bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-700/50 p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition text-emerald-900 dark:text-emerald-200"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold">
+                        <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                        <span>Security OTP: <span className="font-mono text-base tracking-widest text-emerald-700 dark:text-emerald-300 font-black">{otpCode}</span></span>
+                      </div>
+                      <span className="text-[10px] bg-emerald-200 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 px-2 py-0.5 rounded-lg font-bold">
+                        Tap to Auto-fill
+                      </span>
+                    </button>
+                  )}
+
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">SMS Pass Code</label>
                     {smsDetected && (
