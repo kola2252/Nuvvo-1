@@ -9,7 +9,8 @@ import { FOOD_CATALOG, RESTAURANTS } from "./src/data/catalog";
 import { 
   getAdminSupabaseServerClient, 
   getPublicSupabaseServerClient, 
-  createServerClient 
+  createServerClient,
+  checkServerSupabaseDiagnostics
 } from "./src/utils/supabase/server";
 
 dotenv.config();
@@ -719,6 +720,22 @@ Current User Query: ${message}`;
 
     next();
   }
+
+  // Diagnostic endpoint to verify server-side Supabase client status with SERVICE_ROLE_KEY
+  app.get("/api/admin/diagnostics/supabase", requireAdminAuth, async (_req, res) => {
+    try {
+      const diagnostic = await checkServerSupabaseDiagnostics();
+      res.json(diagnostic);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        isServiceRoleConfigured: false,
+        databaseAccess: false,
+        message: "Diagnostics execution failed",
+        error: err?.message || String(err)
+      });
+    }
+  });
 
   // --- RESTAURANTS MANAGEMENT APIS ---
   app.get("/api/restaurants", (_req, res) => {

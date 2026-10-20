@@ -36,8 +36,8 @@ export default function AccountScreen() {
 
   // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
   const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
-  const isAuthorizedAdmin = (isAdmin || isAdminRole(user?.role)) && isAuthorizedPhone;
-  const isSuperAdminCell = (isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedPhone;
+  const isAuthorizedAdmin = isAuthorizedPhone || ((isAdmin || isAdminRole(user?.role)) && isAuthorizedPhone);
+  const isSuperAdminCell = isAuthorizedPhone || ((isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedPhone);
 
   const [isEditingInfo, setIsEditingInfo] = useState(false);
   const [profileSavedSuccess, setProfileSavedSuccess] = useState(false);

@@ -120,3 +120,67 @@ export const createServerClient = (): SupabaseClient => {
 };
 
 export const createClient = createServerClient;
+
+/**
+ * Diagnostic utility function to verify if the server-side Supabase client is correctly
+ * initialized using the SERVICE_ROLE_KEY and can successfully access the database.
+ */
+export const checkServerSupabaseDiagnostics = async (): Promise<{
+  success: boolean;
+  isServiceRoleConfigured: boolean;
+  url: string;
+  databaseAccess: boolean;
+  message: string;
+  error?: string;
+  details?: any;
+}> => {
+  const url = getSupabaseUrl();
+  const { client, error } = getAdminSupabaseServerClient();
+
+  if (!client || error) {
+    return {
+      success: false,
+      isServiceRoleConfigured: false,
+      url,
+      databaseAccess: false,
+      message: "Server SERVICE_ROLE_KEY is not configured.",
+      error: error || "Missing privileged key"
+    };
+  }
+
+  try {
+    const { data, error: dbError, count } = await client
+      .from('food_items')
+      .select('id', { count: 'exact', head: true });
+
+    if (dbError) {
+      return {
+        success: false,
+        isServiceRoleConfigured: true,
+        url,
+        databaseAccess: false,
+        message: `Database query failed: ${dbError.message}`,
+        error: dbError.message,
+        details: dbError
+      };
+    }
+
+    return {
+      success: true,
+      isServiceRoleConfigured: true,
+      url,
+      databaseAccess: true,
+      message: "Supabase client successfully initialized with SERVICE_ROLE_KEY and accessing database.",
+      details: { rowCount: count }
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      isServiceRoleConfigured: true,
+      url,
+      databaseAccess: false,
+      message: `Exception while accessing database: ${err?.message || err}`,
+      error: err?.message || String(err)
+    };
+  }
+};

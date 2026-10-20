@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { motion } from 'motion/react';
-import { Phone, Lock, User, Mail, MapPin, Sparkles, Building2, Globe } from 'lucide-react';
+import { Phone, Lock, User, Mail, MapPin, Sparkles, Building2, Globe, ShieldCheck, ShoppingBag, Bike, Building, RotateCcw } from 'lucide-react';
 import { Address } from '../types';
 import NuvvoLogo from './NuvvoLogo';
 import { translations } from '../utils/translations';
@@ -17,12 +17,26 @@ export default function Auth() {
   const t = translations[language] || translations.en;
 
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [roleOption, setRoleOption] = useState('Customer');
+  const [roleOption, setRoleOption] = useState(() => {
+    try {
+      const saved = localStorage.getItem('nuvvo_auth_role');
+      if (saved) return saved;
+    } catch {}
+    return 'Customer';
+  });
   const [step, setStep] = useState<'phone' | 'otp' | 'profile'>('phone');
   const [otpValue, setOtpValue] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [resendTimer, setResendTimer] = useState(30);
   const [smsDetected, setSmsDetected] = useState(false);
+
+  const handleSelectRole = (newRole: string) => {
+    setRoleOption(newRole);
+    try {
+      localStorage.setItem('nuvvo_auth_role', newRole);
+    } catch {}
+    setErrorMsg('');
+  };
 
   // Profile data
   const [fullName, setFullName] = useState('');
@@ -64,12 +78,12 @@ export default function Auth() {
       return;
     }
 
-    const success = await loginWithPhone(phoneNumber, roleOption);
-    if (success) {
+    const res = await loginWithPhone(phoneNumber, roleOption);
+    if (res.success) {
       setStep('otp');
       setResendTimer(30);
     } else {
-      setErrorMsg('Failed to transmit OTP. Please try again.');
+      setErrorMsg(res.error || 'Failed to transmit OTP. Please try again.');
     }
   };
 
@@ -82,20 +96,35 @@ export default function Auth() {
       return;
     }
 
-    const correct = await verifyOtpAndLogin(phoneNumber, otpValue, roleOption);
-    if (correct) {
-      // Re-read user to check if profile is complete
-      const stored = localStorage.getItem(`nuvvo_registered_${phoneNumber}`);
+    const result = await verifyOtpAndLogin(phoneNumber, otpValue, roleOption);
+    if (result.success) {
+      // If server verified as Admin / Super Admin, open Admin Dashboard directly!
+      if (result.isAuthorizedAdmin || result.role === 'super_admin' || result.role === 'admin') {
+        setCurrentPage('admin');
+        return;
+      }
+
+      // Check if profile is complete for normal customers
+      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      const stored = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
       if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed.isProfileComplete) {
-          setCurrentPage('home');
-          return;
-        }
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed.isProfileComplete) {
+            if (roleOption === 'Delivery Partner') {
+              setCurrentPage('partner');
+            } else if (roleOption === 'Franchise') {
+              setCurrentPage('franchise');
+            } else {
+              setCurrentPage('home');
+            }
+            return;
+          }
+        } catch {}
       }
       setStep('profile');
     } else {
-      setErrorMsg('The verification OTP code is incorrect. Please check the code and try again.');
+      setErrorMsg(result.error || 'The verification OTP code is incorrect. Please check the code and try again.');
     }
   };
 
@@ -163,8 +192,36 @@ export default function Auth() {
 
         <div className="p-6">
           {errorMsg && (
-            <div className="mb-4 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 text-rose-500 dark:text-rose-400 text-sm p-3 rounded-xl font-medium">
-              ⚠️ {errorMsg}
+            <div className="mb-4 bg-rose-50 dark:bg-rose-950/25 border border-rose-200 dark:border-rose-900/40 text-rose-600 dark:text-rose-400 text-xs p-3.5 rounded-xl font-medium flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <span className="text-sm">⚠️</span>
+                <span className="flex-1 leading-relaxed">{errorMsg}</span>
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-rose-200/60 dark:border-rose-900/40">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorMsg('');
+                    if (step === 'otp') setOtpValue('');
+                  }}
+                  className="text-[11px] font-black text-rose-700 dark:text-rose-300 hover:underline uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" /> Retry
+                </button>
+                {roleOption === 'Admin' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg('');
+                      handleSelectRole('Customer');
+                      setStep('phone');
+                    }}
+                    className="text-[10.5px] font-bold text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:underline cursor-pointer"
+                  >
+                    Switch to Customer Login
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -193,33 +250,121 @@ export default function Auth() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-1">
-                    {t.chooseRole}
+                  <label className="block text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                    <span>{t.chooseRole}</span>
+                    {roleOption === 'Admin' && (
+                      <span className="text-[10px] text-rose-600 dark:text-rose-400 font-extrabold flex items-center gap-1 font-mono">
+                        <ShieldCheck className="w-3 h-3" /> ADMIN PORTAL
+                      </span>
+                    )}
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {['Customer', 'Delivery Partner', 'Franchise'].map(role => (
-                      <button
-                        key={role}
-                        type="button"
-                        onClick={() => setRoleOption(role)}
-                        className={`py-2 text-center text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                          roleOption === role 
-                            ? 'bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-500/15'
-                            : 'bg-slate-50 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border-slate-200 dark:border-zinc-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {role === 'Customer' ? t.customer : role === 'Delivery Partner' ? t.deliveryPartner : t.franchise}
-                      </button>
-                    ))}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectRole('Customer')}
+                      className={`p-2.5 text-left rounded-xl border transition-all cursor-pointer flex items-center gap-2.5 ${
+                        roleOption === 'Customer'
+                          ? 'bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-500/15'
+                          : 'bg-slate-50 dark:bg-zinc-800 text-zinc-650 dark:text-zinc-350 border-slate-200 dark:border-zinc-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <ShoppingBag className="w-4 h-4 shrink-0" />
+                      <div>
+                        <div className="text-xs font-bold">{t.customer}</div>
+                        <div className={`text-[9.5px] ${roleOption === 'Customer' ? 'text-white/80' : 'text-zinc-400'}`}>Order Biryani & Food</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectRole('Admin')}
+                      className={`p-2.5 text-left rounded-xl border transition-all cursor-pointer flex items-center gap-2.5 ${
+                        roleOption === 'Admin'
+                          ? 'bg-rose-600 text-white border-rose-600 shadow-md shadow-rose-600/20'
+                          : 'bg-slate-50 dark:bg-zinc-800 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50 hover:bg-rose-50/50'
+                      }`}
+                    >
+                      <ShieldCheck className="w-4 h-4 shrink-0 text-rose-500" />
+                      <div>
+                        <div className="text-xs font-bold">Admin Login</div>
+                        <div className={`text-[9.5px] ${roleOption === 'Admin' ? 'text-white/80' : 'text-zinc-400'}`}>Manager & Operations</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectRole('Delivery Partner')}
+                      className={`p-2.5 text-left rounded-xl border transition-all cursor-pointer flex items-center gap-2.5 ${
+                        roleOption === 'Delivery Partner'
+                          ? 'bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-500/15'
+                          : 'bg-slate-50 dark:bg-zinc-800 text-zinc-650 dark:text-zinc-350 border-slate-200 dark:border-zinc-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Bike className="w-4 h-4 shrink-0" />
+                      <div>
+                        <div className="text-xs font-bold">{t.deliveryPartner}</div>
+                        <div className={`text-[9.5px] ${roleOption === 'Delivery Partner' ? 'text-white/80' : 'text-zinc-400'}`}>Rider Deliveries</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectRole('Franchise')}
+                      className={`p-2.5 text-left rounded-xl border transition-all cursor-pointer flex items-center gap-2.5 ${
+                        roleOption === 'Franchise'
+                          ? 'bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-500/15'
+                          : 'bg-slate-50 dark:bg-zinc-800 text-zinc-650 dark:text-zinc-350 border-slate-200 dark:border-zinc-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Building className="w-4 h-4 shrink-0" />
+                      <div>
+                        <div className="text-xs font-bold">{t.franchise}</div>
+                        <div className={`text-[9.5px] ${roleOption === 'Franchise' ? 'text-white/80' : 'text-zinc-400'}`}>Cloud Kitchen Partner</div>
+                      </div>
+                    </button>
                   </div>
                 </div>
 
+                {roleOption === 'Admin' && (
+                  <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/40 p-3 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200">
+                    <ShieldCheck className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-extrabold text-[11px] uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                        Administrator Access Gateway
+                      </p>
+                      <p className="text-[10px] text-zinc-600 dark:text-zinc-400 mt-0.5 leading-snug">
+                        Configured for authorized administrator (<span className="font-mono font-bold text-rose-700 dark:text-rose-300">+91 9063692135</span>). Server-side single-use OTP verification required.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <button 
                   type="submit"
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white py-3.5 rounded-xl font-bold transition-all shadow-lg hover:shadow-orange-500/10 flex items-center justify-center gap-2 mt-6 active:scale-98 cursor-pointer"
+                  className={`w-full text-white py-3.5 rounded-xl font-bold transition-all shadow-lg flex items-center justify-center gap-2 mt-4 active:scale-98 cursor-pointer ${
+                    roleOption === 'Admin'
+                      ? 'bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 shadow-rose-600/15'
+                      : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 shadow-orange-500/10'
+                  }`}
                 >
                   <Phone className="w-5 h-5" />
-                  {t.getOtp}
+                  {roleOption === 'Admin' ? 'Request Admin Security OTP' : t.getOtp}
+                </button>
+
+                {/* Guest Mode option */}
+                <div className="relative my-3 flex items-center justify-center">
+                  <div className="border-t border-slate-200 dark:border-zinc-700 w-full" />
+                  <span className="bg-white dark:bg-zinc-900 px-3 text-[10px] text-zinc-400 font-bold uppercase tracking-wider">or</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage('home')}
+                  className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-zinc-800 dark:hover:bg-zinc-750 text-zinc-650 dark:text-zinc-350 py-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 border border-slate-200 dark:border-zinc-700"
+                >
+                  <User className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>Continue in Guest Mode (Browse Menu)</span>
                 </button>
               </form>
             </motion.div>
@@ -228,6 +373,13 @@ export default function Auth() {
           {step === 'otp' && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }}>
               <div className="text-center mb-6">
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono border ${
+                  roleOption === 'Admin'
+                    ? 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-950/40 dark:border-rose-900/40'
+                    : 'bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-950/40 dark:border-orange-900/40'
+                }`}>
+                  {roleOption === 'Admin' ? '🛡️ Administrator Verification' : '🔐 OTP Verification'}
+                </div>
                 <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-50">Enter Verification Code</h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">We have piped a secure SMS message to phone register cell <span className="font-bold text-zinc-800 dark:text-zinc-200 font-mono">+91 {phoneNumber}</span>.</p>
               </div>
@@ -258,9 +410,14 @@ export default function Auth() {
 
                 <button 
                   type="submit"
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white py-3.5 rounded-xl font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                  className={`w-full text-white py-3.5 rounded-xl font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-98 ${
+                    roleOption === 'Admin'
+                      ? 'bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 shadow-rose-600/20'
+                      : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 shadow-orange-500/10'
+                  }`}
                 >
-                  Verify One-Time Passcode
+                  <ShieldCheck className="w-5 h-5" />
+                  {roleOption === 'Admin' ? 'Verify & Access Admin Dashboard' : 'Verify One-Time Passcode'}
                 </button>
               </form>
 
@@ -268,7 +425,7 @@ export default function Auth() {
                 <button 
                   type="button" 
                   onClick={() => setStep('phone')}
-                  className="text-orange-500 hover:underline font-bold"
+                  className="text-orange-500 hover:underline font-bold cursor-pointer"
                 >
                   Edit phone cell
                 </button>
@@ -279,7 +436,7 @@ export default function Auth() {
                     <button 
                       type="button" 
                       onClick={() => { loginWithPhone(phoneNumber, roleOption); setResendTimer(30); }}
-                      className="text-orange-500 hover:underline font-bold"
+                      className="text-orange-500 hover:underline font-bold cursor-pointer"
                     >
                       Resend SMS OTP
                     </button>

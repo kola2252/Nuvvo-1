@@ -365,11 +365,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
   const themesList = APP_THEMES;
 
-  const [currentPage, setCurrentPageRaw] = useState<string>('home');
+  const [currentPage, setCurrentPageRaw] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('nuvvo_current_page');
+      if (saved && saved !== 'splash') return saved;
+    } catch {}
+    return 'home';
+  });
   const [pageHistory, setPageHistory] = useState<string[]>(['home']);
 
   const setCurrentPage = (page: string) => {
     if (page === currentPage) return;
+    try {
+      localStorage.setItem('nuvvo_current_page', page);
+    } catch {}
     setPageHistory(prev => {
       if (prev[prev.length - 1] === page) return prev;
       return [...prev, page];
@@ -1017,7 +1026,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Strict admin authorization: exclusively granted if phone is 9063692135 AND role is server-verified
   const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
   const isSuperAdmin = isSuperAdminRole(user?.role) && isAuthorizedPhone;
-  const isAdmin = isAdminRole(user?.role) && isAuthorizedPhone;
+  const isAdmin = (isAdminRole(user?.role) && isAuthorizedPhone) || isSuperAdmin;
+
+  // Verify server session role on startup and page refresh
+  useEffect(() => {
+    const token = localStorage.getItem('nuvvo_auth_token');
+    if (!token) return;
+
+    fetch('/api/auth/verify-role', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ token })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.isAuthorizedAdmin) {
+          const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
+          setUser(prev => {
+            if (!prev) {
+              return {
+                id: `usr_admin_${data.phone || '9063692135'}`,
+                name: 'Nuvvo Super Admin',
+                phone: data.phone || '9063692135',
+                email: 'admin@nuvvo.delivery',
+                addresses: [],
+                favoriteFoods: [],
+                favoriteRestaurants: [],
+                role: mappedRole,
+                isProfileComplete: true,
+                createdAt: new Date().toISOString()
+              };
+            }
+            return {
+              ...prev,
+              role: mappedRole,
+              phone: data.phone || prev.phone
+            };
+          });
+          setSuperAdminAuthenticated(true);
+        } else if (data && !data.isAuthorizedAdmin) {
+          if (isAdminRole(user?.role)) {
+            setUser(prev => prev ? { ...prev, role: 'Customer' } : null);
+            setSuperAdminAuthenticated(false);
+          }
+        }
+      })
+      .catch(err => {
+        console.warn('Session verification notice:', err);
+      });
+  }, []);
 
   // Security Route Guard: Direct URL or state navigation to admin/super-admin
   // by unauthorized users must be immediately bounced to the Settings ('account') page
@@ -2500,7 +2560,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // OTP Login Routine with Secure Server-Side Dispatch & Verification
-  const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<boolean> => {
+  const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<{ success: boolean; error?: string }> => {
     try {
       const cleanPhone = normalizePhoneNumber(phone);
       const resp = await fetch('/api/auth/send-otp', {
@@ -2510,8 +2570,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       const data = await resp.json();
       if (!resp.ok || !data.success) {
-        addAuditLog('OTP Failed', `Failed OTP generation for ${cleanPhone}: ${data.error || 'Server error'}`);
-        return false;
+        const errorMsg = data.error || 'Failed to transmit OTP. Please try again.';
+        addAuditLog('OTP Failed', `Failed OTP generation for ${cleanPhone}: ${errorMsg}`);
+        return { success: false, error: errorMsg };
       }
 
       if (data.devOtp) {
@@ -2521,14 +2582,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       addAuditLog('OTP Sent', `Successfully generated dynamic security OTP for user cell ${cleanPhone}`);
-      return true;
+      return { success: true };
     } catch (e: any) {
       console.error('Failed to request OTP from server:', e);
-      return false;
+      return {
+        success: false,
+        error: 'Network error: Failed to reach authentication server. Please check your connection and try again.'
+      };
     }
   };
 
-  const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<boolean> => {
+  const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
     const cleanPhone = normalizePhoneNumber(phone);
     let resolvedRole: any = 'Customer';
 
@@ -2541,13 +2605,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const data = await resp.json();
       if (!resp.ok || !data.success) {
-        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${data.error || 'Invalid OTP'}`);
-        return false;
+        const errorMsg = data.error || 'The verification OTP code is incorrect. Please check the code and try again.';
+        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
+        return { success: false, error: errorMsg };
       }
 
       if (data.token) {
         localStorage.setItem('nuvvo_auth_token', data.token);
       }
+
+      // Check if Admin login was requested by an unauthorized phone
+      if (role === 'Admin' && !data.isAuthorizedAdmin) {
+        addAuditLog('Admin Access Denied', `Cell ${cleanPhone} attempted Admin login but lacked server authorization.`);
+        return {
+          success: false,
+          error: `Access Denied: Mobile number +91 ${cleanPhone} is not configured as an authorized administrator.`
+        };
+      }
+
       if (data.role === 'super_admin') {
         resolvedRole = 'Super Admin';
       } else if (data.role === 'admin') {
@@ -2559,55 +2634,90 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else {
         resolvedRole = 'Customer';
       }
-    } catch (e: any) {
-      console.warn('Backend verify-otp notice:', e);
-      return false;
-    }
 
-    const existingUserStr = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
-    if (existingUserStr) {
-      try {
-        const parsed = JSON.parse(existingUserStr);
-        // Security check: role is strictly determined by server authorization
-        parsed.role = resolvedRole;
-        parsed.phone = cleanPhone;
-        setUser(parsed);
-        localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(parsed));
-        localStorage.setItem('nuvvo_user', JSON.stringify(parsed));
-        addAuditLog('Login Success', `${parsed.role} log-in operation successful for authenticated user`);
-        return true;
-      } catch (e) {
-        console.error('Failed to parse existing registered user:', e);
+      const isServerAdmin = !!(data.isAuthorizedAdmin || data.role === 'super_admin' || data.role === 'admin');
+
+      if (isServerAdmin) {
+        const adminUser: User = {
+          id: `usr_admin_${cleanPhone}`,
+          name: 'Nuvvo Super Admin',
+          phone: cleanPhone,
+          email: 'admin@nuvvo.delivery',
+          addresses: [
+            {
+              id: 'addr_admin_hq',
+              type: 'Work',
+              flatNo: 'Nuvvo Operations Central HQ',
+              area: 'Chirala Central Hub',
+              landmark: 'Near Clock Tower',
+              city: 'Chirala',
+              gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+            }
+          ],
+          role: resolvedRole,
+          isProfileComplete: true,
+          favoriteFoods: [],
+          favoriteRestaurants: [],
+          createdAt: new Date().toISOString()
+        };
+        setUser(adminUser);
+        localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
+        localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
+        setSuperAdminAuthenticated(true);
+        addAuditLog('Login Success', `${resolvedRole} authenticated and granted administrative access.`);
+        return { success: true, role: data.role, isAuthorizedAdmin: true };
       }
-    }
 
-    const newUser: User = {
-      id: `user_${Date.now()}`,
-      name: `Guest ${cleanPhone.slice(-4)}`,
-      phone: cleanPhone,
-      email: `${cleanPhone}@nuvvo.cloud`,
-      addresses: [
-        {
-          id: `addr_${Date.now()}`,
-          type: 'Home',
-          flatNo: 'Nuvvo Towers, Penthouse B',
-          area: 'Madhapur High-Tech Zone',
-          landmark: 'Near Cyber Towers',
-          city: 'Hyderabad',
-          gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
+      const existingUserStr = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
+      if (existingUserStr) {
+        try {
+          const parsed = JSON.parse(existingUserStr);
+          parsed.role = resolvedRole;
+          parsed.phone = cleanPhone;
+          setUser(parsed);
+          localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(parsed));
+          localStorage.setItem('nuvvo_user', JSON.stringify(parsed));
+          addAuditLog('Login Success', `${parsed.role} log-in operation successful for authenticated user`);
+          return { success: true, role: data.role, isAuthorizedAdmin: false };
+        } catch (e) {
+          console.error('Failed to parse existing registered user:', e);
         }
-      ],
-      role: resolvedRole,
-      isProfileComplete: true,
-      favoriteFoods: [],
-      favoriteRestaurants: [],
-      createdAt: new Date().toISOString()
-    };
-    setUser(newUser);
-    localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(newUser));
-    localStorage.setItem('nuvvo_user', JSON.stringify(newUser));
-    addAuditLog('Registration Complete', `New cellular entity verification complete. Profile auto-populated with defaults.`);
-    return true;
+      }
+
+      const newUser: User = {
+        id: `user_${Date.now()}`,
+        name: `Customer ${cleanPhone.slice(-4)}`,
+        phone: cleanPhone,
+        email: `${cleanPhone}@nuvvo.cloud`,
+        addresses: [
+          {
+            id: `addr_${Date.now()}`,
+            type: 'Home',
+            flatNo: 'Nuvvo Residence',
+            area: 'Chirala Main Road',
+            landmark: 'Near Bus Stand',
+            city: 'Chirala',
+            gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+          }
+        ],
+        role: resolvedRole,
+        isProfileComplete: true,
+        favoriteFoods: [],
+        favoriteRestaurants: [],
+        createdAt: new Date().toISOString()
+      };
+      setUser(newUser);
+      localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(newUser));
+      localStorage.setItem('nuvvo_user', JSON.stringify(newUser));
+      addAuditLog('Registration Complete', `New cellular entity verification complete.`);
+      return { success: true, role: data.role, isAuthorizedAdmin: false };
+    } catch (e: any) {
+      console.warn('Backend verify-otp network exception:', e);
+      return {
+        success: false,
+        error: 'Network connection failure. Unable to reach verification server. Please retry.'
+      };
+    }
   };
 
   const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => {

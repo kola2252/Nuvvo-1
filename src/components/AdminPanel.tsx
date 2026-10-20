@@ -248,6 +248,32 @@ export default function AdminPanel() {
     alert('Coupon code live authorized!');
   };
 
+  const [diagnosticRunning, setDiagnosticRunning] = useState(false);
+
+  const runSupabaseDiagnostic = async () => {
+    setDiagnosticRunning(true);
+    console.log('[SUPABASE DIAGNOSTIC] Initiating server-side Supabase client verification...');
+    try {
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const res = await fetch('/api/admin/diagnostics/supabase', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      console.log('[SUPABASE DIAGNOSTIC STATUS]:', data);
+      if (data.success && data.databaseAccess) {
+        console.log('✅ Supabase server client successfully initialized using SERVICE_ROLE_KEY and accessing database.');
+      } else {
+        console.warn('⚠️ Supabase server client diagnostic warning/failure:', data.message || data.error);
+      }
+    } catch (err) {
+      console.error('[SUPABASE DIAGNOSTIC ERROR] Network/server exception:', err);
+    } finally {
+      setDiagnosticRunning(false);
+    }
+  };
+
   // Strict Admin authorization check: role verified securely by server
   if (!isAdmin || !isAdminRole(user?.role)) {
     return (
@@ -287,7 +313,20 @@ export default function AdminPanel() {
             <p className="text-[10px] text-zinc-400 font-bold font-mono tracking-wide mt-0.5">METRIC CONTROL ENGINE</p>
           </div>
         </div>
-        <span className="text-xs bg-orange-500/10 text-orange-600 px-3 py-1 rounded-full font-bold">Terminal Live</span>
+        <div className="flex items-center gap-2">
+          {/* Hidden diagnostic button to verify server-side Supabase client using SERVICE_ROLE_KEY */}
+          <button
+            onClick={runSupabaseDiagnostic}
+            disabled={diagnosticRunning}
+            title="Run Server Supabase Client Diagnostics (Logs to console)"
+            aria-label="Run Server Supabase Client Diagnostics"
+            id="supabase-diagnostic-hidden-btn"
+            className="w-4 h-4 opacity-0 hover:opacity-100 focus:opacity-100 transition-opacity p-0 bg-transparent text-zinc-400 hover:text-orange-500 cursor-pointer"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-xs bg-orange-500/10 text-orange-600 px-3 py-1 rounded-full font-bold">Terminal Live</span>
+        </div>
       </div>
 
       <div className="p-4 max-w-md mx-auto space-y-4">
