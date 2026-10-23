@@ -1,4 +1,4 @@
-import app from "../server";
+import app from "../server.ts";
 
 // Export the existing Express app for Vercel to treat as a serverless function entry point
 export default function handler(req: any, res: any) {
