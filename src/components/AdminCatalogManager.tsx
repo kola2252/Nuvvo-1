@@ -58,42 +58,44 @@ export default function AdminCatalogManager() {
   }, [foodCatalog]);
 
   const handleSeedMenu = async () => {
-    if (!confirm('Populate Supabase public.food_items with the initial curated catalog dishes? Any existing custom dishes or edits will be preserved.')) {
-      setSeedStatus({ type: 'info', text: 'Seeding operation was cancelled by administrator.' });
-      return;
-    }
+    requestAdminSaveConfirmation({
+      title: 'Seed Curated Dishes to Supabase',
+      itemType: 'Bulk Menu Seeding (మొత్తం మెనూ డేటాబేస్ సేవ్)',
+      description: 'Populate Supabase public.food_items with initial catalog dishes. Existing custom dishes and prices will be preserved.',
+      onConfirm: async () => {
+        setIsSeeding(true);
+        setSeedStatus({ type: 'info', text: 'Connecting to Supabase public.food_items and inserting menu records...' });
 
-    setIsSeeding(true);
-    setSeedStatus({ type: 'info', text: 'Connecting to Supabase public.food_items and inserting menu records...' });
-
-    try {
-      const res = await seedDishesToSupabase();
-      if (res.success) {
-        setSeedStatus({
-          type: 'success',
-          text: res.message || `Successfully seeded ${res.count} dishes into Supabase public.food_items!`
-        });
-        showFeedback(res.message || `Successfully seeded ${res.count} dishes into Supabase!`);
-        await refetchFoodCatalog();
-        await fetchDishes();
-      } else {
-        setSeedStatus({
-          type: 'error',
-          text: 'Database seeding failed.',
-          details: res.error || 'Server or Supabase rejected the request.'
-        });
-        showFeedback(res.error || 'Failed to seed dishes into Supabase', 'error');
+        try {
+          const res = await seedDishesToSupabase();
+          if (res.success) {
+            setSeedStatus({
+              type: 'success',
+              text: res.message || `Successfully seeded ${res.count} dishes into Supabase public.food_items!`
+            });
+            showFeedback(res.message || `Successfully seeded ${res.count} dishes into Supabase!`);
+            await refetchFoodCatalog();
+            await fetchDishes();
+          } else {
+            setSeedStatus({
+              type: 'error',
+              text: 'Database seeding failed.',
+              details: res.error || 'Server or Supabase rejected the request.'
+            });
+            showFeedback(res.error || 'Failed to seed dishes into Supabase', 'error');
+          }
+        } catch (err: any) {
+          setSeedStatus({
+            type: 'error',
+            text: 'Seeding exception encountered.',
+            details: err?.message || 'Network exception'
+          });
+          showFeedback(err?.message || 'Failed to seed dishes', 'error');
+        } finally {
+          setIsSeeding(false);
+        }
       }
-    } catch (err: any) {
-      setSeedStatus({
-        type: 'error',
-        text: 'Seeding exception encountered.',
-        details: err?.message || 'Network exception'
-      });
-      showFeedback(err?.message || 'Failed to seed dishes', 'error');
-    } finally {
-      setIsSeeding(false);
-    }
+    });
   };
 
 

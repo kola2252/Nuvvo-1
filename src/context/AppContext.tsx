@@ -96,9 +96,10 @@ interface AppContextProps {
   setLanguage: (lang: AppLanguage) => void;
   otpCode: string;
   setOtpCode: (code: string) => void;
-  loginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; error?: string; devOtp?: string }>;
+  loginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; error?: string; sessionOtp?: string; devOtp?: string; isDevTesting?: boolean; setupNotice?: string; smsConfigured?: boolean; expiresInSeconds?: number }>;
   verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
-  completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => void;
+  directLoginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
+  completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => void;
   updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => void;
   logoutUser: () => void;
   updateUserAddresses: (addresses: Address[]) => void;
@@ -453,33 +454,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Authentication
   const [user, setUser] = useState<User | null>(() => {
     const existing = safeParse<User | null>('nuvvo_user', null);
-    if (existing) return existing;
-
-    const defaultUser: User = {
-      id: 'usr_default',
-      name: 'Nuvvo Customer',
-      phone: '9999911111',
-      email: 'customer@nuvvo.cloud',
-      addresses: [
-        {
-          id: 'addr_1',
-          type: 'Home',
-          flatNo: 'Nuvvo Towers, Penthouse B',
-          area: 'Madhapur High-Tech Zone',
-          landmark: 'Near Cyber Towers',
-          city: 'Hyderabad',
-          gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
-        }
-      ],
-      favoriteFoods: [],
-      favoriteRestaurants: [],
-      role: 'Customer',
-      isProfileComplete: true,
-      createdAt: new Date().toISOString()
-    };
-
-    localStorage.setItem('nuvvo_user', JSON.stringify(defaultUser));
-    return defaultUser;
+    // If user exists and is not the outdated dummy placeholder, return it
+    if (existing && existing.phone && existing.phone !== '9999911111') {
+      return existing;
+    }
+    // Purge fake dummy user from localStorage so only the actual login phone number is visible
+    try {
+      if (existing?.phone === '9999911111') {
+        localStorage.removeItem('nuvvo_user');
+      }
+    } catch {}
+    return null;
   });
   const [otpCode, setOtpCode] = useState<string>(''); // Clean OTP state
 
@@ -2671,7 +2656,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<{ success: boolean; error?: string; devOtp?: string }> => {
+  const loginWithPhone = async (phone: string, role: string = 'Customer'): Promise<{ success: boolean; error?: string; sessionOtp?: string; devOtp?: string; isDevTesting?: boolean; setupNotice?: string; smsConfigured?: boolean; expiresInSeconds?: number }> => {
     try {
       const cleanPhone = normalizePhoneNumber(phone);
       const resp = await fetch('/api/auth/send-otp', {
@@ -2686,14 +2671,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { success: false, error: errorMsg };
       }
 
-      if (data.devOtp) {
-        setOtpCode(data.devOtp);
-      } else {
-        setOtpCode('');
+      if (data.challengeToken) {
+        try {
+          sessionStorage.setItem('nuvvo_otp_challenge', data.challengeToken);
+        } catch {}
       }
 
-      addAuditLog('OTP Sent', `Successfully generated dynamic security OTP for user cell ${cleanPhone}`);
-      return { success: true, devOtp: data.devOtp };
+      const activeOtp = data.devOtp || data.sessionOtp || '';
+      setOtpCode(activeOtp);
+      addAuditLog('OTP Request', `Security OTP issued for user cell ${cleanPhone}`);
+      return { 
+        success: true, 
+        sessionOtp: activeOtp, 
+        devOtp: data.devOtp,
+        isDevTesting: Boolean(data.isDevTesting),
+        setupNotice: data.message,
+        smsConfigured: data.smsConfigured,
+        expiresInSeconds: data.expiresInSeconds
+      };
     } catch (e: any) {
       console.error('Failed to request OTP from server:', e);
       return {
@@ -2705,13 +2700,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
     const cleanPhone = normalizePhoneNumber(phone);
-    let resolvedRole: any = 'Customer';
 
     try {
+      const challengeToken = (() => {
+        try {
+          return sessionStorage.getItem('nuvvo_otp_challenge') || undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+
       const resp = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: cleanPhone, otp, requestedRole: role })
+        body: JSON.stringify({ 
+          phone: cleanPhone, 
+          otp: String(otp).trim(), 
+          requestedRole: role, 
+          challengeToken
+        })
       });
 
       const data = await resp.json();
@@ -2734,6 +2741,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      let resolvedRole: 'Customer' | 'Admin' | 'Super Admin' | 'Delivery Partner' | 'Franchise' = 'Customer';
       if (data.role === 'super_admin' || cleanPhone === '9063692135' || isAuthorizedAdminPhone(cleanPhone)) {
         resolvedRole = 'Super Admin';
       } else if (data.role === 'admin') {
@@ -2823,45 +2831,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog('Registration Complete', `New cellular entity verification complete.`);
       return { success: true, role: data.role, isAuthorizedAdmin: false };
     } catch (e: any) {
-      console.warn('Backend verify-otp network exception:', e);
+      console.error('Backend verify-otp execution error:', e);
+      const isNetworkErr = e instanceof TypeError && e.message?.toLowerCase().includes('fetch');
       return {
         success: false,
-        error: 'Network connection failure. Unable to reach verification server. Please retry.'
+        error: isNetworkErr
+          ? 'Network connection failure. Unable to reach verification server. Please retry.'
+          : (e?.message || 'Authentication error occurred during verification. Please retry.')
       };
     }
   };
 
-  const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage) => {
-    if (!user) return;
-    const cleanPhone = normalizePhoneNumber(user.phone);
-    const completedUser: User = {
-      ...user,
+  const directLoginWithPhone = async (_phone: string, _role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
+    return {
+      success: false,
+      error: 'Direct login without OTP is disabled for security. Please verify your mobile number with a security OTP.'
+    };
+  };
+
+  const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => {
+    let cleanPhone = phone ? normalizePhoneNumber(phone) : (user?.phone ? normalizePhoneNumber(user.phone) : '');
+    if (!cleanPhone) {
+      try {
+        const stored = localStorage.getItem('nuvvo_user');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          cleanPhone = normalizePhoneNumber(parsed.phone || '');
+        }
+      } catch {}
+    }
+
+    const base = user || {
+      id: `user_${Date.now()}`,
       name,
       email,
       phone: cleanPhone,
-      role: user.role,
+      role: 'Customer',
+      addresses: [],
+      favoriteFoods: [],
+      favoriteRestaurants: [],
+      isProfileComplete: false,
+      createdAt: new Date().toISOString()
+    };
+
+    const completedUser: User = {
+      ...base,
+      name,
+      email,
+      phone: cleanPhone,
+      role: base.role || 'Customer',
       addresses: [address],
       currentAddressId: address.id,
       isProfileComplete: true,
       preferredLanguage: preferredLanguage || language
     };
+
     if (preferredLanguage) {
       setLanguage(preferredLanguage);
     }
     setUser(completedUser);
-    localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(completedUser));
+    if (cleanPhone) {
+      localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(completedUser));
+    }
     localStorage.setItem('nuvvo_user', JSON.stringify(completedUser));
     setCurrentAddress(address);
-    addAuditLog('Profile Created', `User registration profile submitted under credentials name ${name}`);
+    addAuditLog('Profile Created', `User registration profile submitted under credentials name ${name} (Phone: ${cleanPhone})`);
   };
 
   const updateUserProfile = (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => {
     setUser(prevUser => {
+      const targetPhone = phone ? normalizePhoneNumber(phone) : (prevUser?.phone ? normalizePhoneNumber(prevUser.phone) : '');
       const base = prevUser || {
         id: `user_${Date.now()}`,
         name,
         email,
-        phone: '9999911111',
+        phone: targetPhone,
         role: 'Customer',
         addresses: addresses || [],
         favoriteFoods: [],
@@ -4865,7 +4909,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentTheme, setThemeId, themesList,
       cartSuccessAnimation, setCartSuccessAnimation,
       isOffline,
-      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
+      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
       referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
       storePaymentSettings, updateStorePaymentSettings,
       currentAddress, setCurrentAddress,

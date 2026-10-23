@@ -26,6 +26,7 @@ const PartnerScreen = lazy(() => import('./components/PartnerScreen'));
 const FranchiseScreen = lazy(() => import('./components/FranchiseScreen'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const SuperAdminPanel = lazy(() => import('./components/SuperAdminPanel'));
+const OrderHistoryScreen = lazy(() => import('./components/OrderHistoryScreen'));
 
 export default function App() {
   const { user, currentPage, selectedFoodItem, notifications, markNotificationAsRead, setCurrentPage, isOffline, cartSuccessAnimation, isAdmin, isSuperAdmin } = useApp();
@@ -97,6 +98,8 @@ export default function App() {
       case 'orders':
       case 'tracking':
         return <TrackingScreen />;
+      case 'order-history':
+        return <OrderHistoryScreen />;
       case 'favorites':
         return <FavoritesScreen />;
       case 'cart':

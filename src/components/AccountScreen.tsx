@@ -332,11 +332,11 @@ Thank you for dining with Nuvvo Gourmet!`;
 
   const [savedUPIs, setSavedUPIs] = useState<SavedUPI[]>(() => {
     if (!user) return [];
-    const activeGPayNum = (() => {
+    const activeGPayNum = user.phone || (() => {
       try {
-        return localStorage.getItem('nuvvo_googlepay_number') || '7702906994';
+        return localStorage.getItem('nuvvo_googlepay_number') || '';
       } catch {
-        return '7702906994';
+        return '';
       }
     })();
     try {
@@ -1026,7 +1026,7 @@ Thank you for dining with Nuvvo Gourmet!`;
                       <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
                       <div>
                         <p className="text-[11px] font-black text-red-700 dark:text-red-300">Master Admin Clearance</p>
-                        <p className="text-[9.5px] text-zinc-500">+91 9063692135</p>
+                        <p className="text-[9.5px] text-zinc-500 font-mono">+91 {user?.phone || ''}</p>
                       </div>
                     </div>
                     <button
@@ -2420,7 +2420,6 @@ Thank you for dining with Nuvvo Gourmet!`;
           </div>
         </div>
 
-        {/* COMPONENTIZED DYNAMIC ORDER HISTORY TRACKER */}
         <OrderHistory />
 
         {/* CUSTOMER PAYMENT INVOICES SECTION */}

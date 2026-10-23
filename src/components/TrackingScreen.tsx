@@ -11,25 +11,33 @@ import {
   ChevronRight, ChevronLeft, Compass, Navigation, Clock, ShieldCheck,
   MessageSquare, Send, X, Store, ArrowLeft, ThumbsUp, Share2,
   Star, Smile, Activity, Wifi, Battery, Cpu, Terminal, Radio, RefreshCw,
-  Smartphone, IndianRupee
+  Smartphone, IndianRupee, ChefHat, Utensils, Check, PackageCheck, Sparkles, CheckCircle2,
+  Bell, BellRing
 } from 'lucide-react';
 import { OrderStatus } from '../types';
-import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
+import { APIProvider, Map, AdvancedMarker, Pin, InfoWindow, MapControl, ControlPosition, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 
 // Stable GPS Seed coordinates for Chirala area (Center: 15.8246, 80.3533)
 const CHIRALA_CENTER = { lat: 15.8246, lng: 80.3533 };
 
-const getApiKey = () => {
+const getApiKey = (): string => {
+  try {
+    const vKey = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY;
+    if (vKey && vKey !== 'YOUR_API_KEY' && !vKey.includes('your_google_maps')) return vKey;
+  } catch (e) {}
+  try {
+    const vpKey = (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+    if (vpKey && vpKey !== 'YOUR_API_KEY' && !vpKey.includes('your_google_maps')) return vpKey;
+  } catch (e) {}
   try {
     if (typeof process !== 'undefined' && process.env) {
-      return process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
+      const pKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_PLATFORM_KEY;
+      if (pKey && pKey !== 'YOUR_API_KEY' && !pKey.includes('your_google_maps')) return pKey;
     }
   } catch (e) {}
   try {
-    return (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY || '';
-  } catch (e) {}
-  try {
-    return (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY || '';
+    const gKey = (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY || (globalThis as any).VITE_GOOGLE_MAPS_API_KEY;
+    if (gKey && gKey !== 'YOUR_API_KEY' && !gKey.includes('your_google_maps')) return gKey;
   } catch (e) {}
   return '';
 };
@@ -47,24 +55,57 @@ function getSeedCoordinates(id: string, indexOffset: number = 0) {
   };
 }
 
+// Calculate real-world distance between coordinate pairs (in kilometers)
+function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's mean radius in km
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const straightLineKm = R * c;
+  // Apply urban road circuity coefficient (~1.28x road navigation factor)
+  return Math.max(0.1, parseFloat((straightLineKm * 1.28).toFixed(2)));
+}
+
+
 function LiveRouteTracker({
   restaurantCoords,
   destinationCoords,
   progress,
   restaurantName,
-  riderName
+  riderName,
+  riderVehicle,
+  riderPhone,
+  speed,
+  accuracy,
+  realTimeCoords,
+  countdownText,
+  distanceKm,
+  onOpenChat,
 }: {
   restaurantCoords: { lat: number; lng: number };
   destinationCoords: { lat: number; lng: number };
   progress: number;
   restaurantName: string;
   riderName: string;
+  riderVehicle?: string;
+  riderPhone?: string;
+  speed?: number;
+  accuracy?: number;
+  realTimeCoords?: { lat: number; lng: number };
+  countdownText?: string;
+  distanceKm?: number;
+  onOpenChat?: () => void;
 }) {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
   const [partnerCoords, setPartnerCoords] = useState<{ lat: number; lng: number }>(restaurantCoords);
   const [routePath, setRoutePath] = useState<google.maps.LatLngLiteral[]>([]);
+  const [activeInfoWindow, setActiveInfoWindow] = useState<'rider' | 'restaurant' | 'destination' | null>(null);
 
   useEffect(() => {
     if (!routesLib || !map) return;
@@ -84,12 +125,12 @@ function LiveRouteTracker({
       .then(({ routes }) => {
         if (routes && routes[0]) {
           const route = routes[0];
-          // Draw polylines on map
+          // Draw polylines on map with Nuvvo warm orange styling
           const newPolylines = route.createPolylines();
           newPolylines.forEach(p => {
             p.setOptions({
               strokeColor: '#f97316', // Warm Nuvvo orange
-              strokeOpacity: 0.8,
+              strokeOpacity: 0.85,
               strokeWeight: 5,
             });
             p.setMap(map);
@@ -108,9 +149,9 @@ function LiveRouteTracker({
           }
           setRoutePath(pathCoords);
 
-          // Zoom map to cover both points
+          // Fit map viewport to encompass the route
           if (route.viewport) {
-            map.fitBounds(route.viewport);
+            map.fitBounds(route.viewport, { top: 40, bottom: 40, left: 40, right: 40 });
           }
         }
       })
@@ -123,7 +164,7 @@ function LiveRouteTracker({
     };
   }, [routesLib, map, restaurantCoords, destinationCoords]);
 
-  // Interpolate partner location along computed route path
+  // Interpolate partner location along computed route path with live telemetry jitter
   useEffect(() => {
     if (routePath.length === 0) {
       // Linear interpolation fallback if routes are loading or failed
@@ -139,32 +180,204 @@ function LiveRouteTracker({
       Math.max(0, Math.floor((progress / 100) * (routePath.length - 1)))
     );
     if (routePath[index]) {
-      setPartnerCoords(routePath[index]);
+      const targetPoint = routePath[index];
+      // Micro-jitter to give real-time sensor displacement
+      const jitterLat = realTimeCoords ? (realTimeCoords.lat - restaurantCoords.lat) * 0.04 : 0;
+      const jitterLng = realTimeCoords ? (realTimeCoords.lng - restaurantCoords.lng) * 0.04 : 0;
+      setPartnerCoords({
+        lat: parseFloat((targetPoint.lat + jitterLat).toFixed(6)),
+        lng: parseFloat((targetPoint.lng + jitterLng).toFixed(6)),
+      });
     }
-  }, [progress, routePath, restaurantCoords, destinationCoords]);
+  }, [progress, routePath, restaurantCoords, destinationCoords, realTimeCoords]);
+
+  const handleRecenter = () => {
+    if (!map) return;
+    map.panTo(partnerCoords);
+    map.setZoom(16);
+  };
+
+  const handleFitRoute = () => {
+    if (!map) return;
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(restaurantCoords);
+    bounds.extend(destinationCoords);
+    bounds.extend(partnerCoords);
+    map.fitBounds(bounds, { top: 50, bottom: 50, left: 50, right: 50 });
+  };
 
   return (
     <>
       {/* Restaurant origin pin */}
-      <AdvancedMarker position={restaurantCoords} title={restaurantName}>
+      <AdvancedMarker 
+        position={restaurantCoords} 
+        title={restaurantName}
+        onClick={() => setActiveInfoWindow(activeInfoWindow === 'restaurant' ? null : 'restaurant')}
+      >
         <Pin background="#3b82f6" glyphColor="#fff" scale={0.95} />
       </AdvancedMarker>
+      {activeInfoWindow === 'restaurant' && (
+        <InfoWindow 
+          position={restaurantCoords} 
+          onCloseClick={() => setActiveInfoWindow(null)}
+        >
+          <div className="p-1 text-zinc-900 text-xs">
+            <p className="font-black text-sm">🍳 {restaurantName}</p>
+            <p className="text-[10px] text-zinc-500 font-mono mt-0.5">
+              Lat: {restaurantCoords.lat.toFixed(5)}, Lng: {restaurantCoords.lng.toFixed(5)}
+            </p>
+            <span className="inline-block mt-1 bg-blue-100 text-blue-800 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase">
+              Pickup Station
+            </span>
+          </div>
+        </InfoWindow>
+      )}
 
       {/* Customer drop area pin */}
-      <AdvancedMarker position={destinationCoords} title="Your Delivery Address">
+      <AdvancedMarker 
+        position={destinationCoords} 
+        title="Your Delivery Address"
+        onClick={() => setActiveInfoWindow(activeInfoWindow === 'destination' ? null : 'destination')}
+      >
         <Pin background="#10b981" glyphColor="#fff" scale={0.95} />
       </AdvancedMarker>
+      {activeInfoWindow === 'destination' && (
+        <InfoWindow 
+          position={destinationCoords} 
+          onCloseClick={() => setActiveInfoWindow(null)}
+        >
+          <div className="p-1 text-zinc-900 text-xs">
+            <p className="font-black text-sm">🏠 Delivery Address</p>
+            <p className="text-[10px] text-zinc-500 font-mono mt-0.5">
+              Lat: {destinationCoords.lat.toFixed(5)}, Lng: {destinationCoords.lng.toFixed(5)}
+            </p>
+            <span className="inline-block mt-1 bg-emerald-100 text-emerald-800 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase">
+              Drop Location
+            </span>
+          </div>
+        </InfoWindow>
+      )}
 
       {/* Delivery Partner's Moving Pin */}
-      <AdvancedMarker position={partnerCoords} title={riderName}>
-        <div className="relative flex items-center justify-center" style={{ width: '40px', height: '40px' }}>
+      <AdvancedMarker 
+        position={partnerCoords} 
+        title={riderName}
+        onClick={() => setActiveInfoWindow(activeInfoWindow === 'rider' ? null : 'rider')}
+      >
+        <div className="relative flex items-center justify-center cursor-pointer group" style={{ width: '44px', height: '44px' }}>
           {/* Animated ping effect */}
-          <span className="absolute inline-flex h-10 w-10 rounded-full bg-orange-500/30 animate-ping" />
-          <div className="relative w-8 h-8 rounded-full bg-orange-500 border-2 border-white flex items-center justify-center shadow-lg text-white text-base">
+          <span className="absolute inline-flex h-11 w-11 rounded-full bg-orange-500/40 animate-ping" />
+          <div className="relative w-9 h-9 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 border-2 border-white shadow-xl flex items-center justify-center text-white text-lg transition-transform group-hover:scale-110">
             🛵
           </div>
         </div>
       </AdvancedMarker>
+      {activeInfoWindow === 'rider' && (
+        <InfoWindow 
+          position={partnerCoords} 
+          onCloseClick={() => setActiveInfoWindow(null)}
+        >
+          <div className="p-1.5 text-zinc-900 text-xs min-w-[190px]">
+            <div className="flex items-center justify-between gap-2 border-b pb-1.5 mb-1.5">
+              <div>
+                <p className="font-black text-sm leading-tight">{riderName}</p>
+                <p className="text-[10px] text-zinc-500">{riderVehicle || 'Electric Scooter'}</p>
+              </div>
+              <span className="bg-emerald-100 text-emerald-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full">
+                Active
+              </span>
+            </div>
+            
+            <div className="space-y-1 font-mono text-[10.5px]">
+              <div className="flex justify-between text-zinc-650">
+                <span>GPS Coords:</span>
+                <span className="font-bold text-zinc-900">{partnerCoords.lat.toFixed(5)}, {partnerCoords.lng.toFixed(5)}</span>
+              </div>
+              <div className="flex justify-between text-zinc-650">
+                <span>Live Speed:</span>
+                <span className="font-bold text-orange-600">{speed || 36} km/h</span>
+              </div>
+              <div className="flex justify-between text-zinc-650">
+                <span>Accuracy:</span>
+                <span className="font-bold text-zinc-900">±{accuracy || 4.2}m</span>
+              </div>
+              <div className="flex justify-between text-zinc-650">
+                <span>Progress:</span>
+                <span className="font-bold text-emerald-600">{Math.round(progress)}% en route</span>
+              </div>
+            </div>
+
+            <div className="flex gap-1.5 mt-2">
+              {riderPhone && (
+                <a 
+                  href={`tel:${riderPhone}`}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition"
+                >
+                  📞 Call
+                </a>
+              )}
+              {onOpenChat && (
+                <button
+                  type="button"
+                  onClick={onOpenChat}
+                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition cursor-pointer"
+                >
+                  💬 Message
+                </button>
+              )}
+            </div>
+          </div>
+        </InfoWindow>
+      )}
+
+      {/* Floating Map Navigation Controls */}
+      <MapControl position={ControlPosition.TOP_RIGHT}>
+        <div className="m-2 flex flex-col gap-1.5 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md p-1 rounded-xl shadow-lg border border-slate-200 dark:border-zinc-800">
+          <button
+            type="button"
+            onClick={handleRecenter}
+            className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition"
+            title="Recenter on delivery partner"
+          >
+            🎯 Recenter
+          </button>
+          <button
+            type="button"
+            onClick={handleFitRoute}
+            className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition border-t border-slate-100 dark:border-zinc-800"
+            title="Fit full route in viewport"
+          >
+            🗺️ Fit Route
+          </button>
+        </div>
+      </MapControl>
+
+      {/* Real-time Coordinate Telemetry Overlay */}
+      <MapControl position={ControlPosition.BOTTOM_LEFT}>
+        <div className="m-2 bg-zinc-900/90 backdrop-blur-md text-white px-2.5 py-1.5 rounded-xl text-[9.5px] font-mono border border-zinc-700/60 shadow-lg flex items-center gap-2">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+          </span>
+          {countdownText && (
+            <>
+              <span className="text-orange-400 font-bold">⏱️ {countdownText}</span>
+              <span className="text-zinc-500">•</span>
+            </>
+          )}
+          {distanceKm !== undefined && (
+            <>
+              <span className="text-emerald-400 font-bold">{distanceKm} km</span>
+              <span className="text-zinc-500">•</span>
+            </>
+          )}
+          <span className="font-bold">
+            {partnerCoords.lat.toFixed(5)}, {partnerCoords.lng.toFixed(5)}
+          </span>
+          <span className="text-zinc-400">|</span>
+          <span className="text-orange-400 font-bold">{speed || 38} km/h</span>
+        </div>
+      </MapControl>
     </>
   );
 }
@@ -176,6 +389,7 @@ export default function TrackingScreen() {
     restaurants, submitRestaurantReview, user,
     pageHistory, goBack, closePage,
     notificationPermission, requestNotificationPermission,
+    triggerPushNotification,
     deliveryPartners, storePaymentSettings
   } = useApp();
 
@@ -464,6 +678,28 @@ export default function TrackingScreen() {
     }
   }, [isChatOpen, activeTab]);
 
+  // Audio chime for incoming chat message notifications
+  const playMessageChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08); // A5
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.35);
+    } catch {
+      // Audio autoplay restrictions handled gracefully
+    }
+  };
+
   // Automated intelligent replying router
   const handleSendMessage = (textOverride?: string) => {
     const rawMsg = textOverride || inputText;
@@ -483,17 +719,23 @@ export default function TrackingScreen() {
 
       setTimeout(() => {
         setIsDriverTyping(false);
-        let replyText = "Understood perfectly! I have registered your message and will adhere strictly to it during navigation. Riding safely near the corridors!";
+        let replyText = "Understood perfectly! I have noted your delivery instructions and will follow them carefully while delivering. Riding safely! 🛵";
         const low = rawMsg.toLowerCase();
         
-        if (low.includes('where') || low.includes('status') || low.includes('far') || low.includes('location') || low.includes('map')) {
-          replyText = `I am currently crossing the Chirala bypass bypass speedways. The live tracking radar shows about ${simulatedDistance} km remaining! I will make sure the food package stays ultra-piping hot inside our thermal secure carrier box. 🏍️`;
+        if (low.includes('door') || low.includes('doorstep') || low.includes('porch') || low.includes('front')) {
+          replyText = "Understood! I will leave your order right at your doorstep and send a confirmation ping. Contactless delivery ensured! 🚪📦";
+        } else if (low.includes('bell') || low.includes('ring') || low.includes('knock') || low.includes('quiet') || low.includes('sleep') || low.includes('baby') || low.includes('shh')) {
+          replyText = "Noted! I will NOT ring the doorbell or knock loudly. I will leave the food gently at the door and give you a soft missed call. 🤫";
+        } else if (low.includes('guard') || low.includes('security') || low.includes('gate') || low.includes('watchman') || low.includes('lobby') || low.includes('reception')) {
+          replyText = "Got it! I will hand over the food parcel safely to your building security guard / lobby reception and update you. 🏢";
+        } else if (low.includes('call') || low.includes('phone') || low.includes('dial') || low.includes('reach') || low.includes('arrive') || low.includes('arrival')) {
+          replyText = `Absolutely! As soon as my motorcycle rolls up near your street coordinate or apartment lobby, I will stop and dial your phone number (+91 ${riderPhone || 'your contact'}) instantly! 📞`;
+        } else if (low.includes('dog') || low.includes('pet') || low.includes('cat') || low.includes('bark')) {
+          replyText = "Thanks for the heads-up about your dog! I will stay cautious, keep a safe distance, and leave the package securely by the gate latch. 🐕";
+        } else if (low.includes('where') || low.includes('status') || low.includes('far') || low.includes('location') || low.includes('map') || low.includes('eta')) {
+          replyText = `I am currently crossing the Chirala bypass speedway! The live GPS radar shows about ${simulatedDistance} km remaining. I will ensure the food package stays ultra-piping hot inside our thermal carrier box! 🏍️`;
         } else if (low.includes('spoon') || low.includes('fork') || low.includes('cutlery') || low.includes('tissue') || low.includes('napkin')) {
-          replyText = "Rest assured! I am checking with the hotel kitchen dispatcher to verify they added heavy-duty wooden cutleries and multiple hygiene tissues before sealing up the outer packet. 🍴";
-        } else if (low.includes('call') || low.includes('phone') || low.includes('dial') || low.includes('reach') || low.includes('arrive')) {
-          replyText = "Absolutely! As soon as my motorcycle rolls up near your street coordinate or apartment lobby, I will stop and dial your phone number instantly so you can receive the hot bag! 📞";
-        } else if (low.includes('gate') || low.includes('code') || low.includes('security') || low.includes('flat') || low.includes('floor') || low.includes('watchman')) {
-          replyText = "Got it! Noted down the gate and flat guidelines. I will pass the security counter peacefully and deliver straight to your door step. 🚪";
+          replyText = "Rest assured! I checked with the hotel kitchen dispatcher to verify they added heavy-duty wooden cutleries and multiple hygiene tissues before sealing up the outer packet. 🍴";
         } else if (low.includes('spicy') || low.includes('spice') || low.includes('salt') || low.includes('chill')) {
           replyText = "Ah! For direct food culinary adjustments, you can drop a chat message to the Restaurant Chef on the other tab too! I'll also double check the package label before departing.";
         }
@@ -506,10 +748,11 @@ export default function TrackingScreen() {
         };
 
         setDriverMessages(prev => [...prev, systemReply]);
+        playMessageChime();
         if (!isChatOpen) {
           setUnreadDriverCount(prev => prev + 1);
         }
-      }, 1500);
+      }, 1200);
 
     } else {
       setRestaurantMessages(prev => [...prev, userMessage]);
@@ -539,10 +782,22 @@ export default function TrackingScreen() {
         };
 
         setRestaurantMessages(prev => [...prev, systemReply]);
+        playMessageChime();
         if (!isChatOpen) {
           setUnreadRestaurantCount(prev => prev + 1);
         }
-      }, 1500);
+      }, 1200);
+    }
+  };
+
+  // Helper to open chat directly focused on the delivery partner
+  const openDriverChat = (instructionPreset?: string) => {
+    setActiveTab('driver');
+    setIsChatOpen(true);
+    if (instructionPreset) {
+      setTimeout(() => {
+        handleSendMessage(instructionPreset);
+      }, 150);
     }
   };
 
@@ -562,15 +817,236 @@ export default function TrackingScreen() {
     return () => clearInterval(interval);
   }, [activeTrackingOrder]);
 
+  // Baseline total distance between restaurant and customer address
+  const totalRouteDistanceKm = useMemo(() => {
+    if (!restaurantCoords || !destinationCoords) return 2.8;
+    const calc = calculateDistanceKm(restaurantCoords.lat, restaurantCoords.lng, destinationCoords.lat, destinationCoords.lng);
+    return Math.max(1.4, Math.min(12, calc));
+  }, [restaurantCoords, destinationCoords]);
+
+  // Current real-time distance from delivery partner's current position to destination
+  const currentDistanceKm = useMemo(() => {
+    if (activeTrackingOrder?.status === 'delivered') return 0;
+    if (activeTrackingOrder?.status === 'cancelled') return 0;
+
+    const remainingFraction = Math.max(0, 1 - (deliveryRouteProgress / 100));
+
+    // When in transit ('picked' or 'on_the_way'), calculate from actual current GPS position (jitterCoords)
+    if (activeTrackingOrder?.status === 'picked' || activeTrackingOrder?.status === 'on_the_way') {
+      const geoDist = calculateDistanceKm(jitterCoords.lat, jitterCoords.lng, destinationCoords.lat, destinationCoords.lng);
+      const progressDist = totalRouteDistanceKm * remainingFraction;
+      const blended = Math.max(0.1, (geoDist * 0.35) + (progressDist * 0.65));
+      return parseFloat(blended.toFixed(2));
+    }
+
+    return parseFloat((totalRouteDistanceKm * remainingFraction).toFixed(2));
+  }, [activeTrackingOrder?.status, deliveryRouteProgress, jitterCoords, destinationCoords, totalRouteDistanceKm]);
+
+  // Function to calculate estimated arrival seconds based on distance, speed, and order stage
+  const calculateEtaSeconds = (distanceKm: number, speedKmH: number, status?: string): number => {
+    if (status === 'delivered' || distanceKm <= 0.05) return 0;
+    if (status === 'cancelled') return 0;
+
+    const safeSpeed = Math.max(20, Math.min(50, speedKmH || 36));
+    const transitSeconds = Math.round((distanceKm / safeSpeed) * 3600);
+    const doorstepHandoffBufferSeconds = 75; // ~1.25 minutes
+
+    let stageBufferSeconds = 0;
+    if (status === 'accepted') {
+      stageBufferSeconds = 720; // 12 minutes kitchen prep
+    } else if (status === 'preparing') {
+      stageBufferSeconds = 360; // 6 minutes remaining cooking
+    }
+
+    return Math.max(30, transitSeconds + doorstepHandoffBufferSeconds + stageBufferSeconds);
+  };
+
+  // Dynamic live ticking countdown state (in seconds)
+  const [countdownSeconds, setCountdownSeconds] = useState<number>(() => {
+    return calculateEtaSeconds(2.8, 38, activeTrackingOrder?.status);
+  });
+
+  // Synchronize target seconds based on distance whenever distance, speed, or status changes
   useEffect(() => {
     if (!activeTrackingOrder) return;
-    // Decrement distance based on progress
-    const pct = deliveryRouteProgress / 100;
-    const nextDist = Math.max(0.1, parseFloat((2.8 * (1 - pct)).toFixed(1)));
-    const nextEta = Math.max(1, Math.round(24 * (1 - pct)));
-    setSimulatedDistance(nextDist);
-    setEtaRemaining(nextEta);
-  }, [deliveryRouteProgress, activeTrackingOrder]);
+    if (activeTrackingOrder.status === 'delivered') {
+      setCountdownSeconds(0);
+      setEtaRemaining(0);
+      setSimulatedDistance(0);
+      return;
+    }
+
+    const targetSeconds = calculateEtaSeconds(currentDistanceKm, currentSpeed, activeTrackingOrder.status);
+    
+    // Smoothly resynchronize countdown if it drifted significantly from distance (> 12 seconds) or initial 0
+    setCountdownSeconds(prev => {
+      if (Math.abs(prev - targetSeconds) > 12 || prev === 0) {
+        return targetSeconds;
+      }
+      return prev;
+    });
+
+    setSimulatedDistance(currentDistanceKm);
+    setEtaRemaining(Math.max(1, Math.ceil(targetSeconds / 60)));
+  }, [currentDistanceKm, currentSpeed, activeTrackingOrder?.status]);
+
+  // Live second-by-second countdown ticker
+  useEffect(() => {
+    if (!activeTrackingOrder || activeTrackingOrder.status === 'delivered' || activeTrackingOrder.status === 'cancelled') {
+      return;
+    }
+
+    const ticker = setInterval(() => {
+      setCountdownSeconds(prev => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(ticker);
+  }, [activeTrackingOrder?.status]);
+
+  const countdownMinutes = Math.floor(countdownSeconds / 60);
+  const countdownSecs = countdownSeconds % 60;
+  const formattedCountdown = `${countdownMinutes}:${countdownSecs.toString().padStart(2, '0')}`;
+  const arrivalClockTime = useMemo(() => {
+    const arrivalTime = new Date(Date.now() + countdownSeconds * 1000);
+    return arrivalTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }, [countdownSeconds]);
+
+  // Proximity Alert Chime Player (Harmonic alert chime with haptic vibration)
+  const playProximityChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(880, ctx.currentTime); // A5
+      gain1.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(ctx.currentTime);
+      osc1.stop(ctx.currentTime + 0.25);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(1318.51, ctx.currentTime + 0.12); // E6
+      gain2.gain.setValueAtTime(0.25, ctx.currentTime + 0.12);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(ctx.currentTime + 0.12);
+      osc2.stop(ctx.currentTime + 0.45);
+
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate([200, 100, 200]);
+      }
+    } catch (e) {
+      console.warn('Proximity chime could not play:', e);
+    }
+  };
+
+  // 500m Proximity Alert States (Notified only once per active delivery cycle)
+  const [hasTriggeredProximityAlert, setHasTriggeredProximityAlert] = useState<boolean>(() => {
+    if (!activeTrackingOrder) return false;
+    return Boolean(localStorage.getItem(`nuvvo_proximity_500m_${activeTrackingOrder.id}`));
+  });
+  const [showProximityBanner, setShowProximityBanner] = useState<boolean>(false);
+
+  // Monitor 500m (0.5 km) proximity threshold
+  useEffect(() => {
+    if (!activeTrackingOrder) return;
+    const isTransit = activeTrackingOrder.status === 'picked' || activeTrackingOrder.status === 'on_the_way';
+    
+    // Automatically close banner if order gets delivered or cancelled
+    if (activeTrackingOrder.status === 'delivered' || activeTrackingOrder.status === 'cancelled') {
+      setShowProximityBanner(false);
+      return;
+    }
+
+    if (!isTransit) return;
+
+    const storageKey = `nuvvo_proximity_500m_${activeTrackingOrder.id}`;
+    const alreadyFired = Boolean(localStorage.getItem(storageKey));
+
+    // Threshold: 500 meters (0.5 km)
+    if (currentDistanceKm <= 0.5 && !alreadyFired && !hasTriggeredProximityAlert) {
+      localStorage.setItem(storageKey, 'true');
+      setHasTriggeredProximityAlert(true);
+      setShowProximityBanner(true);
+
+      // Play double-tone audio chime and haptic vibration
+      playProximityChime();
+
+      const title = `🛵 Delivery Partner is within 500 meters!`;
+      const body = `${riderName} is arriving at your doorstep (~${Math.round(currentDistanceKm * 1000)}m away). Please prepare for handover!`;
+
+      // 1. Dispatch into App Notification center
+      if (triggerPushNotification) {
+        triggerPushNotification(
+          activeTrackingOrder.id,
+          'on_the_way',
+          title,
+          body,
+          false,
+          'customers'
+        );
+      }
+
+      // 2. Dispatch native browser/device Notification if permitted
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification(title, {
+            body,
+            icon: '/nuvvo-logo.png',
+            tag: `proximity-500m-${activeTrackingOrder.id}`,
+            requireInteraction: true
+          });
+        } catch (err) {
+          console.warn('Native notification trigger failed:', err);
+        }
+      }
+    } else if (currentDistanceKm <= 0.5 && isTransit) {
+      setShowProximityBanner(true);
+    } else if (currentDistanceKm > 0.5) {
+      setShowProximityBanner(false);
+    }
+  }, [currentDistanceKm, activeTrackingOrder?.status, activeTrackingOrder?.id, hasTriggeredProximityAlert, riderName, triggerPushNotification]);
+
+  const handleTestProximityAlert = () => {
+    playProximityChime();
+    setShowProximityBanner(true);
+    const title = `🛵 Delivery Partner is within 500 meters!`;
+    const body = `${riderName} is arriving at your doorstep (~380m away). Please prepare for handover!`;
+
+    if (triggerPushNotification) {
+      triggerPushNotification(
+        activeTrackingOrder?.id || 'order_test',
+        'on_the_way',
+        title,
+        body,
+        false,
+        'customers'
+      );
+    }
+
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(title, {
+          body,
+          icon: '/nuvvo-logo.png',
+          tag: `proximity-500m-test-${Date.now()}`
+        });
+      } catch (e) {}
+    }
+  };
+
+
 
   if (!activeTrackingOrder) {
     return (
@@ -614,43 +1090,93 @@ export default function TrackingScreen() {
     );
   }
 
-  interface TrackingStage {
-    label: string;
+  interface TimelineStage {
+    id: 'placed' | 'preparing' | 'out_for_delivery' | 'delivered';
+    stepNumber: number;
+    label: string; // 'Order Placed', 'Preparing', 'Out for Delivery', 'Delivered'
+    shortLabel: string;
     desc: string;
+    detailedDesc: string;
     icon: string;
-    isActive: boolean;
+    time: string;
     isCompleted: boolean;
+    isActive: boolean;
+    statusKey: OrderStatus;
   }
 
-  const stages: TrackingStage[] = [
-    {
-      label: 'Accepted',
-      desc: 'Order received & confirmed by the kitchen',
-      icon: '📝',
-      isActive: activeTrackingOrder.status === 'accepted',
-      isCompleted: ['preparing', 'picked', 'on_the_way', 'delivered'].includes(activeTrackingOrder.status)
-    },
-    {
-      label: 'Preparing',
-      desc: 'Our chefs are cooking your fresh plate with care',
-      icon: '🍳',
-      isActive: activeTrackingOrder.status === 'preparing',
-      isCompleted: ['picked', 'on_the_way', 'delivered'].includes(activeTrackingOrder.status)
-    },
-    {
-      label: 'Out for Delivery',
-      desc: 'Rider is speeding down the path with your hot bag',
-      icon: '🛵',
-      isActive: ['picked', 'on_the_way'].includes(activeTrackingOrder.status),
-      isCompleted: activeTrackingOrder.status === 'delivered'
-    },
-    {
-      label: 'Delivered',
-      desc: 'Arrived! Consolidated package dropped at your door',
-      icon: '😋',
-      isActive: activeTrackingOrder.status === 'delivered',
-      isCompleted: activeTrackingOrder.status === 'delivered'
+  const getStageIndex = (status?: string): number => {
+    switch (status) {
+      case 'accepted': return 0; // Order Placed
+      case 'preparing': return 1; // Preparing
+      case 'picked':
+      case 'on_the_way': return 2; // Out for Delivery
+      case 'delivered': return 3; // Delivered
+      case 'cancelled': return -1;
+      default: return 0;
     }
+  };
+
+  const currentStageIndex = getStageIndex(activeTrackingOrder.status);
+  const timelineProgressPercent = Math.max(0, Math.min(100, (currentStageIndex / 3) * 100));
+
+  const orderBaseTime = activeTrackingOrder.date ? new Date(activeTrackingOrder.date).getTime() : Date.now();
+  const formatStageTime = (offsetMinutes: number) => {
+    return new Date(orderBaseTime + offsetMinutes * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const stages: TimelineStage[] = [
+    {
+      id: 'placed',
+      stepNumber: 1,
+      label: 'Order Placed',
+      shortLabel: 'Placed',
+      desc: 'Order confirmed & ticket issued to kitchen',
+      detailedDesc: `Order #${activeTrackingOrder.id.split('_')[1] || activeTrackingOrder.id} successfully placed at ${restaurantName}. Payment: ${activeTrackingOrder.paymentStatus === 'confirmed' || activeTrackingOrder.paymentStatus === 'success' ? 'Confirmed' : activeTrackingOrder.paymentMethod || 'UPI'}.`,
+      icon: '📝',
+      time: formatStageTime(0),
+      isCompleted: currentStageIndex > 0,
+      isActive: currentStageIndex === 0,
+      statusKey: 'accepted',
+    },
+    {
+      id: 'preparing',
+      stepNumber: 2,
+      label: 'Preparing',
+      shortLabel: 'Cooking',
+      desc: 'Our chefs are cooking your fresh plate with care',
+      detailedDesc: `${activeTrackingOrder.items.length} culinary dish(es) are hot-boxed with 100% tamper-proof safety tape.`,
+      icon: '🍳',
+      time: formatStageTime(4),
+      isCompleted: currentStageIndex > 1,
+      isActive: currentStageIndex === 1,
+      statusKey: 'preparing',
+    },
+    {
+      id: 'out_for_delivery',
+      stepNumber: 3,
+      label: 'Out for Delivery',
+      shortLabel: 'In Transit',
+      desc: 'Rider is speeding down the path with your hot bag',
+      detailedDesc: `${hasAssignedRider ? riderName : 'Assigned delivery partner'} is en route. Approx. ${simulatedDistance} km remaining to your delivery address.`,
+      icon: '🛵',
+      time: formatStageTime(15),
+      isCompleted: currentStageIndex > 2,
+      isActive: currentStageIndex === 2,
+      statusKey: 'on_the_way',
+    },
+    {
+      id: 'delivered',
+      stepNumber: 4,
+      label: 'Delivered',
+      shortLabel: 'Delivered',
+      desc: 'Arrived! Consolidated package dropped at your door',
+      detailedDesc: `Consolidated order package handed over safely at ${activeTrackingOrder.address?.flatNo || 'your address'}, ${activeTrackingOrder.address?.area || 'Chirala'}. Enjoy your warm meal!`,
+      icon: '😋',
+      time: formatStageTime(25),
+      isCompleted: currentStageIndex >= 3,
+      isActive: currentStageIndex === 3,
+      statusKey: 'delivered',
+    },
   ];
 
   return (
@@ -733,6 +1259,81 @@ export default function TrackingScreen() {
 
       <div className="p-4 max-w-md mx-auto space-y-4">
         
+        {/* LOCAL NOTIFICATION PROXIMITY BANNER (< 500 METERS) */}
+        <AnimatePresence>
+          {showProximityBanner && (
+            <motion.div
+              id="proximity-alert-banner"
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              className="bg-gradient-to-r from-amber-500 via-orange-500 to-emerald-600 p-0.5 rounded-3xl shadow-2xl relative overflow-hidden"
+            >
+              <div className="bg-zinc-950/95 backdrop-blur-md rounded-[22px] p-4 text-white space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-xl shrink-0 shadow-inner">
+                      🛵
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[9.5px] font-black uppercase tracking-wider bg-orange-500 text-white px-2 py-0.5 rounded-full font-mono flex items-center gap-1">
+                          <BellRing className="w-3 h-3 animate-bounce" /> 500m Proximity Alert
+                        </span>
+                        <span className="text-[9.5px] text-emerald-400 font-mono font-bold">
+                          ~{Math.round(currentDistanceKm * 1000)}m away
+                        </span>
+                      </div>
+                      <h3 className="text-xs font-black text-white mt-1 leading-tight">
+                        {riderName} is arriving at your doorstep!
+                      </h3>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowProximityBanner(false)}
+                    className="p-1 rounded-full text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 transition cursor-pointer"
+                    title="Dismiss alert"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-zinc-300 leading-relaxed font-medium">
+                  Your delivery partner is within 500 meters of your delivery address. Please ensure someone is available at the door for handover.
+                </p>
+
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-800/80 flex-wrap">
+                  <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 font-mono">
+                    <Clock className="w-3 h-3 text-orange-400" />
+                    <span>ETA: <strong className="text-white">{formattedCountdown}</strong> ({currentSpeed} km/h)</span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => openDriverChat()}
+                      className="bg-orange-500 hover:bg-orange-600 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition cursor-pointer"
+                    >
+                      <MessageSquare className="w-3 h-3" /> Instructions
+                    </button>
+
+                    {riderPhone && (
+                      <a
+                        href={`tel:${riderPhone}`}
+                        className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition"
+                      >
+                        <Phone className="w-3 h-3" /> Call
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* PAYMENT VERIFICATION STATUS CARD (Requirements #8, #14 & #15) */}
         {activeTrackingOrder && (
           <div id="tracking-payment-status-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
@@ -818,6 +1419,211 @@ export default function TrackingScreen() {
           </div>
         )}
 
+        {/* DYNAMIC COUNTDOWN TIMER CARD (CALCULATED VIA REAL-TIME DISTANCE & SPEED) */}
+        <div 
+          id="live-eta-countdown-card"
+          className="bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-950 text-white rounded-3xl p-5 border border-zinc-800 shadow-2xl relative overflow-hidden space-y-4"
+        >
+          {/* Subtle warm glow background accent */}
+          <div className="absolute top-0 right-0 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-8 -left-8 w-40 h-40 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+
+          {/* Top Status & Telemetry Row */}
+          <div className="flex items-center justify-between relative z-10 flex-wrap gap-2 border-b border-zinc-800/80 pb-3">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${activeTrackingOrder.status === 'delivered' ? 'bg-emerald-400' : 'bg-orange-400'} opacity-75`} />
+                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${activeTrackingOrder.status === 'delivered' ? 'bg-emerald-500' : 'bg-orange-500'}`} />
+              </span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-orange-400 font-mono">
+                {activeTrackingOrder.status === 'delivered'
+                  ? 'DELIVERY COMPLETE'
+                  : currentDistanceKm <= 0.3 && (activeTrackingOrder.status === 'picked' || activeTrackingOrder.status === 'on_the_way')
+                  ? 'ARRIVING AT YOUR DOOR'
+                  : 'LIVE DISTANCE-CALCULATED ETA'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 font-mono text-[9.5px] bg-zinc-800/80 px-2.5 py-1 rounded-full text-zinc-300 border border-zinc-700/50">
+              <MapPin className="w-3 h-3 text-emerald-400" />
+              <span>
+                {activeTrackingOrder.status === 'delivered'
+                  ? '0.0 km • At Your Door'
+                  : `${currentDistanceKm} km (${Math.round(currentDistanceKm * 1000)}m) away`}
+              </span>
+            </div>
+          </div>
+
+          {/* Main Countdown Digits & Estimated Time */}
+          <div className="flex items-center justify-between relative z-10 gap-4 flex-wrap">
+            <div className="space-y-1">
+              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider block">
+                Estimated Delivery In
+              </span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-4xl sm:text-5xl font-black font-mono tracking-tight text-white drop-shadow-md">
+                  {activeTrackingOrder.status === 'delivered' ? '00:00' : formattedCountdown}
+                </span>
+                <span className="text-xs font-bold text-orange-400 uppercase font-mono">
+                  {activeTrackingOrder.status === 'delivered' ? 'Completed' : 'Mins : Secs'}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 pt-0.5">
+                <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                <span>
+                  Expected by <strong className="text-zinc-200 font-mono">{arrivalClockTime}</strong>
+                </span>
+              </p>
+            </div>
+
+            {/* Dynamic Status Pill */}
+            <div className="text-right flex flex-col items-end gap-1.5">
+              <span className={`px-3 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm ${
+                activeTrackingOrder.status === 'delivered'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : currentDistanceKm <= 0.3
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-bounce'
+                  : 'bg-orange-500/15 text-orange-300 border border-orange-500/30'
+              }`}>
+                {activeTrackingOrder.status === 'delivered'
+                  ? '🎉 Order Delivered'
+                  : currentDistanceKm <= 0.3
+                  ? '🔔 Stand by at Door'
+                  : `⚡ ${currentSpeed} km/h Transit`}
+              </span>
+              <span className="text-[9px] text-zinc-400 font-mono">
+                Updates dynamically with rider movement
+              </span>
+            </div>
+          </div>
+
+          {/* Visual Distance Progress Gauge */}
+          <div className="space-y-2 pt-1 relative z-10">
+            <div className="flex items-center justify-between text-[10px] text-zinc-400 font-medium">
+              <span className="flex items-center gap-1 truncate max-w-[45%]">
+                <Store className="w-3 h-3 text-blue-400 shrink-0" />
+                <span className="truncate">{restaurantName}</span>
+              </span>
+              <span className="text-orange-400 font-mono font-bold shrink-0">
+                {activeTrackingOrder.status === 'delivered'
+                  ? '100% Reached'
+                  : `${Math.round(deliveryRouteProgress)}% Journey`}
+              </span>
+              <span className="flex items-center gap-1 truncate max-w-[45%] text-right justify-end">
+                <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span className="truncate">{activeTrackingOrder.address?.flatNo || 'Your Address'}</span>
+              </span>
+            </div>
+
+            {/* Progress Track */}
+            <div className="relative w-full h-2.5 bg-zinc-800 rounded-full overflow-hidden p-0.5 border border-zinc-700/50">
+              <div 
+                className="h-full bg-gradient-to-r from-blue-500 via-orange-500 to-emerald-500 rounded-full transition-all duration-700 ease-out"
+                style={{ 
+                  width: `${activeTrackingOrder.status === 'delivered' ? 100 : Math.max(8, deliveryRouteProgress)}%` 
+                }}
+              />
+            </div>
+            
+            <div className="flex items-center justify-between text-[9px] text-zinc-450 font-mono">
+              <span>Origin: 0.0 km</span>
+              <span className="text-emerald-400 font-bold">
+                {activeTrackingOrder.status === 'delivered' ? '0 meters remaining' : `${currentDistanceKm} km remaining`}
+              </span>
+              <span>Total: ~{totalRouteDistanceKm} km</span>
+            </div>
+          </div>
+        </div>
+
+        {/* STEP-BY-STEP PROGRESS TIMELINE OVERVIEW (HORIZONTAL BAR) */}
+        <div id="order-timeline-hero-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-lg relative overflow-hidden space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-2 rounded-2xl bg-orange-500/10 text-orange-600 dark:text-orange-400">
+                <Clock className="w-4 h-4" />
+              </span>
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-orange-500 font-mono block">
+                  ORDER JOURNEY
+                </span>
+                <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight">
+                  {stages[currentStageIndex]?.label || 'Order Tracking'}
+                </h3>
+              </div>
+            </div>
+
+            <div className="text-right">
+              <span className={`text-[9.5px] font-black uppercase px-2.5 py-1 rounded-full font-mono inline-flex items-center gap-1 ${
+                activeTrackingOrder.status === 'delivered'
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
+                  : 'bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-500/30 animate-pulse'
+              }`}>
+                {activeTrackingOrder.status === 'delivered' ? '🎉 Arrived' : `⏱️ ${formattedCountdown} • ${currentDistanceKm} km`}
+              </span>
+            </div>
+          </div>
+
+          {/* Horizontal Progress Bar connecting 4 stages */}
+          <div className="pt-2 pb-1">
+            <div className="relative">
+              {/* Background track line */}
+              <div className="absolute top-4 left-6 right-6 h-1 bg-slate-150 dark:bg-zinc-800 rounded-full -translate-y-1/2 z-0" />
+              
+              {/* Active fill bar */}
+              <div 
+                className="absolute top-4 left-6 h-1 bg-gradient-to-r from-orange-500 to-amber-500 rounded-full -translate-y-1/2 transition-all duration-700 ease-out z-0" 
+                style={{ width: `calc((100% - 48px) * ${currentStageIndex / 3})` }}
+              />
+
+              {/* 4 Stage Nodes */}
+              <div className="relative z-10 flex items-center justify-between">
+                {stages.map((stage) => {
+                  const isDone = stage.isCompleted;
+                  const isCurrent = stage.isActive;
+
+                  return (
+                    <button
+                      key={stage.id}
+                      type="button"
+                      onClick={() => changeOrderStatus(activeTrackingOrder.id, stage.statusKey)}
+                      className="group flex flex-col items-center cursor-pointer transition-transform active:scale-95 focus:outline-none"
+                      title={`Stage: ${stage.label} (Click to simulate status)`}
+                    >
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shadow-sm ${
+                        isDone
+                          ? 'bg-emerald-500 text-white shadow-emerald-500/20'
+                          : isCurrent
+                          ? 'bg-orange-500 text-white ring-4 ring-orange-500/25 shadow-orange-500/30 animate-bounce'
+                          : 'bg-white dark:bg-zinc-800 text-zinc-400 border-2 border-slate-200 dark:border-zinc-700'
+                      }`}>
+                        {isDone ? (
+                          <Check className="w-4 h-4 stroke-[3]" />
+                        ) : (
+                          <span>{stage.icon}</span>
+                        )}
+                      </div>
+
+                      <span className={`text-[10px] font-black mt-2 text-center transition-colors ${
+                        isCurrent
+                          ? 'text-orange-500 dark:text-orange-400'
+                          : isDone
+                          ? 'text-zinc-800 dark:text-zinc-200 font-bold'
+                          : 'text-zinc-400 dark:text-zinc-500'
+                      }`}>
+                        {stage.shortLabel}
+                      </span>
+                      
+                      <span className="text-[8.5px] font-mono text-zinc-400 dark:text-zinc-500">
+                        {stage.time}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* DELIVERY BOY DETAILS & LIVE LOCATION CARD (VISIBLE PROMINENTLY UPON DELIVERY START) */}
         <div 
           id="delivery-boy-details-card" 
@@ -845,8 +1651,8 @@ export default function TrackingScreen() {
               </div>
             </div>
 
-            <span className="text-[10px] font-mono font-bold bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full text-zinc-600 dark:text-zinc-300">
-              ETA: {etaRemaining} Mins
+            <span className="text-[10px] font-mono font-bold bg-slate-100 dark:bg-zinc-800 px-2.5 py-1 rounded-full text-zinc-650 dark:text-zinc-250 border border-slate-200 dark:border-zinc-700">
+              ETA: {activeTrackingOrder.status === 'delivered' ? 'Arrived' : formattedCountdown}
             </span>
           </div>
 
@@ -899,24 +1705,61 @@ export default function TrackingScreen() {
               </div>
 
               {/* Quick Contact Action Buttons */}
-              <div className="grid grid-cols-2 gap-2 pt-3">
+              <div className="grid grid-cols-3 gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => openDriverChat()}
+                  className="bg-orange-500 hover:bg-orange-600 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-orange-500/20 transition-all cursor-pointer text-center"
+                  title={`Direct Message ${riderName} for Delivery Instructions`}
+                >
+                  <MessageSquare className="w-4 h-4" /> Message
+                </button>
+
                 <a 
                   href={`tel:${riderPhone}`}
-                  className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-3 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
+                  className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
                   title={`Call ${riderName}`}
                 >
-                  <Phone className="w-4 h-4" /> Call Delivery Boy
+                  <Phone className="w-4 h-4" /> Call
                 </a>
 
                 <a 
                   href={`https://wa.me/91${riderPhone}?text=Hi%20${encodeURIComponent(riderName)},%20I%20am%20tracking%20my%20Nuvvo%20food%20order.`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-black text-xs py-2.5 px-3 rounded-2xl flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer text-center"
+                  className="bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer text-center"
                   title="Chat on WhatsApp"
                 >
-                  <MessageSquare className="w-4 h-4" /> WhatsApp Rider
+                  <Send className="w-3.5 h-3.5" /> WhatsApp
                 </a>
+              </div>
+
+              {/* Instant Delivery Instructions Shortcut Chips */}
+              <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-zinc-800/80">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-zinc-500 dark:text-zinc-400 flex items-center gap-1">
+                    <Send className="w-3 h-3 text-orange-500" /> Delivery Instructions
+                  </span>
+                  <span className="text-[9px] text-zinc-400 font-mono">1-tap instant send</span>
+                </div>
+                <div className="flex gap-1.5 overflow-x-auto scrollbar-none py-0.5">
+                  {[
+                    { label: "Leave at door 🚪", text: "Please leave the food package at my door 🚪" },
+                    { label: "Don't ring bell 🤫", text: "Please don't ring the doorbell or knock loudly 🤫" },
+                    { label: "Call on arrival 📞", text: "Please give me a quick call when you arrive 📞" },
+                    { label: "Leave with security 🏢", text: "Please hand the food over to the security guard / lobby 🏢" },
+                    { label: "Beware of dog 🐕", text: "Beware of pet dog inside the gate 🐕" },
+                  ].map((chip, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => openDriverChat(chip.text)}
+                      className="shrink-0 bg-slate-100 hover:bg-orange-50 dark:bg-zinc-800 hover:dark:bg-orange-950/30 text-zinc-750 dark:text-zinc-200 hover:text-orange-600 dark:hover:text-orange-400 text-[10.5px] font-bold px-2.5 py-1.5 rounded-full border border-slate-200 dark:border-zinc-700 transition cursor-pointer active:scale-95"
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </>
           ) : (
@@ -968,14 +1811,16 @@ export default function TrackingScreen() {
               <span className="text-[10px] font-black font-mono">
                 {activeTrackingOrder.scheduledTime 
                   ? `SCHEDULED: ${activeTrackingOrder.scheduledTime}` 
-                  : `ETA: ${etaRemaining} MINS`
+                  : activeTrackingOrder.status === 'delivered'
+                  ? 'DELIVERED'
+                  : `ETA: ${formattedCountdown} • ${currentDistanceKm} KM`
                 }
               </span>
             </div>
           </div>
 
           {hasValidKey ? (
-            <div className="border rounded-2xl h-72 relative overflow-hidden flex items-center justify-center shadow-inner">
+            <div className="border rounded-2xl h-80 relative overflow-hidden flex items-center justify-center shadow-inner">
               <APIProvider apiKey={API_KEY} version="weekly">
                 <Map
                   defaultCenter={CHIRALA_CENTER}
@@ -990,6 +1835,14 @@ export default function TrackingScreen() {
                     progress={deliveryRouteProgress}
                     restaurantName={restaurantName}
                     riderName={hasAssignedRider ? riderName : "Delivery Partner"}
+                    riderVehicle={riderVehicle}
+                    riderPhone={riderPhone}
+                    speed={currentSpeed}
+                    accuracy={gpsAccuracy}
+                    realTimeCoords={jitterCoords}
+                    countdownText={activeTrackingOrder.status === 'delivered' ? 'Arrived' : formattedCountdown}
+                    distanceKm={currentDistanceKm}
+                    onOpenChat={() => openDriverChat()}
                   />
                 </Map>
               </APIProvider>
@@ -1021,7 +1874,9 @@ export default function TrackingScreen() {
           <div className="mt-3 flex items-center justify-between text-xs border-t pt-3">
             <div>
               <p className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider">Distance residual</p>
-              <p className="font-extrabold text-zinc-900 dark:text-zinc-100 font-mono text-sm">{simulatedDistance} km remaining</p>
+              <p className="font-extrabold text-zinc-900 dark:text-zinc-100 font-mono text-sm">
+                {activeTrackingOrder.status === 'delivered' ? '0.0 km • Destination Reached' : `${currentDistanceKm} km remaining`}
+              </p>
             </div>
             <div className="text-right">
               <p className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider">Rider Assignment</p>
@@ -1271,44 +2126,187 @@ export default function TrackingScreen() {
           </div>
         )}
 
-        {/* CHRONOLOGICAL STAGES OF ORDER (ACC -> PREP -> PICK -> ON THE WAY -> DEL) */}
-        <div className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
-          <h3 className="text-xs font-bold font-mono tracking-widest text-zinc-400 uppercase">Chronological Steps</h3>
+        {/* STEP-BY-STEP PROGRESS TIMELINE UI (CHRONOLOGICAL DETAIL) */}
+        <div id="step-by-step-timeline-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-zinc-800/80 pb-3">
+            <div>
+              <span className="text-[9.5px] font-black uppercase tracking-widest text-orange-500 font-mono block">
+                TIMELINE TRACKER
+              </span>
+              <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight">
+                Order Delivery Progress
+              </h3>
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-zinc-800/80 px-2.5 py-1 rounded-full text-[9.5px] font-mono text-zinc-600 dark:text-zinc-300 font-bold border border-slate-200/60 dark:border-zinc-700/60">
+              <Clock className="w-3 h-3 text-orange-500" />
+              <span>Step {currentStageIndex + 1} of 4</span>
+            </div>
+          </div>
           
-          <div className="relative pl-6 space-y-5">
+          <div className="relative pl-6 space-y-6 pt-1">
             {/* Vertical connector line */}
-            <div className="absolute left-2.5 top-2.5 bottom-2.5 w-0.5 bg-slate-100 dark:bg-zinc-800" />
+            <div className="absolute left-2.5 top-3.5 bottom-3.5 w-0.5 bg-slate-150 dark:bg-zinc-800" />
+            <div 
+              className="absolute left-2.5 top-3.5 w-0.5 bg-gradient-to-b from-emerald-500 via-orange-500 to-amber-500 transition-all duration-700"
+              style={{
+                height: `${Math.min(100, Math.max(0, (currentStageIndex / 3) * 100))}%`
+              }}
+            />
             
-            {stages.map((stage, idx) => {
+            {stages.map((stage) => {
               const isCompleted = stage.isCompleted;
               const isActive = stage.isActive;
               
               return (
-                <div key={idx} className="relative flex gap-3.5">
-                  {/* Bullet node */}
-                  <div className={`absolute -left-5 top-1 w-5.5 h-5.5 rounded-full border-2 flex items-center justify-center text-[9px] z-10 transition-colors ${
+                <div key={stage.id} className="relative flex items-start gap-3.5 group">
+                  {/* Timeline Node */}
+                  <div className={`absolute -left-5 top-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] z-10 transition-all ${
                     isCompleted 
-                      ? 'bg-emerald-500 border-emerald-500 text-white' 
+                      ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-500/25' 
                       : isActive 
-                        ? 'bg-orange-500 border-orange-500 text-white animate-pulse' 
+                        ? 'bg-orange-500 border-white dark:border-zinc-900 text-white shadow-md shadow-orange-500/30 ring-4 ring-orange-500/20 animate-pulse' 
                         : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-zinc-400'
                   }`}>
-                    {isCompleted ? '✓' : idx + 1}
+                    {isCompleted ? (
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    ) : (
+                      <span className="font-mono font-bold text-[9px]">{stage.stepNumber}</span>
+                    )}
                   </div>
 
-                  <span className="text-lg flex-shrink-0 mt-0.5">{stage.icon}</span>
+                  {/* Stage Icon Box */}
+                  <div className={`w-9 h-9 rounded-2xl flex items-center justify-center text-base shrink-0 transition-colors ${
+                    isActive
+                      ? 'bg-orange-500/10 border border-orange-500/30 shadow-xs'
+                      : isCompleted
+                      ? 'bg-emerald-500/10 border border-emerald-500/20'
+                      : 'bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800 opacity-60'
+                  }`}>
+                    {stage.icon}
+                  </div>
 
-                  <div>
-                    <h4 className={`text-xs font-extrabold ${isActive ? 'text-orange-500' : 'text-zinc-900 dark:text-zinc-200'}`}>
-                      {stage.label}
-                    </h4>
-                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium leading-none mt-1">
+                  {/* Stage Text & Details */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h4 className={`text-xs font-black transition-colors ${
+                        isActive 
+                          ? 'text-orange-500 dark:text-orange-400' 
+                          : isCompleted 
+                          ? 'text-zinc-900 dark:text-zinc-100' 
+                          : 'text-zinc-400 dark:text-zinc-500'
+                      }`}>
+                        {stage.label}
+                      </h4>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[9px] font-mono text-zinc-400 dark:text-zinc-500">
+                          {stage.time}
+                        </span>
+                        
+                        <span className={`text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          isCompleted
+                            ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                            : isActive
+                            ? 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 animate-pulse'
+                            : 'bg-slate-100 dark:bg-zinc-800 text-zinc-400'
+                        }`}>
+                          {isCompleted ? 'Done' : isActive ? 'In Progress' : 'Pending'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400 leading-snug mt-0.5 font-medium">
                       {stage.desc}
                     </p>
+
+                    {/* Active highlighted detail box */}
+                    {isActive && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-2.5 p-3 rounded-2xl bg-orange-500/[0.07] border border-orange-500/20 text-[10.5px] text-zinc-700 dark:text-zinc-300 leading-relaxed space-y-1.5 shadow-xs"
+                      >
+                        <p className="font-semibold text-zinc-800 dark:text-zinc-200">
+                          {stage.detailedDesc}
+                        </p>
+                        
+                        {stage.id === 'out_for_delivery' && (
+                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] font-mono text-orange-600 dark:text-orange-400 font-bold">
+                            <span>🛵 Live Rider: {riderName}</span>
+                            <span>{currentSpeed} km/h • GPS Beacon</span>
+                          </div>
+                        )}
+                        {stage.id === 'preparing' && (
+                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-medium">
+                            <span>👨‍🍳 Freshly Prepared by Kitchen</span>
+                            <span>Hygiene Certified</span>
+                          </div>
+                        )}
+                        {stage.id === 'placed' && (
+                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-mono">
+                            <span>Kitchen: {restaurantName}</span>
+                            <span>Receipt #{activeTrackingOrder.id.slice(-6).toUpperCase()}</span>
+                          </div>
+                        )}
+                        {stage.id === 'delivered' && (
+                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-emerald-600 dark:text-emerald-400 font-bold">
+                            <span>✅ Delivered Safely</span>
+                            <span>Enjoy your meal!</span>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
                   </div>
                 </div>
               );
             })}
+          </div>
+
+          {/* Quick Stage Simulator Switcher for instant demo / verification */}
+          <div className="pt-2 border-t border-slate-100 dark:border-zinc-800/80">
+            <div className="flex items-center justify-between gap-1 flex-wrap mb-2">
+              <span className="text-[9px] font-black uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-orange-500" /> Stage Switcher:
+              </span>
+              <span className="text-[8.5px] text-zinc-400 italic">
+                (Tap to test any status in real-time)
+              </span>
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5">
+              {stages.map((stage) => {
+                const isSelected = activeTrackingOrder.status === stage.statusKey || 
+                  (stage.id === 'out_for_delivery' && (activeTrackingOrder.status === 'picked' || activeTrackingOrder.status === 'on_the_way'));
+                return (
+                  <button
+                    key={stage.id}
+                    type="button"
+                    onClick={() => changeOrderStatus(activeTrackingOrder.id, stage.statusKey)}
+                    className={`py-2 px-1.5 rounded-xl text-[9px] font-black uppercase transition-all cursor-pointer flex flex-col items-center gap-1 text-center active:scale-95 ${
+                      isSelected
+                        ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/20'
+                        : 'bg-slate-50 dark:bg-zinc-800/80 hover:bg-slate-100 dark:hover:bg-zinc-800 text-zinc-650 dark:text-zinc-350 border border-slate-200/80 dark:border-zinc-700/80'
+                    }`}
+                  >
+                    <span className="text-sm">{stage.icon}</span>
+                    <span className="truncate w-full leading-tight">{stage.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Test 500m Alert Action */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleTestProximityAlert}
+                className="w-full py-2 px-3 rounded-xl bg-orange-500/10 hover:bg-orange-500/20 active:scale-98 text-orange-600 dark:text-orange-400 border border-orange-500/30 text-[9.5px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+                title="Test 500m proximity alert with chime, haptic, and notification"
+              >
+                <BellRing className="w-3.5 h-3.5 animate-bounce" /> Trigger 500m Proximity Alert Test
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1356,24 +2354,66 @@ export default function TrackingScreen() {
           id="partner-chat-support-modal"
         >
           {/* Header */}
-          <div className="p-4 border-b border-slate-100 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-950/70 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-2 rounded-full h-2 bg-emerald-500 animate-pulse" />
-              <div>
-                <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 uppercase tracking-wide">
-                  Order Dispatch Helpline
-                </h3>
-                <span className="text-[9px] font-bold text-zinc-400 dark:text-zinc-500 block">
-                  Support coordination channel for Order #{activeTrackingOrder.id.slice(-6).toUpperCase()}
-                </span>
+          <div className="p-3.5 border-b border-slate-100 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-950/70 flex items-center justify-between">
+            {activeTab === 'driver' ? (
+              <div className="flex items-center gap-2.5">
+                <div className="relative shrink-0">
+                  <img
+                    src={riderAvatar}
+                    alt={riderName}
+                    className="w-9 h-9 rounded-2xl object-cover border border-emerald-500/40 shadow-xs"
+                  />
+                  <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white dark:border-zinc-900 absolute -bottom-0.5 -right-0.5 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight">
+                      {hasAssignedRider ? riderName : 'Delivery Partner'}
+                    </h3>
+                    <span className="text-[9px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold px-1.5 py-0.2 rounded font-mono">
+                      Active
+                    </span>
+                  </div>
+                  <span className="text-[9.5px] font-medium text-zinc-400 dark:text-zinc-500 block truncate max-w-[210px]">
+                    {riderVehicle} • {currentSpeed} km/h • ~{currentDistanceKm} km
+                  </span>
+                </div>
               </div>
+            ) : (
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-orange-500/10 text-orange-600 flex items-center justify-center font-bold text-sm shrink-0 border border-orange-500/20">
+                  👨‍🍳
+                </div>
+                <div>
+                  <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight truncate max-w-[210px]">
+                    {restaurantName} Kitchen
+                  </h3>
+                  <span className="text-[9.5px] font-medium text-zinc-400 dark:text-zinc-500 block">
+                    Chef Dispatch Desk • Live Order #{activeTrackingOrder.id.slice(-6).toUpperCase()}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1">
+              {activeTab === 'driver' && riderPhone && (
+                <a
+                  href={`tel:${riderPhone}`}
+                  className="p-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 transition cursor-pointer"
+                  title={`Call ${riderName}`}
+                >
+                  <Phone className="w-4 h-4" />
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsChatOpen(false)}
+                className="p-1.5 rounded-xl hover:bg-slate-200 dark:hover:bg-zinc-800 text-zinc-400 dark:text-zinc-500 transition-colors cursor-pointer"
+                title="Close Chat"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button
-              onClick={() => setIsChatOpen(false)}
-              className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-800 text-zinc-400 dark:text-zinc-500 transition-colors cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
 
           {/* Partner Selector Tabs */}
@@ -1433,8 +2473,11 @@ export default function TrackingScreen() {
                   }`}>
                     {msg.text}
                   </div>
-                  <span className="text-[8px] font-medium text-zinc-400 dark:text-zinc-500 mt-1 uppercase px-1">
-                    {msg.sender === 'user' ? 'You' : (hasAssignedRider ? riderName.split(' ')[0] : 'Partner')} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <span className="text-[8px] font-medium text-zinc-400 dark:text-zinc-500 mt-1 uppercase px-1 flex items-center gap-1">
+                    <span>{msg.sender === 'user' ? 'You' : (hasAssignedRider ? riderName.split(' ')[0] : 'Partner')} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    {msg.sender === 'user' && (
+                      <span className="text-emerald-500 font-bold tracking-tighter" title="Delivered & Read">✓✓</span>
+                    )}
                   </span>
                 </div>
               ))
@@ -1453,8 +2496,11 @@ export default function TrackingScreen() {
                   }`}>
                     {msg.text}
                   </div>
-                  <span className="text-[8px] font-medium text-zinc-400 dark:text-zinc-500 mt-1 uppercase px-1">
-                    {msg.sender === 'user' ? 'You' : 'Kitchen Chef'} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <span className="text-[8px] font-medium text-zinc-400 dark:text-zinc-500 mt-1 uppercase px-1 flex items-center gap-1">
+                    <span>{msg.sender === 'user' ? 'You' : 'Kitchen Chef'} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    {msg.sender === 'user' && (
+                      <span className="text-emerald-500 font-bold tracking-tighter" title="Delivered & Read">✓✓</span>
+                    )}
                   </span>
                 </div>
               ))
@@ -1480,13 +2526,16 @@ export default function TrackingScreen() {
           </div>
 
           {/* Quick Preset Message helper bubbled row */}
-          <div className="px-3 py-2 border-t border-slate-100 dark:border-zinc-800/50 bg-white dark:bg-zinc-900 flex gap-2 overflow-x-auto scrollbar-none select-none">
+          <div className="px-3 py-2 border-t border-slate-100 dark:border-zinc-800/50 bg-white dark:bg-zinc-900 flex gap-1.5 overflow-x-auto scrollbar-none select-none">
             {(activeTab === 'driver' 
               ? [
-                  "Where are you? 📍",
-                  "Bring spoon/fork 🍴",
+                  "Leave at door 🚪",
+                  "Don't ring bell 🤫",
                   "Call on arrival 📞",
-                  "Leave with security 🏢"
+                  "Leave with security 🏢",
+                  "Beware of dog 🐕",
+                  "Where are you? 📍",
+                  "Bring spoons & napkins 🍴"
                 ] 
               : [
                   "Make it extra spicy! 🌶️",
@@ -1499,7 +2548,7 @@ export default function TrackingScreen() {
                 key={index}
                 type="button"
                 onClick={() => handleSendMessage(preset)}
-                className="bg-slate-50 dark:bg-zinc-800/55 hover:bg-slate-100 dark:hover:bg-zinc-750 text-[10px] font-extrabold text-zinc-600 dark:text-zinc-350 px-2.5 py-1.5 rounded-full border border-slate-150 dark:border-zinc-800 cursor-pointer shrink-0 transition-all active:scale-[0.97]"
+                className="bg-slate-50 dark:bg-zinc-800/60 hover:bg-orange-50 dark:hover:bg-orange-950/30 hover:border-orange-300 dark:hover:border-orange-800 text-[10px] font-extrabold text-zinc-650 dark:text-zinc-350 hover:text-orange-600 dark:hover:text-orange-400 px-2.5 py-1.5 rounded-full border border-slate-150 dark:border-zinc-800 cursor-pointer shrink-0 transition-all active:scale-[0.97]"
               >
                 {preset}
               </button>

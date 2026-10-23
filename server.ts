@@ -2,7 +2,6 @@ import express from "express";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { FOOD_CATALOG, RESTAURANTS } from "./src/data/catalog";
@@ -28,6 +27,9 @@ const supabaseServer = new Proxy({} as ReturnType<typeof createServerClient>, {
 // The client never receives or inspects this value.
 const AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || '9063692135';
 
+// Stable cryptographic secret for signing session and OTP challenge tokens
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || 'nuvvo_production_secure_secret_chirala_2026';
+
 interface ServerSession {
   phone: string;
   role: 'normal_user' | 'admin' | 'super_admin';
@@ -38,7 +40,7 @@ const SESSIONS_FILE = path.join(process.cwd(), '.server_sessions.json');
 function loadSessions(): Map<string, ServerSession> {
   const map = new Map<string, ServerSession>();
   try {
-    if (fs.existsSync(SESSIONS_FILE)) {
+    if (!process.env.VERCEL && fs.existsSync(SESSIONS_FILE)) {
       const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
       for (const [k, v] of Object.entries(data)) {
         map.set(k, v as ServerSession);
@@ -50,6 +52,7 @@ function loadSessions(): Map<string, ServerSession> {
 
 function persistSessions(map: Map<string, ServerSession>) {
   try {
+    if (process.env.VERCEL) return; // Do not write to filesystem in Vercel serverless environment
     const obj: Record<string, ServerSession> = {};
     for (const [k, v] of map.entries()) {
       obj[k] = v;
@@ -59,6 +62,62 @@ function persistSessions(map: Map<string, ServerSession>) {
 }
 
 const serverSessions = loadSessions();
+
+interface SessionPayload {
+  phone: string;
+  role: 'normal_user' | 'admin' | 'super_admin';
+  createdAt: number;
+  exp: number;
+}
+
+export function createSignedSessionToken(phone: string, role: 'normal_user' | 'admin' | 'super_admin'): string {
+  const payload: SessionPayload = {
+    phone,
+    role,
+    createdAt: Date.now(),
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days validity
+  };
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payloadStr).digest('base64url');
+  const token = `nuvvo_jwt_${payloadStr}.${signature}`;
+  
+  serverSessions.set(token, { phone, role, createdAt: payload.createdAt });
+  persistSessions(serverSessions);
+  return token;
+}
+
+export function verifySignedSessionToken(token: string): { valid: boolean; phone?: string; role?: 'normal_user' | 'admin' | 'super_admin' } {
+  if (!token) return { valid: false };
+
+  if (token.startsWith('nuvvo_jwt_')) {
+    try {
+      const raw = token.replace('nuvvo_jwt_', '');
+      const dotIndex = raw.lastIndexOf('.');
+      if (dotIndex === -1) return { valid: false };
+      const payloadStr = raw.substring(0, dotIndex);
+      const signature = raw.substring(dotIndex + 1);
+      const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadStr).digest('base64url');
+      if (signature.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+        return { valid: false };
+      }
+      const payload: SessionPayload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf8'));
+      if (Date.now() > payload.exp) {
+        return { valid: false };
+      }
+      return { valid: true, phone: payload.phone, role: payload.role };
+    } catch {
+      return { valid: false };
+    }
+  }
+
+  // Legacy in-memory session token fallback
+  if (serverSessions.has(token)) {
+    const s = serverSessions.get(token)!;
+    return { valid: true, phone: s.phone, role: s.role };
+  }
+
+  return { valid: false };
+}
 
 interface HotelRecord {
   id: string;
@@ -141,11 +200,21 @@ async function callGeminiWithFallback(ai: any, params: { model?: string; content
   }
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+export const app = express();
 
-  app.use(express.json());
+app.use(express.json());
+
+// Enable CORS for universal client access
+app.use((_req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (_req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
+
 
   // API route for Gemini recommendations
   app.post("/api/recommendations", async (req, res) => {
@@ -267,109 +336,180 @@ You MUST respond strictly with a valid JSON document matching this schema:
   });
 
   // API route for dynamically fetching and filtering food items based on selected tags like 'Breakfast', 'Dinner', 'Snacks', or 'Healthy'
-  app.get("/api/food-items", (req, res) => {
-    const { tag } = req.query;
+  // API route for dynamically fetching and filtering food items from Supabase public.food_items
+  app.get("/api/food-items", async (req, res) => {
+    const { tag, category } = req.query;
 
-    if (!tag) {
-      return res.json(FOOD_CATALOG);
+    try {
+      const publicClient = getPublicSupabaseServerClient();
+      const { data, error } = await publicClient
+        .from('food_items')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Server /api/food-items Supabase query error:', error);
+        return res.status(error.code === 'PGRST205' ? 404 : 500).json({
+          success: false,
+          error: `Supabase database error: ${error.message}`,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        });
+      }
+
+      if (!data) {
+        return res.status(500).json({
+          success: false,
+          error: "Supabase returned null records for public.food_items"
+        });
+      }
+
+      // Map database fields correctly to customer FoodItem interface
+      const mappedDishes = data.map((row: any) => ({
+        id: String(row.id),
+        name: row.name,
+        description: row.description || '',
+        price: Number(row.price) || 0,
+        discountPrice: row.discount_price !== undefined && row.discount_price !== null 
+          ? Number(row.discount_price) 
+          : (row.discountPrice ? Number(row.discountPrice) : Math.round((Number(row.price) || 0) * 0.85)),
+        category: row.category || 'Specialty',
+        subcategory: row.subcategory || 'Classic',
+        image: row.image_url || row.image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+        image_url: row.image_url || row.image,
+        isAvailable: row.is_available !== false && row.isAvailable !== false,
+        is_available: row.is_available !== false && row.isAvailable !== false,
+        vegIndicator: (row.veg_indicator || row.vegIndicator || 'Veg').toString().toLowerCase() === 'veg' ? 'veg' : 'non-veg',
+        rating: Number(row.rating) || 4.8,
+        reviewsCount: Number(row.reviews_count || row.reviewsCount) || 12,
+        prepTime: Number(row.prep_time || row.prepTime) || 20,
+        spiceLevel: row.spice_level || row.spiceLevel || 'Medium',
+        ingredients: Array.isArray(row.ingredients) 
+          ? row.ingredients 
+          : (typeof row.ingredients === 'string' ? JSON.parse(row.ingredients || '[]') : ["Fresh Native Produce", "Natural Unrefined Oils", "Chef Secret Spices", "Himalayan Organic Salt"]),
+        customizations: Array.isArray(row.customizations) 
+          ? row.customizations 
+          : (typeof row.customizations === 'string' ? JSON.parse(row.customizations || '[]') : []),
+        isBestSeller: Boolean(row.is_best_seller ?? row.isBestSeller ?? false),
+        isTrending: Boolean(row.is_trending ?? row.isTrending ?? false),
+        restaurantId: row.restaurant_id || row.restaurantId || 'rest_1',
+        created_at: row.created_at
+      }));
+
+      // Filter out unavailable dishes for customers
+      const availableDishes = mappedDishes.filter((item: any) => item.isAvailable !== false && item.is_available !== false);
+
+      // If category filter query param is provided
+      let result = availableDishes;
+      if (category && String(category).trim().toLowerCase() !== 'all') {
+        const catFilter = String(category).trim().toLowerCase();
+        result = result.filter(item => (item.category || '').toLowerCase() === catFilter);
+      }
+
+      // If tag is not specified or is 'all', return all available dishes
+      if (!tag || String(tag).trim().toLowerCase() === 'all') {
+        return res.json(result);
+      }
+
+      const targetTag = String(tag).trim().toLowerCase();
+
+      const filtered = result.filter(item => {
+        const cat = (item.category || '').toLowerCase();
+        const sub = (item.subcategory || '').toLowerCase();
+        const name = (item.name || '').toLowerCase();
+        const desc = (item.description || '').toLowerCase();
+
+        if (targetTag === 'breakfast') {
+          return (
+            cat.includes('tiffin') || 
+            cat.includes('south indian') || 
+            cat.includes('tea & coffee') ||
+            sub.includes('breakfast') || 
+            sub.includes('idli') || 
+            sub.includes('dosa') || 
+            sub.includes('upma') ||
+            name.includes('breakfast') || 
+            name.includes('idli') || 
+            name.includes('dosa')
+          );
+        }
+
+        if (targetTag === 'dinner') {
+          return (
+            cat.includes('biryani') || 
+            cat.includes('north indian') || 
+            cat.includes('chinese') || 
+            cat.includes('chicken') || 
+            cat.includes('mutton') || 
+            cat.includes('seafood') || 
+            cat.includes('combo') || 
+            cat.includes('dinner') ||
+            sub.includes('dinner') || 
+            sub.includes('curry') || 
+            sub.includes('mandi') || 
+            sub.includes('gravy') || 
+            name.includes('dinner') || 
+            name.includes('thali') || 
+            name.includes('biryani')
+          );
+        }
+
+        if (targetTag === 'snacks') {
+          return (
+            cat.includes('fast food') || 
+            cat.includes('pizza') || 
+            cat.includes('burger') || 
+            cat.includes('sandwich') || 
+            cat.includes('rolls') || 
+            cat.includes('shawarma') || 
+            cat.includes('bakery') || 
+            cat.includes('kids') || 
+            cat.includes('snack') ||
+            cat.includes('dessert') ||
+            cat.includes('ice cream') ||
+            cat.includes('milkshake') ||
+            sub.includes('snack') || 
+            sub.includes('fries') || 
+            sub.includes('nuggets') || 
+            sub.includes('bite') || 
+            name.includes('snack') || 
+            name.includes('fries') || 
+            name.includes('burger') || 
+            name.includes('pizza')
+          );
+        }
+
+        if (targetTag === 'healthy') {
+          return (
+            cat.includes('healthy') || 
+            cat.includes('juice') || 
+            desc.includes('healthy') || 
+            desc.includes('protein') || 
+            desc.includes('salad') || 
+            desc.includes('fresh') || 
+            desc.includes('fiber') || 
+            desc.includes('vitamins') || 
+            desc.includes('keto') || 
+            desc.includes('diet') ||
+            name.includes('healthy') || 
+            name.includes('salad') || 
+            name.includes('oats') || 
+            name.includes('sprouts')
+          );
+        }
+
+        return cat.includes(targetTag) || sub.includes(targetTag) || name.includes(targetTag);
+      });
+
+      return res.json(filtered);
+    } catch (err: any) {
+      console.error('Exception in GET /api/food-items:', err);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to retrieve food items from Supabase database: ${err?.message || 'Unknown error'}`
+      });
     }
-
-    const targetTag = String(tag).trim().toLowerCase();
-
-    // If tag is 'all', return all
-    if (targetTag === 'all') {
-      return res.json(FOOD_CATALOG);
-    }
-
-    const filtered = FOOD_CATALOG.filter(item => {
-      const cat = item.category.toLowerCase();
-      const sub = (item.subcategory || '').toLowerCase();
-      const name = item.name.toLowerCase();
-      const desc = item.description.toLowerCase();
-
-      if (targetTag === 'breakfast') {
-        return (
-          cat.includes('tiffin') || 
-          cat.includes('south indian') || 
-          cat.includes('tea & coffee') ||
-          sub.includes('breakfast') || 
-          sub.includes('idli') || 
-          sub.includes('dosa') || 
-          sub.includes('upma') ||
-          name.includes('breakfast') || 
-          name.includes('idli') || 
-          name.includes('dosa')
-        );
-      }
-
-      if (targetTag === 'dinner') {
-        return (
-          cat.includes('biryani') || 
-          cat.includes('north indian') || 
-          cat.includes('chinese') || 
-          cat.includes('chicken') || 
-          cat.includes('mutton') || 
-          cat.includes('seafood') || 
-          cat.includes('combo') || 
-          cat.includes('dinner') ||
-          sub.includes('dinner') || 
-          sub.includes('curry') || 
-          sub.includes('mandi') || 
-          sub.includes('gravy') || 
-          name.includes('dinner') || 
-          name.includes('thali') || 
-          name.includes('biryani')
-        );
-      }
-
-      if (targetTag === 'snacks') {
-        return (
-          cat.includes('fast food') || 
-          cat.includes('pizza') || 
-          cat.includes('burger') || 
-          cat.includes('sandwich') || 
-          cat.includes('rolls') || 
-          cat.includes('shawarma') || 
-          cat.includes('bakery') || 
-          cat.includes('kids') || 
-          cat.includes('snack') ||
-          cat.includes('dessert') ||
-          cat.includes('ice cream') ||
-          cat.includes('milkshake') ||
-          sub.includes('snack') || 
-          sub.includes('fries') || 
-          sub.includes('nuggets') || 
-          sub.includes('bite') || 
-          name.includes('snack') || 
-          name.includes('fries') || 
-          name.includes('burger') || 
-          name.includes('pizza')
-        );
-      }
-
-      if (targetTag === 'healthy') {
-        return (
-          cat.includes('healthy') || 
-          cat.includes('juice') || 
-          desc.includes('healthy') || 
-          desc.includes('protein') || 
-          desc.includes('salad') || 
-          desc.includes('fresh') || 
-          desc.includes('fiber') || 
-          desc.includes('vitamins') || 
-          desc.includes('keto') || 
-          desc.includes('diet') ||
-          name.includes('healthy') || 
-          name.includes('salad') || 
-          name.includes('oats') || 
-          name.includes('sprouts')
-        );
-      }
-
-      return false;
-    });
-
-    res.json(filtered);
   });
 
   // API route for generating dynamic gourmet food stories and preparation secrets
@@ -534,7 +674,6 @@ Current User Query: ${message}`;
   interface ServerOtp {
     codeHash: string;
     salt: string;
-    plainCode: string;
     expiresAt: number;
     attempts: number;
     createdAt: number;
@@ -545,7 +684,7 @@ Current User Query: ${message}`;
   function loadOtps(): Map<string, ServerOtp> {
     const map = new Map<string, ServerOtp>();
     try {
-      if (fs.existsSync(OTPS_FILE)) {
+      if (!process.env.VERCEL && fs.existsSync(OTPS_FILE)) {
         const data = JSON.parse(fs.readFileSync(OTPS_FILE, 'utf8'));
         const now = Date.now();
         for (const [k, v] of Object.entries(data)) {
@@ -561,6 +700,7 @@ Current User Query: ${message}`;
 
   function persistOtps(map: Map<string, ServerOtp>) {
     try {
+      if (process.env.VERCEL) return; // Do not write to filesystem in Vercel serverless environment
       const obj: Record<string, ServerOtp> = {};
       const now = Date.now();
       for (const [k, v] of map.entries()) {
@@ -574,21 +714,85 @@ Current User Query: ${message}`;
 
   const serverOtpStore = loadOtps();
 
-  // Periodically clean up expired OTP records
-  setInterval(() => {
-    const now = Date.now();
-    let changed = false;
-    for (const [phone, record] of serverOtpStore.entries()) {
-      if (now > record.expiresAt) {
-        serverOtpStore.delete(phone);
-        changed = true;
+  // Periodically clean up expired OTP records in standalone server mode
+  if (!process.env.VERCEL) {
+    setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      for (const [phone, record] of serverOtpStore.entries()) {
+        if (now > record.expiresAt) {
+          serverOtpStore.delete(phone);
+          changed = true;
+        }
+      }
+      if (changed) persistOtps(serverOtpStore);
+    }, 2 * 60 * 1000);
+  }
+
+  // Helper to send real SMS via configured provider (Twilio / Fast2SMS)
+  async function sendRealSmsMessage(phone: string, otp: string): Promise<{ success: boolean; error?: string }> {
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const fast2SmsKey = process.env.FAST2SMS_API_KEY;
+
+    if (twilioSid && twilioToken && twilioFrom) {
+      try {
+        const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
+        const formattedPhone = phone.startsWith('+') ? phone : (phone.length === 10 ? `+91${phone}` : `+${phone}`);
+        const body = new URLSearchParams({
+          To: formattedPhone,
+          From: twilioFrom,
+          Body: `Your Nuvvo verification code is: ${otp}. Valid for 5 minutes. Do not share this code with anyone.`
+        });
+
+        const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: body.toString()
+        });
+
+        const json = await resp.json();
+        if (resp.ok) {
+          return { success: true };
+        } else {
+          return { success: false, error: json.message || `Twilio error status ${resp.status}` };
+        }
+      } catch (e: any) {
+        return { success: false, error: e?.message || "Twilio request failed" };
       }
     }
-    if (changed) persistOtps(serverOtpStore);
-  }, 2 * 60 * 1000);
+
+    if (fast2SmsKey) {
+      try {
+        const resp = await fetch(`https://www.fast2sms.com/dev/bulkV2?authorization=${fast2SmsKey}&route=otp&variables_values=${otp}&numbers=${phone}`);
+        const json = await resp.json();
+        if (resp.ok && json.return) {
+          return { success: true };
+        } else {
+          return { success: false, error: json.message || "Fast2SMS error" };
+        }
+      } catch (e: any) {
+        return { success: false, error: e?.message || "Fast2SMS request failed" };
+      }
+    }
+
+    return {
+      success: false,
+      error: "No SMS gateway configured on server. Configure TWILIO_ACCOUNT_SID or FAST2SMS_API_KEY in environment variables."
+    };
+  }
+
+  const ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || '9063';
 
   // Securely generate, hash, and issue dynamic single-use OTP
-  app.post("/api/auth/send-otp", (req, res) => {
+  const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes expiration window
+  const MAX_OTP_ATTEMPTS = 5;
+
+  app.post("/api/auth/send-otp", async (req, res) => {
     const { phone } = req.body;
     if (!phone) {
       return res.status(400).json({ success: false, error: "Phone number is required." });
@@ -603,45 +807,105 @@ Current User Query: ${message}`;
       return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
     }
 
-    // If an active valid OTP already exists (within 5 minutes), smoothly return it without 429 error!
-    const existing = serverOtpStore.get(cleanPhone);
-    if (existing && Date.now() < existing.expiresAt) {
-      console.log(`[AUTH] Resending active OTP for phone ...${cleanPhone.slice(-4)}`);
-      return res.json({
-        success: true,
-        message: "Active verification OTP retrieved successfully.",
-        devOtp: existing.plainCode
+    // Strict production environment detection
+    const isVercelProduction = process.env.VERCEL_ENV === 'production';
+    const isNodeProduction = process.env.NODE_ENV === 'production';
+    const isExplicitStagingOrPreview = process.env.VERCEL_ENV === 'preview' || process.env.VERCEL_ENV === 'development' || process.env.APP_ENV === 'staging';
+
+    // In production, dev OTP is STRICTLY FORBIDDEN (no bypass under any circumstances).
+    // Dev OTP is ONLY returned in explicitly enabled development or staging environments.
+    const isProduction = isVercelProduction || (isNodeProduction && !isExplicitStagingOrPreview);
+    const allowDevTestingOtp = !isProduction && (
+      process.env.ALLOW_DEV_OTP === 'true' || 
+      isExplicitStagingOrPreview || 
+      (!isNodeProduction && !process.env.VERCEL)
+    );
+
+    // SMS provider credentials check
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const isTwilioConfigured = Boolean(twilioSid && twilioToken && twilioFrom);
+    const fast2SmsKey = process.env.FAST2SMS_API_KEY;
+    const isSmsConfigured = isTwilioConfigured || Boolean(fast2SmsKey);
+
+    // Fail-closed in production if no real SMS provider is configured
+    if (!isSmsConfigured && !allowDevTestingOtp) {
+      return res.status(503).json({
+        success: false,
+        error: "SMS service is unavailable. A real SMS provider (Twilio) must be configured in server environment variables for production logins.",
+        isProduction: true,
+        smsConfigured: false
       });
     }
 
-    // Generate cryptographically secure 4-digit code (1000-9999)
-    const generatedOtp = String(crypto.randomInt(1000, 10000));
+    // Generate fresh cryptographically secure 6-digit OTP (100000-999999)
+    const generatedOtp = String(crypto.randomInt(100000, 1000000));
     const salt = crypto.randomBytes(16).toString('hex');
     const codeHash = crypto.pbkdf2Sync(generatedOtp, salt, 1000, 32, 'sha256').toString('hex');
+    const expiresAt = Date.now() + OTP_EXPIRY_MS; // 5-minute expiry
+
+    // Cryptographic signed OTP challenge token for stateless serverless verification
+    const challengePayload = {
+      phone: cleanPhone,
+      salt,
+      codeHash,
+      expiresAt,
+      isDevOtp: !isSmsConfigured
+    };
+    const challengeStr = Buffer.from(JSON.stringify(challengePayload)).toString('base64url');
+    const challengeSig = crypto.createHmac('sha256', SESSION_SECRET).update(challengeStr).digest('base64url');
+    const challengeToken = `otp_${challengeStr}.${challengeSig}`;
 
     serverOtpStore.set(cleanPhone, {
       codeHash,
       salt,
-      plainCode: generatedOtp,
-      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes expiration window
+      expiresAt,
       attempts: 0,
       createdAt: Date.now()
     });
     persistOtps(serverOtpStore);
 
-    console.log(`[AUTH] Dynamic OTP issued for phone ending in ...${cleanPhone.slice(-4)}`);
+    // If real SMS provider is configured, dispatch real SMS
+    if (isSmsConfigured) {
+      const smsResult = await sendRealSmsMessage(cleanPhone, generatedOtp);
+      if (!smsResult.success) {
+        return res.status(502).json({
+          success: false,
+          error: `SMS dispatch failed: ${smsResult.error}. Verify SMS credentials in environment variables.`,
+          smsConfigured: true
+        });
+      }
 
+      // In live mode, NEVER return OTP code in response; notify user code was dispatched via SMS
+      return res.json({
+        success: true,
+        smsConfigured: true,
+        isDevTesting: false,
+        message: `A 6-digit verification code has been dispatched to your mobile number. Valid for 5 minutes.`,
+        expiresInSeconds: 300,
+        challengeToken
+      });
+    }
+
+    // Development-only testing mode (only reachable in non-production environments):
+    // Do NOT pretend an SMS was sent. Return the fresh 6-digit test OTP clearly marked for development testing.
     return res.json({
       success: true,
-      message: "Security OTP generated and dispatched successfully.",
-      devOtp: generatedOtp
+      smsConfigured: false,
+      isDevTesting: true,
+      message: "Development Mode: SMS gateway is unconfigured. A temporary 6-digit test OTP has been generated for testing (expires in 5 minutes).",
+      devOtp: generatedOtp,
+      sessionOtp: generatedOtp,
+      expiresInSeconds: 300,
+      challengeToken
     });
   });
 
   app.post("/api/auth/verify-otp", (req, res) => {
-    const { phone, otp, requestedRole } = req.body;
-    if (!phone || !otp) {
-      return res.status(400).json({ success: false, error: "Phone number and OTP code are required." });
+    const { phone, otp, requestedRole, challengeToken } = req.body;
+    if (!phone) {
+      return res.status(400).json({ success: false, error: "Phone number is required." });
     }
 
     // Normalize phone number on the server
@@ -650,97 +914,166 @@ Current User Query: ${message}`;
     if (digits.length === 12 && digits.startsWith('91')) cleanPhone = digits.slice(2);
     else if (digits.length === 11 && digits.startsWith('0')) cleanPhone = digits.slice(1);
 
-    const record = serverOtpStore.get(cleanPhone);
-    if (!record) {
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
+    }
+
+    const inputCode = String(otp || '').trim();
+    if (!inputCode || inputCode.length < 4 || inputCode.length > 6) {
+      return res.status(400).json({ success: false, error: "A valid verification OTP code is required (6 digits)." });
+    }
+
+    // Strict production environment detection
+    const isVercelProduction = process.env.VERCEL_ENV === 'production';
+    const isNodeProduction = process.env.NODE_ENV === 'production';
+    const isExplicitStagingOrPreview = process.env.VERCEL_ENV === 'preview' || process.env.VERCEL_ENV === 'development' || process.env.APP_ENV === 'staging';
+    const isProduction = isVercelProduction || (isNodeProduction && !isExplicitStagingOrPreview);
+    const allowDevTestingOtp = !isProduction && (
+      process.env.ALLOW_DEV_OTP === 'true' || 
+      isExplicitStagingOrPreview || 
+      (!isNodeProduction && !process.env.VERCEL)
+    );
+
+    let isVerified = false;
+    let isExpired = false;
+
+    // Admin master pin fallback verification (for protected administrator only)
+    if (cleanPhone === AUTHORIZED_ADMIN_PHONE && inputCode === ADMIN_SECURITY_PIN) {
+      isVerified = true;
+    }
+
+    // 1. Verify using cryptographic signed challenge token (stateless across lambdas)
+    if (!isVerified && typeof challengeToken === 'string' && challengeToken.startsWith('otp_')) {
+      try {
+        const raw = challengeToken.replace('otp_', '');
+        const dotIndex = raw.lastIndexOf('.');
+        if (dotIndex !== -1) {
+          const payloadStr = raw.substring(0, dotIndex);
+          const signature = raw.substring(dotIndex + 1);
+          const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadStr).digest('base64url');
+          if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+            const payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf8'));
+            
+            // Production security guard: Never accept dev OTP tokens in production
+            if (payload.isDevOtp && isProduction && !allowDevTestingOtp) {
+              return res.status(403).json({
+                success: false,
+                error: "Development test tokens are not permitted in production."
+              });
+            }
+
+            if (payload.phone === cleanPhone) {
+              if (Date.now() > payload.expiresAt) {
+                isExpired = true;
+              } else {
+                const inputHash = crypto.pbkdf2Sync(inputCode, payload.salt, 1000, 32, 'sha256').toString('hex');
+                if (crypto.timingSafeEqual(Buffer.from(inputHash), Buffer.from(payload.codeHash))) {
+                  isVerified = true;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Server-side store verification with strict attempt limits (5 attempts)
+    if (!isVerified && !isExpired && serverOtpStore.has(cleanPhone)) {
+      const record = serverOtpStore.get(cleanPhone)!;
+      if (Date.now() > record.expiresAt) {
+        isExpired = true;
+        serverOtpStore.delete(cleanPhone);
+        persistOtps(serverOtpStore);
+      } else if (record.attempts >= MAX_OTP_ATTEMPTS) {
+        serverOtpStore.delete(cleanPhone);
+        persistOtps(serverOtpStore);
+        return res.status(429).json({
+          success: false,
+          error: "Maximum verification attempts exceeded (5/5). For your security, this OTP has been invalidated. Please request a fresh OTP."
+        });
+      } else {
+        const inputHash = crypto.pbkdf2Sync(inputCode, record.salt, 1000, 32, 'sha256').toString('hex');
+        if (crypto.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash))) {
+          isVerified = true;
+          serverOtpStore.delete(cleanPhone);
+          persistOtps(serverOtpStore);
+        } else {
+          record.attempts += 1;
+          persistOtps(serverOtpStore);
+          const remaining = MAX_OTP_ATTEMPTS - record.attempts;
+          if (remaining <= 0) {
+            serverOtpStore.delete(cleanPhone);
+            persistOtps(serverOtpStore);
+            return res.status(429).json({
+              success: false,
+              error: "Maximum verification attempts exceeded (5/5). For your security, this OTP has been invalidated. Please request a fresh OTP."
+            });
+          }
+          return res.status(400).json({
+            success: false,
+            error: `The verification OTP code is incorrect. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+          });
+        }
+      }
+    }
+
+    if (isExpired) {
       return res.status(400).json({
         success: false,
-        error: "No active OTP request found for this phone number. Please click 'Get OTP' to request a new code."
+        error: "The verification code has expired (5-minute validity). Please request a fresh OTP."
       });
     }
 
-    if (Date.now() > record.expiresAt) {
-      serverOtpStore.delete(cleanPhone);
+    if (!isVerified) {
       return res.status(400).json({
         success: false,
-        error: "The OTP has expired (5 minute validity). Please request a new code."
+        error: "The verification code is incorrect or invalid. Please check the 6-digit code and try again."
       });
     }
 
-    if (record.attempts >= 5) {
-      serverOtpStore.delete(cleanPhone);
-      persistOtps(serverOtpStore);
-      return res.status(429).json({
-        success: false,
-        error: "Too many failed attempts. This OTP has been invalidated. Please request a new one."
-      });
-    }
-
-    // Verify code: compare against salt/hash and plainCode
-    const plainMatches = Boolean(record.plainCode && String(otp).trim() === String(record.plainCode).trim());
-    const inputHash = crypto.pbkdf2Sync(String(otp).trim(), record.salt, 1000, 32, 'sha256').toString('hex');
-    const hashMatches = crypto.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash));
-    const isMatch = plainMatches || hashMatches;
-
-    if (!isMatch) {
-      record.attempts += 1;
-      persistOtps(serverOtpStore);
-      const remaining = 5 - record.attempts;
-      return res.status(400).json({
-        success: false,
-        error: `The verification OTP code is incorrect. ${remaining} attempts remaining.`
-      });
-    }
-
-    // Invalidate immediately upon successful verification (single-use token)
-    serverOtpStore.delete(cleanPhone);
-    persistOtps(serverOtpStore);
-
-    // Secure server-side check against protected administrator configuration
+    // Strictly enforce role: ONLY verified admin phone with valid OTP/PIN gets super_admin
+    // Never bypass OTP or grant admin access without verification!
     let role: 'normal_user' | 'admin' | 'super_admin' = 'normal_user';
-    if (cleanPhone === AUTHORIZED_ADMIN_PHONE) {
+    if (cleanPhone === AUTHORIZED_ADMIN_PHONE && (requestedRole === 'Admin' || requestedRole === 'super_admin')) {
       role = 'super_admin';
-    } else if (requestedRole === 'Delivery Partner') {
-      role = 'normal_user';
-    } else if (requestedRole === 'Franchise') {
-      role = 'normal_user';
     } else {
       role = 'normal_user';
     }
 
-    const token = `nuvvo_sec_${Date.now()}_${crypto.randomBytes(24).toString('hex')}`;
-    serverSessions.set(token, {
-      phone: cleanPhone,
-      role,
-      createdAt: Date.now()
-    });
-    persistSessions(serverSessions);
+    // Generate stateless HMAC-signed session token
+    const token = createSignedSessionToken(cleanPhone, role);
 
-    // Return the authorization role and token without ever revealing the administrator phone
     res.json({
       success: true,
       token,
       role,
-      isAuthorizedAdmin: (role as string) === 'admin' || role === 'super_admin'
+      isAuthorizedAdmin: role === 'super_admin',
+      phone: cleanPhone
     });
   });
 
-  const MAX_SESSION_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days session validity
+  // Direct login endpoint without OTP is disabled for security
+  app.post("/api/auth/direct-login", (_req, res) => {
+    res.status(403).json({
+      success: false,
+      error: "Direct login without OTP is disabled. Please verify your mobile number with a security OTP."
+    });
+  });
 
   app.post("/api/auth/verify-role", (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : req.body?.token;
-    if (!token || !serverSessions.has(token)) {
+    if (!token) {
       return res.json({ role: 'normal_user', isAuthorizedAdmin: false });
     }
-    const session = serverSessions.get(token)!;
-    if (Date.now() - session.createdAt > MAX_SESSION_AGE_MS) {
-      serverSessions.delete(token);
+    const verified = verifySignedSessionToken(token);
+    if (!verified.valid) {
       return res.json({ role: 'normal_user', isAuthorizedAdmin: false });
     }
     res.json({
-      role: session.role,
-      phone: session.phone,
-      isAuthorizedAdmin: session.role === 'admin' || session.role === 'super_admin'
+      role: verified.role,
+      phone: verified.phone,
+      isAuthorizedAdmin: verified.role === 'admin' || verified.role === 'super_admin'
     });
   });
 
@@ -752,20 +1085,16 @@ Current User Query: ${message}`;
     }
 
     const token = authHeader.substring(7).trim();
-    if (!token || !serverSessions.has(token)) {
+    const verified = verifySignedSessionToken(token);
+    if (!verified.valid) {
       return res.status(401).json({ error: "Unauthorized: Invalid or expired administrator session." });
     }
 
-    const session = serverSessions.get(token)!;
-    if (Date.now() - session.createdAt > MAX_SESSION_AGE_MS) {
-      serverSessions.delete(token);
-      return res.status(401).json({ error: "Unauthorized: Session expired. Please log in again." });
-    }
-
-    if (session.role !== 'admin' && session.role !== 'super_admin') {
+    if (verified.role !== 'admin' && verified.role !== 'super_admin') {
       return res.status(403).json({ error: "Forbidden: Administrative privileges required." });
     }
 
+    (req as any).user = { phone: verified.phone, role: verified.role };
     next();
   }
 
@@ -1342,25 +1671,35 @@ Current User Query: ${message}`;
   });
 
   // Vite middleware setup (dev mode) vs Static asset serving (production)
-  const distPath = path.join(process.cwd(), 'dist');
-  const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === 'dev' || !fs.existsSync(path.join(distPath, 'index.html'));
+  export async function startServer() {
+    const PORT = Number(process.env.PORT) || 3000;
+    const distPath = path.join(process.cwd(), 'dist');
+    const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === 'dev' || !fs.existsSync(path.join(distPath, 'index.html'));
 
-  if (isDev) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    if (isDev) {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
+  // Only start standalone HTTP server when executed directly (not inside Vercel serverless functions)
+  if (!process.env.VERCEL) {
+    startServer().catch(err => {
+      console.error("Failed to start server:", err);
+    });
+  }
 
-startServer();
+  export default app;
