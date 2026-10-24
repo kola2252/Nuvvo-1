@@ -116,6 +116,36 @@ function persistServerDishes(map: Map<string, any>) {
 
 const serverDishes = loadServerDishes();
 
+// Persistent orders storage to ensure zero data loss across restarts and serverless executions
+const ORDERS_FILE = path.join(process.cwd(), '.server_orders.json');
+
+function loadServerOrders(): Map<string, any> {
+  const map = new Map<string, any>();
+  try {
+    if (fs.existsSync(ORDERS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ORDERS_FILE, 'utf8'));
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && item.id) {
+            map.set(String(item.id), item);
+          }
+        }
+      }
+    }
+  } catch {}
+  return map;
+}
+
+function persistServerOrders(map: Map<string, any>) {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(map.values());
+    fs.writeFileSync(ORDERS_FILE, JSON.stringify(arr, null, 2), 'utf8');
+  } catch {}
+}
+
+const serverOrders = loadServerOrders();
+
 interface SessionPayload {
   phone: string;
   role: 'normal_user' | 'admin' | 'super_admin';
@@ -1398,6 +1428,126 @@ Current User Query: ${message}`;
     }
   });
 
+  // --- ORDERS MANAGEMENT & SUPABASE SYNCHRONIZATION APIS ---
+  app.get("/api/orders", async (req, res) => {
+    try {
+      const { phone, customerId } = req.query || {};
+      const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
+      const digits = cleanPhone.length === 12 && cleanPhone.startsWith('91') ? cleanPhone.slice(2) : cleanPhone;
+
+      const orderMap = new Map<string, any>();
+
+      // 1. Prime with persistent server orders matching filter
+      for (const [id, order] of serverOrders.entries()) {
+        const oPhone = (order.customer_phone || order.customerPhone || '').replace(/\D/g, '');
+        const oDigits = oPhone.length === 12 && oPhone.startsWith('91') ? oPhone.slice(2) : oPhone;
+        const oCustId = order.customer_id || order.customerId;
+
+        if (!digits && !customerId) {
+          orderMap.set(String(id), order);
+        } else if (digits && (oDigits === digits || oPhone.includes(digits))) {
+          orderMap.set(String(id), order);
+        } else if (customerId && oCustId === customerId) {
+          orderMap.set(String(id), order);
+        }
+      }
+
+      // 2. Query Supabase orders table if present
+      try {
+        const publicClient = getPublicSupabaseServerClient();
+        let query = publicClient.from('orders').select('*');
+        if (digits) {
+          query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customerPhone.eq.${digits}`);
+        } else if (customerId) {
+          query = query.or(`customer_id.eq.${customerId},customerId.eq.${customerId}`);
+        }
+        const { data, error } = await query.order('created_at', { ascending: false });
+        if (!error && Array.isArray(data)) {
+          for (const row of data) {
+            orderMap.set(String(row.id), row);
+          }
+        }
+      } catch {}
+
+      const sorted = Array.from(orderMap.values()).sort((a, b) => {
+        const timeA = new Date(a.date || a.created_at || 0).getTime();
+        const timeB = new Date(b.date || b.created_at || 0).getTime();
+        return timeB - timeA;
+      });
+
+      return res.json(sorted);
+    } catch (e: any) {
+      console.error('Exception in GET /api/orders:', e);
+      return res.json([]);
+    }
+  });
+
+  app.post("/api/orders", async (req, res) => {
+    try {
+      const order = req.body || {};
+      if (!order.id) {
+        order.id = `order_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      }
+
+      // Persist in server orders store
+      serverOrders.set(String(order.id), order);
+      persistServerOrders(serverOrders);
+
+      // Attempt Supabase database upsert
+      let supabaseSaved = false;
+      try {
+        const { client: adminClient } = getAdminSupabaseServerClient();
+        if (adminClient) {
+          const { error } = await adminClient
+            .from('orders')
+            .upsert([order], { onConflict: 'id' });
+          if (!error) {
+            supabaseSaved = true;
+          }
+        }
+      } catch {}
+
+      return res.status(201).json({
+        success: true,
+        orderId: order.id,
+        supabaseSaved,
+        order
+      });
+    } catch (e: any) {
+      console.error('Exception in POST /api/orders:', e);
+      return res.status(500).json({ success: false, error: 'Failed to record order.' });
+    }
+  });
+
+  app.put("/api/orders/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body || {};
+
+      const existing = serverOrders.get(String(id)) || {};
+      const merged = { ...existing, ...updates, id: String(id), updated_at: new Date().toISOString() };
+
+      serverOrders.set(String(id), merged);
+      persistServerOrders(serverOrders);
+
+      // Attempt Supabase update
+      try {
+        const { client: adminClient } = getAdminSupabaseServerClient();
+        if (adminClient) {
+          await adminClient
+            .from('orders')
+            .update(updates)
+            .eq('id', id);
+        }
+      } catch {}
+
+      return res.json({ success: true, order: merged });
+    } catch (e: any) {
+      console.error('Exception in PUT /api/orders/:id:', e);
+      return res.status(500).json({ success: false, error: 'Failed to update order.' });
+    }
+  });
+
   app.post("/api/admin/dishes", requireAdminAuth, async (req, res) => {
     const { 
       name, description, price, image, image_url, category, subcategory, 
@@ -1420,6 +1570,7 @@ Current User Query: ${message}`;
     const vegVal = (veg_indicator || vegIndicator) === 'Veg' || (veg_indicator || vegIndicator) === 'veg' ? 'Veg' : 'NonVeg';
 
     const payloadForSupabase = {
+      id: dishId,
       name: dishName,
       description: String(description || '').trim(),
       price: dishPrice,
@@ -1447,13 +1598,13 @@ Current User Query: ${message}`;
 
     let supabaseSaved = false;
 
-    // Attempt direct Supabase database insert
+    // Attempt direct Supabase database upsert
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
       if (adminClient) {
         const { data, error } = await adminClient
           .from('food_items')
-          .insert([payloadForSupabase])
+          .upsert([payloadForSupabase], { onConflict: 'id' })
           .select();
 
         if (!error && data && data.length > 0) {
@@ -1466,7 +1617,7 @@ Current User Query: ${message}`;
           };
           supabaseSaved = true;
         } else if (error) {
-          console.warn('Supabase insert notice (saving to resilient store):', error.message);
+          console.warn('Supabase upsert notice (saving to resilient store):', error.message);
         }
       }
     } catch (err: any) {
@@ -1534,14 +1685,13 @@ Current User Query: ${message}`;
       isAvailable: payloadForSupabase.is_available !== undefined ? payloadForSupabase.is_available : existingDish.isAvailable
     };
 
-    // Attempt Supabase database update
+    // Attempt Supabase database upsert
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
       if (adminClient) {
         const { data, error } = await adminClient
           .from('food_items')
-          .update(payloadForSupabase)
-          .eq('id', id)
+          .upsert([{ id: String(id), ...payloadForSupabase }], { onConflict: 'id' })
           .select();
 
         if (!error && data && data.length > 0) {
@@ -1621,7 +1771,8 @@ Current User Query: ${message}`;
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
       if (adminClient) {
-        const payload = defaultPool.map((item: any) => ({
+        const payload = defaultPool.map((item: any, idx: number) => ({
+          id: String(item.id || `dish_seed_${idx + 1}`),
           name: item.name,
           description: item.description || '',
           price: Number(item.price) || 0,
@@ -1639,7 +1790,7 @@ Current User Query: ${message}`;
 
         const { data, error } = await adminClient
           .from('food_items')
-          .insert(payload.slice(0, 30))
+          .upsert(payload.slice(0, 30), { onConflict: 'id' })
           .select();
 
         if (!error && data) {

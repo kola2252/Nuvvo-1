@@ -31,6 +31,7 @@ import {
   CLIENT_SESSION_ID
 } from '../services/supabaseFood';
 import { supabase } from '../utils/supabase/client';
+import { saveOrderToSupabase, updateOrderInSupabase } from '../services/supabaseOrders';
 
 function safeParse<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -3317,6 +3318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPointsToRedeem(0);
 
     setOrders(prev => [newOrder, ...prev]);
+    saveOrderToSupabase(newOrder);
     clearCart();
     setActiveTrackingOrder(newOrder);
 
@@ -3379,6 +3381,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return o;
     }));
+    updateOrderInSupabase(orderId, { rating, feedback });
 
     // Find the order to check if we can submit a formal restaurant review too
     const order = orders.find(o => o.id === orderId);
@@ -3429,6 +3432,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
 
     addAuditLog('Payment Status Updated', `Order #${orderId.replace('order_', '').slice(-6).toUpperCase()} payment marked "${newPaymentStatus}"${notes ? `: ${notes}` : ''}.`);
+    updateOrderInSupabase(orderId, { paymentStatus: newPaymentStatus });
 
     if (newPaymentStatus === 'confirmed' || newPaymentStatus === 'success') {
       triggerPushNotification(
@@ -3465,6 +3469,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return o;
       });
     });
+
+    updateOrderInSupabase(orderId, { status });
 
     if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
       setActiveTrackingOrder(prev => {

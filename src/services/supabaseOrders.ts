@@ -86,7 +86,10 @@ export async function fetchUserOrdersFromSupabase(phone: string): Promise<{
       .order('created_at', { ascending: false });
 
     if (error) {
-      // Table doesn't exist yet or query failed
+      // Table doesn't exist yet (PGRST205) or RLS policy rejection
+      if (error.code === 'PGRST205') {
+        return { data: [], error: null, fromSupabase: false };
+      }
       return { data: null, error, fromSupabase: false };
     }
 
@@ -102,7 +105,7 @@ export async function fetchUserOrdersFromSupabase(phone: string): Promise<{
 }
 
 /**
- * Saves placed order to Supabase orders table.
+ * Saves placed order to Supabase orders table with backend persistence fallback.
  */
 export async function saveOrderToSupabase(order: Order): Promise<{ success: boolean; error?: string }> {
   try {
@@ -129,11 +132,72 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
       created_at: order.date
     };
 
+    // 1. Attempt server API persistence
+    try {
+      fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    } catch {}
+
+    // 2. Direct Supabase upsert
     const { error } = await supabase
       .from('orders')
-      .insert([payload]);
+      .upsert([payload], { onConflict: 'id' });
 
     if (error) {
+      if (error.code === 'PGRST205') {
+        // Table not yet migrated in Supabase public schema
+        return { success: false, error: 'orders_table_unmigrated' };
+      }
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Database error' };
+  }
+}
+
+/**
+ * Updates an existing order in Supabase orders table.
+ */
+export async function updateOrderInSupabase(
+  orderId: string,
+  updatedFields: Partial<Order>
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const payload: any = {};
+    if (updatedFields.status) payload.status = updatedFields.status;
+    if (updatedFields.paymentStatus) payload.payment_status = updatedFields.paymentStatus;
+    if (updatedFields.deliveryPartnerStatus) payload.delivery_partner_status = updatedFields.deliveryPartnerStatus;
+    if (updatedFields.deliveryPartnerId) payload.delivery_partner_id = updatedFields.deliveryPartnerId;
+    if (updatedFields.deliveryPartnerName) payload.delivery_partner_name = updatedFields.deliveryPartnerName;
+    if (updatedFields.deliveryPartnerPhone) payload.delivery_partner_phone = updatedFields.deliveryPartnerPhone;
+    if (updatedFields.rating !== undefined) payload.rating = updatedFields.rating;
+    if (updatedFields.feedback !== undefined) payload.feedback = updatedFields.feedback;
+    if (updatedFields.trackingHistory) payload.tracking_history = updatedFields.trackingHistory;
+
+    // 1. Attempt server API update
+    try {
+      fetch(`/api/orders/${orderId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    } catch {}
+
+    // 2. Direct Supabase update
+    const { error } = await supabase
+      .from('orders')
+      .update(payload)
+      .eq('id', orderId);
+
+    if (error) {
+      if (error.code === 'PGRST205') {
+        return { success: false, error: 'orders_table_unmigrated' };
+      }
       return { success: false, error: error.message };
     }
 

@@ -132,7 +132,7 @@ export const checkServerSupabaseDiagnostics = async (): Promise<{
   details?: any;
 }> => {
   const url = getSupabaseUrl();
-  const { client, error } = getAdminSupabaseServerClient();
+  const { client, error, isServiceRole } = getAdminSupabaseServerClient();
 
   if (!client || error) {
     return {
@@ -153,7 +153,7 @@ export const checkServerSupabaseDiagnostics = async (): Promise<{
     if (dbError) {
       return {
         success: false,
-        isServiceRoleConfigured: true,
+        isServiceRoleConfigured: isServiceRole,
         url,
         databaseAccess: false,
         message: `Database query failed: ${dbError.message}`,
@@ -164,16 +164,18 @@ export const checkServerSupabaseDiagnostics = async (): Promise<{
 
     return {
       success: true,
-      isServiceRoleConfigured: true,
+      isServiceRoleConfigured: isServiceRole,
       url,
       databaseAccess: true,
-      message: "Supabase client successfully initialized with SERVICE_ROLE_KEY and accessing database.",
+      message: isServiceRole
+        ? "Supabase client successfully initialized with SERVICE_ROLE_KEY and accessing database."
+        : "Supabase client connected using anon key. For server-side write permissions without RLS restrictions, configure SUPABASE_SERVICE_ROLE_KEY in Vercel project settings.",
       details: { rowCount: count }
     };
   } catch (err: any) {
     return {
       success: false,
-      isServiceRoleConfigured: true,
+      isServiceRoleConfigured: isServiceRole,
       url,
       databaseAccess: false,
       message: `Exception while accessing database: ${err?.message || err}`,

@@ -85,6 +85,7 @@ export function mapFoodItemToSupabaseRow(item: Partial<FoodItem>): Partial<Supab
   const isVeg = item.vegIndicator === VegIndicator.VEG || String(item.vegIndicator || '').toLowerCase() === 'veg';
 
   return {
+    ...(item.id ? { id: String(item.id) } : {}),
     name: item.name ? String(item.name).trim() : 'Specialty Dish',
     description: item.description ? String(item.description).trim() : '',
     price: Number(item.price) || 0,
@@ -161,14 +162,14 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
     const payload = mapFoodItemToSupabaseRow(item);
     const { data, error } = await supabase
       .from('food_items')
-      .insert([payload])
+      .upsert([payload], { onConflict: 'id' })
       .select();
 
     if (!error && data && data[0]) {
       return { data: mapSupabaseRowToFoodItem(data[0]), error: null };
     }
   } catch (err: any) {
-    console.warn('Direct Supabase insert notice:', err?.message);
+    console.warn('Direct Supabase upsert notice:', err?.message);
   }
 
   // Resilient fallback dish object to guarantee UI continuity
@@ -297,20 +298,23 @@ export async function seedFoodItemsToSupabase(items: FoodItem[]): Promise<{
   error: any | null;
 }> {
   try {
-    const payload = items.map(mapFoodItemToSupabaseRow);
+    const payload = items.map((item, idx) => ({
+      ...mapFoodItemToSupabaseRow(item),
+      id: String(item.id || `dish_seed_${idx + 1}`)
+    }));
     const { data, error } = await supabase
       .from('food_items')
-      .insert(payload)
+      .upsert(payload, { onConflict: 'id' })
       .select();
 
     if (error) {
-      console.error('Supabase seedFoodItems error:', error);
+      console.warn('Supabase seedFoodItems notice:', error.message);
       return { count: 0, error };
     }
 
     return { count: data?.length || 0, error: null };
   } catch (err: any) {
-    console.error('Failed to seed Supabase food_items:', err);
+    console.warn('Notice while seeding Supabase food_items:', err?.message);
     return { count: 0, error: err };
   }
 }
