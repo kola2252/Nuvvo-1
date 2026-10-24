@@ -12,6 +12,7 @@ import {
   createServerClient,
   checkServerSupabaseDiagnostics
 } from "./src/utils/supabase/server";
+import debugOtpHandler from "./api/auth/debug-otp";
 
 dotenv.config();
 
@@ -849,6 +850,11 @@ Current User Query: ${message}`;
   // Securely generate, hash, and issue dynamic single-use OTP
   const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes expiration window
   const MAX_OTP_ATTEMPTS = 5;
+
+  // Diagnostic endpoint checking OTP environment variable secrets & crypto module readiness safely
+  app.all("/api/auth/debug-otp", (req, res) => {
+    return debugOtpHandler(req, res);
+  });
 
   app.post("/api/auth/send-otp", async (req, res) => {
     try {
