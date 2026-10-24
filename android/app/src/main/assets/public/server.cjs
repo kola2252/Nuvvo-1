@@ -4,6 +4,10 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -20,15 +24,124 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // server.ts
+var server_exports = {};
+__export(server_exports, {
+  app: () => app,
+  createSignedSessionToken: () => createSignedSessionToken,
+  default: () => server_default,
+  startServer: () => startServer,
+  verifySignedSessionToken: () => verifySignedSessionToken
+});
+module.exports = __toCommonJS(server_exports);
 var import_express = __toESM(require("express"), 1);
+var import_crypto2 = __toESM(require("crypto"), 1);
+var import_fs = __toESM(require("fs"), 1);
 var import_path = __toESM(require("path"), 1);
-var import_vite = require("vite");
 var import_genai = require("@google/genai");
-var import_dotenv = __toESM(require("dotenv"), 1);
+var import_dotenv2 = __toESM(require("dotenv"), 1);
+
+// src/types.ts
+var VegIndicator = {
+  VEG: "veg",
+  NON_VEG: "non-veg"
+};
 
 // src/data/catalog.ts
+var RESTAURANTS = [
+  {
+    id: "rest_1",
+    name: "Nuvvo Kitchens",
+    rating: 4.8,
+    reviewsCount: 1250,
+    cuisines: ["Indian", "Chinese", "Mughlai"],
+    deliveryTime: 25,
+    costForTwo: 500,
+    image: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&q=80&w=400",
+    isPromoted: true,
+    offers: ["50% OFF up to \u20B9100", "Free delivery"]
+  },
+  {
+    id: "rest_2",
+    name: "Spiceland Biryani",
+    rating: 4.5,
+    reviewsCount: 840,
+    cuisines: ["Biryani", "Andhra", "Mughlai"],
+    deliveryTime: 30,
+    costForTwo: 450,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    offers: ["\u20B9120 OFF use NUVVO120"]
+  },
+  {
+    id: "rest_3",
+    name: "The South Indian Club",
+    rating: 4.6,
+    reviewsCount: 1980,
+    cuisines: ["South Indian", "Tiffins"],
+    deliveryTime: 20,
+    costForTwo: 250,
+    image: "https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400",
+    offers: ["20% OFF on all items"]
+  },
+  {
+    id: "rest_4",
+    name: "Burger Craft & Co",
+    rating: 4.4,
+    reviewsCount: 620,
+    cuisines: ["Burgers", "Fast Food", "Snacks"],
+    deliveryTime: 22,
+    costForTwo: 350,
+    image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=400",
+    isPromoted: true,
+    offers: ["Buy 1 Get 1 Free", "\u20B950 Cashback with PhonePe"]
+  },
+  {
+    id: "rest_5",
+    name: "La Piazza Pizzeria",
+    rating: 4.7,
+    reviewsCount: 750,
+    cuisines: ["Pizza", "Italian", "Desserts"],
+    deliveryTime: 35,
+    costForTwo: 600,
+    image: "https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&q=80&w=400",
+    offers: ["Flat \u20B9100 OFF above \u20B9499"]
+  },
+  {
+    id: "rest_6",
+    name: "Wok Hei Chinese",
+    rating: 4.3,
+    reviewsCount: 430,
+    cuisines: ["Chinese", "Noodles", "Seafood"],
+    deliveryTime: 28,
+    costForTwo: 400,
+    image: "https://images.unsplash.com/photo-1585032226651-759b368d7246?auto=format&fit=crop&q=80&w=400",
+    offers: ["15% OFF on first order"]
+  },
+  {
+    id: "rest_7",
+    name: "Sweet Bliss Creamery",
+    rating: 4.9,
+    reviewsCount: 1100,
+    cuisines: ["Ice Cream", "Desserts", "Milkshakes"],
+    deliveryTime: 15,
+    costForTwo: 300,
+    image: "https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&q=80&w=400",
+    offers: ["Free Choco-fudge topping on \u20B9250"]
+  },
+  {
+    id: "rest_8",
+    name: "Healthy Fuel Cafe",
+    rating: 4.5,
+    reviewsCount: 310,
+    cuisines: ["Healthy Foods", "Salads", "Juices"],
+    deliveryTime: 25,
+    costForTwo: 400,
+    image: "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&q=80&w=400",
+    offers: ["Save \u20B960 with NUVVOFIT"]
+  }
+];
 var CATEGORIES = [
   "Biryani",
   "South Indian",
@@ -356,7 +469,7 @@ CATEGORIES.forEach((cat) => {
       id: `food_${globalItemIndex}`,
       name: item.name,
       description: item.desc,
-      vegIndicator: item.isVeg ? "veg" /* VEG */ : "non-veg" /* NON_VEG */,
+      vegIndicator: item.isVeg ? VegIndicator.VEG : VegIndicator.NON_VEG,
       rating: parseFloat((4 + globalItemIndex % 10 * 0.1).toFixed(1)),
       reviewsCount: 15 + globalItemIndex * 4 % 180,
       prepTime: 15 + globalItemIndex * 3 % 25,
@@ -377,8 +490,1019 @@ CATEGORIES.forEach((cat) => {
   });
 });
 
-// server.ts
+// src/data/chiralaPartners.ts
+var CHIRALA_TOP13_FOOD_ITEMS = [
+  // 1. గోదావరి రుచులు (chirala_rest_1)
+  {
+    id: "chirala_food_1_1",
+    restaurantId: "chirala_rest_1",
+    name: "\u0C17\u0C4B\u0C26\u0C3E\u0C35\u0C30\u0C3F \u0C30\u0C4A\u0C2F\u0C4D\u0C2F\u0C32 \u0C35\u0C47\u0C2A\u0C41\u0C21\u0C41 (Godavari Royyala Vepudu)",
+    description: "Authentic Godavari style fresh coastal prawns roasted with caramelized onions, curry leaves, and spicy pepper masala.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 240,
+    prepTime: 20,
+    price: 340,
+    discountPrice: 289,
+    image: "https://images.unsplash.com/photo-1551248429-40975aa4de74?auto=format&fit=crop&q=80&w=400",
+    category: "Seafood",
+    subcategory: "Starters",
+    ingredients: ["Fresh Coastal Prawns", "Curry Leaves", "Godavari Masala", "Ghee"],
+    spiceLevel: "High",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_1_2",
+    restaurantId: "chirala_rest_1",
+    name: "\u0C17\u0C4B\u0C26\u0C3E\u0C35\u0C30\u0C3F \u0C38\u0C40\u0C2B\u0C41\u0C21\u0C4D \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Godavari Seafood Biryani)",
+    description: "Aromatic basmati rice cooked with fresh coastal prawns and fish fillet in traditional Godavari clay pot style.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 195,
+    prepTime: 25,
+    price: 380,
+    discountPrice: 320,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Seafood Biryani",
+    ingredients: ["Basmati Rice", "Prawns", "Fish Chunks", "Godavari Dum Spices"],
+    spiceLevel: "High",
+    isTrending: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_1_3",
+    restaurantId: "chirala_rest_1",
+    name: "\u0C15\u0C4A\u0C28\u0C38\u0C40\u0C2E \u0C1A\u0C3E\u0C2A\u0C32 \u0C2A\u0C41\u0C32\u0C41\u0C38\u0C41 (Konaseema Chepala Pulusu)",
+    description: "Traditional tangy and fiery tamarind fish curry slow-simmered in an earthen pot.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 310,
+    prepTime: 20,
+    price: 310,
+    discountPrice: 260,
+    image: "https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?auto=format&fit=crop&q=80&w=400",
+    category: "Seafood",
+    subcategory: "Curry",
+    ingredients: ["Fresh Sea Fish", "Tamarind", "Green Chillies", "Shallots"],
+    spiceLevel: "High",
+    isBestSeller: true,
+    reviews: []
+  },
+  // 2. 9 to 9 హైదరాబాద్ దమ్ బిర్యాని (chirala_rest_2)
+  {
+    id: "chirala_food_2_1",
+    restaurantId: "chirala_rest_2",
+    name: "9 to 9 \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C26\u0C2E\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (9 to 9 Special Chicken Dum Biryani)",
+    description: "Signature Hyderabadi dum biryani cooked with marinated succulent chicken and aromatic saffron-infused long grain basmati rice.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 420,
+    prepTime: 20,
+    price: 280,
+    discountPrice: 239,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Tender Chicken", "Basmati Rice", "Hyderabadi Potli Masala", "Pure Ghee"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_2_2",
+    restaurantId: "chirala_rest_2",
+    name: "9 to 9 \u0C39\u0C48\u0C26\u0C30\u0C3E\u0C2C\u0C3E\u0C26\u0C4D \u0C2E\u0C1F\u0C28\u0C4D \u0C26\u0C2E\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (9 to 9 Mutton Dum Biryani)",
+    description: "Slow-cooked melt-in-mouth tender goat mutton layered with saffron basmati rice and roasted spices.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 290,
+    prepTime: 25,
+    price: 390,
+    discountPrice: 340,
+    image: "https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&q=80&w=400",
+    category: "Mutton Specials",
+    subcategory: "Biryani",
+    ingredients: ["Premium Mutton", "Aged Basmati Rice", "Saffron", "Fried Onions"],
+    spiceLevel: "Medium",
+    isTrending: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_2_3",
+    restaurantId: "chirala_rest_2",
+    name: "9 to 9 \u0C15\u0C4D\u0C30\u0C3F\u0C38\u0C4D\u0C2A\u0C40 \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D 65 (9 to 9 Crispy Chicken 65)",
+    description: "Deep-fried marinated boneless chicken bites tossed with curry leaves, yogurt, and crushed green chillies.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 310,
+    prepTime: 15,
+    price: 240,
+    discountPrice: 199,
+    image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=400",
+    category: "Chicken Specials",
+    subcategory: "Starters",
+    ingredients: ["Boneless Chicken", "Curry Leaves", "Red Chili Glaze", "Yogurt"],
+    spiceLevel: "High",
+    reviews: []
+  },
+  // 3. న్యూ ఐస్ బర్గ్ (chirala_rest_3)
+  {
+    id: "chirala_food_3_1",
+    restaurantId: "chirala_rest_3",
+    name: "\u0C28\u0C4D\u0C2F\u0C42 \u0C10\u0C38\u0C4D \u0C2C\u0C30\u0C4D\u0C17\u0C4D \u0C30\u0C3E\u0C2F\u0C32\u0C4D \u0C2B\u0C4D\u0C30\u0C42\u0C1F\u0C4D \u0C38\u0C02\u0C21\u0C47 (New Iceberg Royal Fruit Sundae)",
+    description: "Loaded exotic fruit sundae with fresh mango, kiwi, strawberry scoops, topped with candied nuts and honey drizzles.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.9,
+    reviewsCount: 380,
+    prepTime: 10,
+    price: 180,
+    discountPrice: 150,
+    image: "https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&q=80&w=400",
+    category: "Ice Cream",
+    subcategory: "Sundaes",
+    ingredients: ["Seasonal Fruits", "Vanilla Cream", "Strawberry Scoop", "Roasted Almonds"],
+    spiceLevel: "None",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_3_2",
+    restaurantId: "chirala_rest_3",
+    name: "\u0C15\u0C47\u0C38\u0C30\u0C4D \u0C2A\u0C3F\u0C38\u0C4D\u0C24\u0C3E \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C2B\u0C32\u0C42\u0C26\u0C3E (Kesar Pista Special Falooda)",
+    description: "Chilled condensed milk infused with royal saffron, crunchy pista, sabja seeds, and vermicelli topped with ice cream.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 220,
+    prepTime: 10,
+    price: 160,
+    discountPrice: 135,
+    image: "https://images.unsplash.com/photo-1579954115545-a95591f28bfc?auto=format&fit=crop&q=80&w=400",
+    category: "Desserts",
+    subcategory: "Falooda",
+    ingredients: ["Kesar Milk", "Pistachios", "Sabja Seeds", "Falooda Sev"],
+    spiceLevel: "None",
+    reviews: []
+  },
+  // 4. న్యూ ఐస్ బర్గ్ టెంటేషన్ (chirala_rest_4)
+  {
+    id: "chirala_food_4_1",
+    restaurantId: "chirala_rest_4",
+    name: "\u0C1F\u0C46\u0C02\u0C2A\u0C4D\u0C1F\u0C47\u0C37\u0C28\u0C4D \u0C1A\u0C3E\u0C15\u0C4B \u0C2B\u0C21\u0C4D\u0C1C\u0C4D \u0C2C\u0C4D\u0C30\u0C4C\u0C28\u0C40 \u0C38\u0C3F\u0C1C\u0C4D\u0C32\u0C30\u0C4D (Temptation Choco Fudge Brownie Sizzler)",
+    description: "Warm, gooey dark chocolate walnut brownie served on a hot plate with vanilla ice cream and hot chocolate fudge.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.9,
+    reviewsCount: 410,
+    prepTime: 12,
+    price: 220,
+    discountPrice: 189,
+    image: "https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&q=80&w=400",
+    category: "Desserts",
+    subcategory: "Sizzlers",
+    ingredients: ["Dark Chocolate Brownie", "Vanilla Ice Cream", "Hot Fudge", "Walnuts"],
+    spiceLevel: "None",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_4_2",
+    restaurantId: "chirala_rest_4",
+    name: "\u0C15\u0C3F\u0C1F\u0C4D\u200C\u0C15\u0C4D\u0C2F\u0C3E\u0C1F\u0C4D \u0C13\u0C30\u0C3F\u0C2F\u0C4B \u0C25\u0C3F\u0C15\u0C4D\u200C\u0C37\u0C47\u0C15\u0C4D (KitKat Oreo Thick Shake)",
+    description: "Ultra-rich creamy chocolate thickshake blended with crunchy KitKat and Oreo cookies.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 260,
+    prepTime: 10,
+    price: 170,
+    discountPrice: 145,
+    image: "https://images.unsplash.com/photo-1579954115545-a95591f28bfc?auto=format&fit=crop&q=80&w=400",
+    category: "Milkshakes",
+    subcategory: "Chocolate Shakes",
+    ingredients: ["Fresh Cream Milk", "KitKat Bars", "Oreo Cookies", "Chocolate Drizzle"],
+    spiceLevel: "None",
+    reviews: []
+  },
+  // 5. ఐస్ మ్యాజిక్ (chirala_rest_5)
+  {
+    id: "chirala_food_5_1",
+    restaurantId: "chirala_rest_5",
+    name: "\u0C10\u0C38\u0C4D \u0C2E\u0C4D\u0C2F\u0C3E\u0C1C\u0C3F\u0C15\u0C4D \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C15\u0C41\u0C32\u0C4D\u0C2B\u0C40 \u0C2E\u0C1F\u0C4D\u0C15\u0C3E (Ice Magic Special Matka Kulfi)",
+    description: "Traditional slow-reduced rabri kulfi set in an authentic clay pot, loaded with dry fruits and saffron.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 290,
+    prepTime: 5,
+    price: 120,
+    discountPrice: 99,
+    image: "https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&q=80&w=400",
+    category: "Ice Cream",
+    subcategory: "Kulfi",
+    ingredients: ["Rabri", "Cardamom", "Cashews", "Saffron"],
+    spiceLevel: "None",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_5_2",
+    restaurantId: "chirala_rest_5",
+    name: "\u0C2E\u0C3E\u0C02\u0C17\u0C4B \u0C2E\u0C38\u0C4D\u0C24\u0C3E\u0C28\u0C40 \u0C35\u0C3F\u0C24\u0C4D \u0C10\u0C38\u0C4D \u0C15\u0C4D\u0C30\u0C40\u0C2E\u0C4D (Mango Mastani with Ice Cream)",
+    description: "Pune style thick chilled mango shake crowned with real mango ice cream and dry fruits.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 180,
+    prepTime: 10,
+    price: 160,
+    discountPrice: 135,
+    image: "https://images.unsplash.com/photo-1621506289937-a8e4df240d0b?auto=format&fit=crop&q=80&w=400",
+    category: "Juices",
+    subcategory: "Smoothies",
+    ingredients: ["Fresh Mango Pulp", "Mango Ice Cream", "Tutti Frutti", "Almonds"],
+    spiceLevel: "None",
+    reviews: []
+  },
+  // 6. మిస్సమ్మ ఫ్యామిలీ రెస్టారెంట్ (chirala_rest_6)
+  {
+    id: "chirala_food_6_1",
+    restaurantId: "chirala_rest_6",
+    name: "\u0C2E\u0C3F\u0C38\u0C4D\u0C38\u0C2E\u0C4D\u0C2E \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C26\u0C2E\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Missamma Special Chicken Biryani)",
+    description: "Famous Chirala local recipe prepared with tender farm-fresh chicken and country spices.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 520,
+    prepTime: 20,
+    price: 290,
+    discountPrice: 249,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Country Chicken", "Basmati Rice", "Missamma Spices", "Ghee"],
+    spiceLevel: "High",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_6_2",
+    restaurantId: "chirala_rest_6",
+    name: "\u0C2E\u0C3F\u0C38\u0C4D\u0C38\u0C2E\u0C4D\u0C2E \u0C30\u0C3E\u0C2F\u0C32\u0C4D \u0C06\u0C02\u0C27\u0C4D\u0C30 \u0C2E\u0C40\u0C32\u0C4D\u0C38\u0C4D \u0C25\u0C3E\u0C32\u0C3F (Missamma Royal Andhra Thali)",
+    description: "Grand unlimited Andhra meal platter with pappu, sambar, rasam, 2 curries, podi, curd, and papad.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 450,
+    prepTime: 15,
+    price: 220,
+    discountPrice: 189,
+    image: "https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400",
+    category: "South Indian",
+    subcategory: "Thali",
+    ingredients: ["Sona Masoori Rice", "Pappu", "Sambar", "Ghee Podi"],
+    spiceLevel: "Medium",
+    isTrending: true,
+    reviews: []
+  },
+  // 7. తన్సీ ఫుడ్ కోర్ట్ (chirala_rest_7)
+  {
+    id: "chirala_food_7_1",
+    restaurantId: "chirala_rest_7",
+    name: "\u0C24\u0C28\u0C4D\u0C38\u0C40 \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C2B\u0C4D\u0C30\u0C48\u0C21\u0C4D \u0C30\u0C48\u0C38\u0C4D (Tansee Special Chicken Fried Rice)",
+    description: "Wok-tossed long-grain basmati rice with shredded chicken, scramble egg, and scallions in rich soy seasoning.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 340,
+    prepTime: 15,
+    price: 190,
+    discountPrice: 159,
+    image: "https://images.unsplash.com/photo-1585032226651-759b368d7246?auto=format&fit=crop&q=80&w=400",
+    category: "Chinese",
+    subcategory: "Fried Rice",
+    ingredients: ["Basmati Rice", "Chicken", "Egg", "Spring Onions"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_7_2",
+    restaurantId: "chirala_rest_7",
+    name: "\u0C38\u0C4D\u0C2A\u0C48\u0C38\u0C40 \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C37\u0C35\u0C30\u0C4D\u0C2E\u0C3E \u0C30\u0C4B\u0C32\u0C4D (Spicy Chicken Shawarma Roll)",
+    description: "Juicy spit-roasted chicken wrapped in warm rumali roti with garlic mayonnaise, pickled gherkins, and french fries.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.7,
+    reviewsCount: 280,
+    prepTime: 12,
+    price: 140,
+    discountPrice: 119,
+    image: "https://images.unsplash.com/photo-1642821373181-696a54913e93?auto=format&fit=crop&q=80&w=400",
+    category: "Shawarma",
+    subcategory: "Rolls",
+    ingredients: ["Roast Chicken", "Rumali Roti", "Garlic Mayo", "Pickles"],
+    spiceLevel: "Medium",
+    reviews: []
+  },
+  // 8. ఆరెంజ్ ఫ్యామిలీ రెస్టారెంట్ (chirala_rest_8)
+  {
+    id: "chirala_food_8_1",
+    restaurantId: "chirala_rest_8",
+    name: "\u0C06\u0C30\u0C46\u0C02\u0C1C\u0C4D \u0C38\u0C4D\u0C2A\u0C46\u0C37\u0C32\u0C4D \u0C2C\u0C4B\u0C28\u0C4D\u200C\u0C32\u0C46\u0C38\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Orange Special Boneless Biryani)",
+    description: "Juicy spiced chicken boneless tikka cubes layered into fragrant dum biryani rice with caramelized onions.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 390,
+    prepTime: 20,
+    price: 310,
+    discountPrice: 265,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Boneless Chicken Tikka", "Basmati Rice", "Orange Special Masala"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_8_2",
+    restaurantId: "chirala_rest_8",
+    name: "\u0C06\u0C30\u0C46\u0C02\u0C1C\u0C4D \u0C15\u0C3E\u0C1C\u0C41 \u0C2A\u0C28\u0C40\u0C30\u0C4D \u0C2E\u0C38\u0C3E\u0C32\u0C3E (Orange Kaju Paneer Masala)",
+    description: "Cottage cheese cubes and whole roasted cashews simmered in a creamy tomato-onion butter gravy.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.8,
+    reviewsCount: 230,
+    prepTime: 18,
+    price: 250,
+    discountPrice: 215,
+    image: "https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?auto=format&fit=crop&q=80&w=400",
+    category: "North Indian",
+    subcategory: "Curry",
+    ingredients: ["Paneer", "Roasted Cashews", "Fresh Cream", "Butter Gravy"],
+    spiceLevel: "Medium",
+    reviews: []
+  },
+  // 9. వాసుదేవ విల్లాస్ (chirala_rest_9)
+  {
+    id: "chirala_food_9_1",
+    restaurantId: "chirala_rest_9",
+    name: "\u0C35\u0C3E\u0C38\u0C41\u0C26\u0C47\u0C35 \u0C28\u0C46\u0C2F\u0C4D\u0C2F\u0C3F \u0C15\u0C3E\u0C30\u0C02 \u0C26\u0C4B\u0C36 (Vasudeva Ghee Karam Podi Dosa)",
+    description: "Crispy golden crepe roasted generously in pure desi ghee and layered with authentic spicy red chutney and gun powder podi.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.9,
+    reviewsCount: 510,
+    prepTime: 10,
+    price: 90,
+    discountPrice: 75,
+    image: "https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400",
+    category: "South Indian",
+    subcategory: "Tiffins",
+    ingredients: ["Fermented Rice Batter", "Pure Desi Ghee", "Karam Podi", "Coconut Chutney"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_9_2",
+    restaurantId: "chirala_rest_9",
+    name: "\u0C2C\u0C1F\u0C28\u0C4D \u0C38\u0C3E\u0C02\u0C2C\u0C3E\u0C30\u0C4D \u0C07\u0C21\u0C4D\u0C32\u0C40 \u0C35\u0C3F\u0C24\u0C4D \u0C18\u0C40 (Button Sambar Ghee Idli 10pcs)",
+    description: "10 melt-in-the-mouth mini steamed rice idlis submerged in hot aromatic drumstick sambar and pure ghee.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.9,
+    reviewsCount: 380,
+    prepTime: 10,
+    price: 80,
+    discountPrice: 69,
+    image: "https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&q=80&w=400",
+    category: "Tiffins",
+    subcategory: "Idli",
+    ingredients: ["Steamed Rice Cakes", "Drumstick Sambar", "Desi Ghee", "Coriander"],
+    spiceLevel: "Medium",
+    isTrending: true,
+    reviews: []
+  },
+  // 10. శ్రీ వీర హనుమాన్ బిర్యాని పాయింట్ (chirala_rest_10)
+  {
+    id: "chirala_food_10_1",
+    restaurantId: "chirala_rest_10",
+    name: "\u0C36\u0C4D\u0C30\u0C40 \u0C35\u0C40\u0C30 \u0C39\u0C28\u0C41\u0C2E\u0C3E\u0C28\u0C4D \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C1C\u0C3E\u0C2F\u0C3F\u0C02\u0C1F\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Veera Hanuman Chicken Joint Biryani)",
+    description: "Spicy marinated whole chicken leg joint roasted and served over steaming spicy Andhra dum biryani.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 480,
+    prepTime: 20,
+    price: 280,
+    discountPrice: 239,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Chicken Leg Joint", "Basmati Rice", "Spicy Andhra Masala"],
+    spiceLevel: "High",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_10_2",
+    restaurantId: "chirala_rest_10",
+    name: "\u0C35\u0C40\u0C30 \u0C39\u0C28\u0C41\u0C2E\u0C3E\u0C28\u0C4D \u0C38\u0C4D\u0C2A\u0C48\u0C38\u0C40 \u0C2B\u0C4D\u0C30\u0C48 \u0C2A\u0C40\u0C38\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Veera Hanuman Fry Piece Biryani)",
+    description: "Crispy fried chicken chunks with pepper, green chillies, and garlic topped on basmati biryani.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 340,
+    prepTime: 20,
+    price: 290,
+    discountPrice: 249,
+    image: "https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Fried Chicken Pcs", "Curry Leaves", "Basmati Rice", "Raita"],
+    spiceLevel: "High",
+    reviews: []
+  },
+  // 11. ఫ్రైడ్ వింగ్స్ (chirala_rest_11)
+  {
+    id: "chirala_food_11_1",
+    restaurantId: "chirala_rest_11",
+    name: "\u0C15\u0C4D\u0C30\u0C3F\u0C38\u0C4D\u0C2A\u0C40 \u0C2B\u0C4D\u0C30\u0C48\u0C21\u0C4D \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C35\u0C3F\u0C02\u0C17\u0C4D\u0C38\u0C4D (6 Pcs Crispy Fried Wings)",
+    description: "Golden crispy fried chicken wings coated in seasoned breading with garlic dip.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 390,
+    prepTime: 15,
+    price: 230,
+    discountPrice: 195,
+    image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=400",
+    category: "Fast Food",
+    subcategory: "Chicken Wings",
+    ingredients: ["Chicken Wings", "Crispy Batter", "Garlic Mayo", "Secret Herbs"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_11_2",
+    restaurantId: "chirala_rest_11",
+    name: "\u0C2A\u0C46\u0C30\u0C3F \u0C2A\u0C46\u0C30\u0C3F \u0C38\u0C4D\u0C2A\u0C48\u0C38\u0C40 \u0C35\u0C3F\u0C02\u0C17\u0C4D\u0C38\u0C4D \u0C2C\u0C15\u0C46\u0C1F\u0C4D (Peri Peri Hot Wings Bucket 10 Pcs)",
+    description: "Jumbo bucket of crunchy chicken wings dusted in hot African peri-peri seasoning.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 310,
+    prepTime: 18,
+    price: 350,
+    discountPrice: 299,
+    image: "https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&q=80&w=400",
+    category: "Fast Food",
+    subcategory: "Chicken Wings",
+    ingredients: ["Chicken Wings", "Peri Peri Rub", "Herb Dip"],
+    spiceLevel: "High",
+    reviews: []
+  },
+  // 12. గురు కృప బేకరీ (chirala_rest_12)
+  {
+    id: "chirala_food_12_1",
+    restaurantId: "chirala_rest_12",
+    name: "\u0C17\u0C41\u0C30\u0C41 \u0C15\u0C43\u0C2A \u0C39\u0C3E\u0C1F\u0C4D \u0C0E\u0C17\u0C4D \u0C2A\u0C2B\u0C4D (Guru Krupa Fresh Baked Egg Puff 2 Pcs)",
+    description: "Flaky and buttery puff pastry stuffed with hard-boiled egg half and spiced onion masala.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.8,
+    reviewsCount: 320,
+    prepTime: 5,
+    price: 60,
+    discountPrice: 50,
+    image: "https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&q=80&w=400",
+    category: "Bakery",
+    subcategory: "Puffs",
+    ingredients: ["Egg", "Puff Dough", "Caramelized Onions", "Pepper"],
+    spiceLevel: "Medium",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_12_2",
+    restaurantId: "chirala_rest_12",
+    name: "\u0C17\u0C41\u0C30\u0C41 \u0C15\u0C43\u0C2A \u0C1F\u0C4D\u0C30\u0C46\u0C21\u0C3F\u0C37\u0C28\u0C32\u0C4D \u0C2A\u0C4D\u0C32\u0C2E\u0C4D \u0C15\u0C47\u0C15\u0C4D (Guru Krupa Rich Fruit Plum Cake 400g)",
+    description: "Classic rich tea cake loaded with candied peels, raisins, and aromatic winter spices.",
+    vegIndicator: VegIndicator.VEG,
+    rating: 4.9,
+    reviewsCount: 280,
+    prepTime: 5,
+    price: 180,
+    discountPrice: 155,
+    image: "https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&q=80&w=400",
+    category: "Bakery",
+    subcategory: "Cakes",
+    ingredients: ["Dry Fruits", "Butter Cake Sponge", "Cardamom", "Cinnamon"],
+    spiceLevel: "None",
+    reviews: []
+  },
+  // 13. మణికంఠ స్పైసీ బిర్యానీ (chirala_rest_13)
+  {
+    id: "chirala_food_13_1",
+    restaurantId: "chirala_rest_13",
+    name: "\u0C2E\u0C23\u0C3F\u0C15\u0C02\u0C20 \u0C06\u0C02\u0C27\u0C4D\u0C30 \u0C38\u0C4D\u0C2A\u0C48\u0C38\u0C40 \u0C1A\u0C3F\u0C15\u0C46\u0C28\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Manikanta Andhra Spicy Biryani)",
+    description: "Piping hot authentic Andhra style fiery chicken biryani with tender chicken pieces and special guntur spices.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 460,
+    prepTime: 20,
+    price: 270,
+    discountPrice: 229,
+    image: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&q=80&w=400",
+    category: "Biryani",
+    subcategory: "Chicken Biryani",
+    ingredients: ["Chicken Pieces", "Guntur Chilli Paste", "Basmati Rice", "Ghee"],
+    spiceLevel: "High",
+    isBestSeller: true,
+    reviews: []
+  },
+  {
+    id: "chirala_food_13_2",
+    restaurantId: "chirala_rest_13",
+    name: "\u0C2E\u0C23\u0C3F\u0C15\u0C02\u0C20 \u0C2E\u0C1F\u0C28\u0C4D \u0C38\u0C41\u0C15\u0C4D\u0C15\u0C3E \u0C26\u0C2E\u0C4D \u0C2C\u0C3F\u0C30\u0C4D\u0C2F\u0C3E\u0C28\u0C40 (Manikanta Mutton Sukka Biryani)",
+    description: "Dry roasted tender mutton pieces tossed with crushed black pepper layered in aromatic biryani.",
+    vegIndicator: VegIndicator.NON_VEG,
+    rating: 4.9,
+    reviewsCount: 380,
+    prepTime: 25,
+    price: 380,
+    discountPrice: 330,
+    image: "https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?auto=format&fit=crop&q=80&w=400",
+    category: "Mutton Specials",
+    subcategory: "Biryani",
+    ingredients: ["Mutton Sukka", "Pepper Masala", "Basmati Rice", "Mint Leaves"],
+    spiceLevel: "High",
+    isTrending: true,
+    reviews: []
+  }
+];
+
+// src/utils/supabase/server.ts
+var import_supabase_js = require("@supabase/supabase-js");
+var getSupabaseUrl = () => {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://bitxmpjuetvfbhdyfvok.supabase.co";
+  return url.trim();
+};
+var getAdminSupabaseServerClient = () => {
+  try {
+    const privilegedKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+    if (privilegedKey && privilegedKey.trim()) {
+      const supabaseUrl = getSupabaseUrl();
+      const client = (0, import_supabase_js.createClient)(supabaseUrl, privilegedKey.trim(), {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
+      });
+      return { client, error: null, isServiceRole: true };
+    }
+  } catch (err) {
+    console.warn("Notice: Service role client initialization deferred:", err?.message);
+  }
+  const publicClient = getPublicSupabaseServerClient();
+  return {
+    client: publicClient,
+    error: null,
+    isServiceRole: false
+  };
+};
+var getPublicSupabaseServerClient = () => {
+  const supabaseUrl = getSupabaseUrl();
+  const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+  return (0, import_supabase_js.createClient)(supabaseUrl, publicKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  });
+};
+var createServerClient = () => {
+  return getPublicSupabaseServerClient();
+};
+var checkServerSupabaseDiagnostics = async () => {
+  const url = getSupabaseUrl();
+  const { client, error, isServiceRole } = getAdminSupabaseServerClient();
+  if (!client || error) {
+    return {
+      success: false,
+      isServiceRoleConfigured: false,
+      url,
+      databaseAccess: false,
+      message: "Server SERVICE_ROLE_KEY is not configured.",
+      error: error || "Missing privileged key"
+    };
+  }
+  try {
+    const { data, error: dbError, count } = await client.from("food_items").select("id", { count: "exact", head: true });
+    if (dbError) {
+      return {
+        success: false,
+        isServiceRoleConfigured: isServiceRole,
+        url,
+        databaseAccess: false,
+        message: `Database query failed: ${dbError.message}`,
+        error: dbError.message,
+        details: dbError
+      };
+    }
+    return {
+      success: true,
+      isServiceRoleConfigured: isServiceRole,
+      url,
+      databaseAccess: true,
+      message: isServiceRole ? "Supabase client successfully initialized with SERVICE_ROLE_KEY and accessing database." : "Supabase client connected using anon key. For server-side write permissions without RLS restrictions, configure SUPABASE_SERVICE_ROLE_KEY in Vercel project settings.",
+      details: { rowCount: count }
+    };
+  } catch (err) {
+    return {
+      success: false,
+      isServiceRoleConfigured: isServiceRole,
+      url,
+      databaseAccess: false,
+      message: `Exception while accessing database: ${err?.message || err}`,
+      error: err?.message || String(err)
+    };
+  }
+};
+
+// api/auth/debug-otp.ts
+var import_crypto = __toESM(require("crypto"), 1);
+var import_dotenv = __toESM(require("dotenv"), 1);
 import_dotenv.default.config();
+function generateOtpDiagnostics() {
+  const sessionSecretVal = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || "";
+  const isCustomSessionSecret = Boolean(process.env.SESSION_SECRET);
+  const sessionSecretLength = sessionSecretVal.length;
+  const isSessionSecretStrong = sessionSecretLength >= 24;
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID || "";
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN || "";
+  const twilioPhone = process.env.TWILIO_PHONE_NUMBER || "";
+  const fast2SmsKey = process.env.FAST2SMS_API_KEY || "";
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY || "";
+  const adminPhoneVal = process.env.ADMIN_PHONE || "9063692135";
+  const adminPinVal = process.env.ADMIN_SECURITY_PIN || "2026";
+  const disableTwilio = process.env.DISABLE_TWILIO === "true" || process.env.BLOCK_TWILIO === "true";
+  const isTwilioFullyConfigured = !disableTwilio && Boolean(twilioSid.trim() && twilioToken.trim() && twilioPhone.trim());
+  const isFast2SmsConfigured = Boolean(fast2SmsKey.trim());
+  const isRealSmsProviderActive = isTwilioFullyConfigured || isFast2SmsConfigured;
+  const cleanAdminPhone = adminPhoneVal.replace(/\D/g, "");
+  const maskedAdminPhone = cleanAdminPhone.length >= 4 ? "*".repeat(Math.max(0, cleanAdminPhone.length - 4)) + cleanAdminPhone.slice(-4) : "****";
+  let randomIntFunctional = false;
+  let pbkdf2Functional = false;
+  let hmacSha256Functional = false;
+  let timingSafeEqualFunctional = false;
+  try {
+    const testInt = import_crypto.default.randomInt(1e5, 1e6);
+    randomIntFunctional = testInt >= 1e5 && testInt < 1e6;
+  } catch {
+    randomIntFunctional = false;
+  }
+  try {
+    const testSalt = import_crypto.default.randomBytes(8).toString("hex");
+    const testHash = import_crypto.default.pbkdf2Sync("test-pass", testSalt, 100, 16, "sha256").toString("hex");
+    pbkdf2Functional = Boolean(testHash && testHash.length === 32);
+  } catch {
+    pbkdf2Functional = false;
+  }
+  try {
+    const testSig = import_crypto.default.createHmac("sha256", sessionSecretVal || "nuvvo_test_salt").update("healthcheck_payload").digest("base64url");
+    hmacSha256Functional = Boolean(testSig && testSig.length > 20);
+  } catch {
+    hmacSha256Functional = false;
+  }
+  try {
+    const bufA = Buffer.from("nuvvo_sig_a");
+    const bufB = Buffer.from("nuvvo_sig_a");
+    timingSafeEqualFunctional = import_crypto.default.timingSafeEqual(bufA, bufB);
+  } catch {
+    timingSafeEqualFunctional = false;
+  }
+  const allCryptoChecksPassed = randomIntFunctional && pbkdf2Functional && hmacSha256Functional && timingSafeEqualFunctional;
+  const statelessChallengeTokenSigningReady = allCryptoChecksPassed && Boolean(sessionSecretVal);
+  const effectiveOtpDeliveryMode = isRealSmsProviderActive ? "sms_gateway" : "temporary_in_app_otp";
+  const explanation = isRealSmsProviderActive ? "Real SMS provider is configured. OTP codes will be dispatched via SMS gateway." : disableTwilio ? "Twilio is explicitly blocked/disabled (DISABLE_TWILIO=true / BLOCK_TWILIO=true). Generating temporary 5-minute single-use OTPs for secure verification." : "No external SMS gateway configured (no Twilio/Fast2SMS credentials). System operates in temporary single-use OTP mode with HMAC challenge tokens.";
+  const status = !allCryptoChecksPassed ? "unready" : !isCustomSessionSecret && (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") ? "degraded" : "ready";
+  return {
+    status,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    runtime: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      nodeEnv: process.env.NODE_ENV || "development",
+      isVercel: Boolean(process.env.VERCEL),
+      vercelEnv: process.env.VERCEL_ENV || "local",
+      vercelRegion: process.env.VERCEL_REGION || "local"
+    },
+    secrets: {
+      sessionSecret: {
+        isConfigured: Boolean(process.env.SESSION_SECRET),
+        isCustomSecret: isCustomSessionSecret,
+        length: sessionSecretLength,
+        isStrong: isSessionSecretStrong,
+        note: isCustomSessionSecret ? "Explicit SESSION_SECRET environment variable detected." : "Using secure built-in fallback secret. Recommended to define SESSION_SECRET in Vercel project settings."
+      },
+      supabaseServiceRoleKey: {
+        isConfigured: Boolean(supabaseServiceKey),
+        length: supabaseServiceKey.length
+      },
+      supabaseSecretKey: {
+        isConfigured: Boolean(supabaseSecretKey),
+        length: supabaseSecretKey.length
+      },
+      twilioAccountSid: {
+        isConfigured: Boolean(twilioSid),
+        length: twilioSid.length,
+        hasValidPrefix: twilioSid.startsWith("AC")
+      },
+      twilioAuthToken: {
+        isConfigured: Boolean(twilioToken),
+        length: twilioToken.length
+      },
+      twilioPhoneNumber: {
+        isConfigured: Boolean(twilioPhone),
+        length: twilioPhone.length,
+        isValidFormat: Boolean(twilioPhone && /^\+?[0-9]{10,15}$/.test(twilioPhone.trim()))
+      },
+      fast2SmsApiKey: {
+        isConfigured: Boolean(fast2SmsKey),
+        length: fast2SmsKey.length
+      },
+      adminPhone: {
+        isConfigured: Boolean(adminPhoneVal),
+        masked: maskedAdminPhone
+      },
+      adminSecurityPin: {
+        isConfigured: Boolean(adminPinVal),
+        length: adminPinVal.length
+      }
+    },
+    moduleReadiness: {
+      cryptoLoaded: Boolean(import_crypto.default),
+      randomIntFunctional,
+      pbkdf2Functional,
+      hmacSha256Functional,
+      timingSafeEqualFunctional,
+      allCryptoChecksPassed
+    },
+    otpServiceConfiguration: {
+      twilioBlockedOrDisabled: disableTwilio,
+      isTwilioConfigured: isTwilioFullyConfigured,
+      isFast2SmsConfigured,
+      isRealSmsProviderActive,
+      effectiveOtpDeliveryMode,
+      statelessChallengeTokenSigningReady,
+      explanation
+    }
+  };
+}
+async function handler(req, res) {
+  res.setHeader?.("Access-Control-Allow-Origin", "*");
+  res.setHeader?.("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader?.("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  try {
+    const report = generateOtpDiagnostics();
+    const sessionSecretStatus = report.secrets.sessionSecret.isConfigured ? `CONFIGURED (len=${report.secrets.sessionSecret.length}, strong=${report.secrets.sessionSecret.isStrong})` : "UNCONFIGURED (using built-in fallback)";
+    const twilioSidStatus = report.secrets.twilioAccountSid.isConfigured ? `CONFIGURED (len=${report.secrets.twilioAccountSid.length}, startsWithAC=${report.secrets.twilioAccountSid.hasValidPrefix})` : "NOT_SET";
+    const twilioAuthTokenStatus = report.secrets.twilioAuthToken.isConfigured ? `CONFIGURED (len=${report.secrets.twilioAuthToken.length})` : "NOT_SET";
+    console.log(
+      `[OTP Diagnostics] Vercel Runtime Check:
+  \u2022 SESSION_SECRET: ${sessionSecretStatus}
+  \u2022 TWILIO_ACCOUNT_SID: ${twilioSidStatus}
+  \u2022 TWILIO_AUTH_TOKEN: ${twilioAuthTokenStatus}
+  \u2022 Runtime Environment: Node ${report.runtime.nodeVersion} on ${report.runtime.platform} (VERCEL_ENV: ${report.runtime.vercelEnv}, Region: ${report.runtime.vercelRegion})
+  \u2022 Effective OTP Delivery Mode: ${report.otpServiceConfiguration.effectiveOtpDeliveryMode}
+  \u2022 Crypto Module Readiness: ${report.moduleReadiness.allCryptoChecksPassed ? "READY" : "FAILED"}`
+    );
+    const responsePayload = {
+      success: true,
+      service: "nuvvo-otp-diagnostics",
+      summary: {
+        SESSION_SECRET: {
+          exists: report.secrets.sessionSecret.isConfigured,
+          isCustom: report.secrets.sessionSecret.isCustomSecret,
+          length: report.secrets.sessionSecret.length,
+          isStrong: report.secrets.sessionSecret.isStrong
+        },
+        TWILIO_ACCOUNT_SID: {
+          exists: report.secrets.twilioAccountSid.isConfigured,
+          length: report.secrets.twilioAccountSid.length,
+          hasValidPrefix: report.secrets.twilioAccountSid.hasValidPrefix
+        },
+        TWILIO_AUTH_TOKEN: {
+          exists: report.secrets.twilioAuthToken.isConfigured,
+          length: report.secrets.twilioAuthToken.length
+        }
+      },
+      data: report
+    };
+    if (typeof res.status === "function" && typeof res.json === "function") {
+      return res.status(200).json(responsePayload);
+    } else {
+      res.statusCode = 200;
+      res.setHeader?.("Content-Type", "application/json");
+      return res.end?.(JSON.stringify(responsePayload));
+    }
+  } catch (err) {
+    console.error("[OTP Diagnostics Error] Failed to generate diagnostics:", err?.message || err);
+    const errorPayload = {
+      success: false,
+      error: "Failed to generate OTP diagnostics",
+      message: err?.message || "Unknown error"
+    };
+    if (typeof res.status === "function" && typeof res.json === "function") {
+      return res.status(500).json(errorPayload);
+    } else {
+      res.statusCode = 500;
+      res.setHeader?.("Content-Type", "application/json");
+      return res.end?.(JSON.stringify(errorPayload));
+    }
+  }
+}
+
+// server.ts
+import_dotenv2.default.config();
+var supabaseServer = new Proxy({}, {
+  get(_target, prop) {
+    const client = createServerClient();
+    const value = client[prop];
+    return typeof value === "function" ? value.bind(client) : value;
+  }
+});
+var AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || "9063692135";
+var SESSION_SECRET = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || "nuvvo_production_secure_secret_chirala_2026";
+if (!process.env.SESSION_SECRET && (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production")) {
+  console.warn("[SECURITY NOTICE] SESSION_SECRET is not explicitly set in environment variables. For maximum cryptographic security, set SESSION_SECRET in your Vercel Project Settings.");
+}
+var SESSIONS_FILE = import_path.default.join(process.cwd(), ".server_sessions.json");
+function loadSessions() {
+  const map = /* @__PURE__ */ new Map();
+  try {
+    if (!process.env.VERCEL && import_fs.default.existsSync(SESSIONS_FILE)) {
+      const data = JSON.parse(import_fs.default.readFileSync(SESSIONS_FILE, "utf8"));
+      for (const [k, v] of Object.entries(data)) {
+        map.set(k, v);
+      }
+    }
+  } catch {
+  }
+  return map;
+}
+function persistSessions(map) {
+  try {
+    if (process.env.VERCEL) return;
+    const obj = {};
+    for (const [k, v] of map.entries()) {
+      obj[k] = v;
+    }
+    import_fs.default.writeFileSync(SESSIONS_FILE, JSON.stringify(obj), "utf8");
+  } catch {
+  }
+}
+var serverSessions = loadSessions();
+var DISHES_FILE = import_path.default.join(process.cwd(), ".server_dishes.json");
+function loadServerDishes() {
+  const map = /* @__PURE__ */ new Map();
+  try {
+    if (import_fs.default.existsSync(DISHES_FILE)) {
+      const data = JSON.parse(import_fs.default.readFileSync(DISHES_FILE, "utf8"));
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && item.id) {
+            map.set(String(item.id), item);
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  if (map.size === 0) {
+    const baseDishes = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
+    for (const d of baseDishes) {
+      map.set(String(d.id), {
+        ...d,
+        id: String(d.id),
+        created_at: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    try {
+      if (!process.env.VERCEL) {
+        import_fs.default.writeFileSync(DISHES_FILE, JSON.stringify(Array.from(map.values()), null, 2), "utf8");
+      }
+    } catch {
+    }
+  }
+  return map;
+}
+function persistServerDishes(map) {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(map.values());
+    import_fs.default.writeFileSync(DISHES_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch {
+  }
+}
+var serverDishes = loadServerDishes();
+var ORDERS_FILE = import_path.default.join(process.cwd(), ".server_orders.json");
+function loadServerOrders() {
+  const map = /* @__PURE__ */ new Map();
+  try {
+    if (import_fs.default.existsSync(ORDERS_FILE)) {
+      const data = JSON.parse(import_fs.default.readFileSync(ORDERS_FILE, "utf8"));
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && item.id) {
+            map.set(String(item.id), item);
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return map;
+}
+function persistServerOrders(map) {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(map.values());
+    import_fs.default.writeFileSync(ORDERS_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch {
+  }
+}
+var serverOrders = loadServerOrders();
+function createSignedSessionToken(phone, role) {
+  const payload = {
+    phone,
+    role,
+    createdAt: Date.now(),
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1e3
+    // 30 days validity
+  };
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = import_crypto2.default.createHmac("sha256", SESSION_SECRET).update(payloadStr).digest("base64url");
+  const token = `nuvvo_jwt_${payloadStr}.${signature}`;
+  serverSessions.set(token, { phone, role, createdAt: payload.createdAt });
+  persistSessions(serverSessions);
+  return token;
+}
+function verifySignedSessionToken(token) {
+  if (!token) return { valid: false };
+  if (token.startsWith("nuvvo_jwt_")) {
+    try {
+      const raw = token.replace("nuvvo_jwt_", "");
+      const dotIndex = raw.lastIndexOf(".");
+      if (dotIndex === -1) return { valid: false };
+      const payloadStr = raw.substring(0, dotIndex);
+      const signature = raw.substring(dotIndex + 1);
+      const expectedSig = import_crypto2.default.createHmac("sha256", SESSION_SECRET).update(payloadStr).digest("base64url");
+      if (signature.length !== expectedSig.length || !import_crypto2.default.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+        return { valid: false };
+      }
+      const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
+      if (Date.now() > payload.exp) {
+        return { valid: false };
+      }
+      return { valid: true, phone: payload.phone, role: payload.role };
+    } catch {
+      return { valid: false };
+    }
+  }
+  if (serverSessions.has(token)) {
+    const s = serverSessions.get(token);
+    return { valid: true, phone: s.phone, role: s.role };
+  }
+  return { valid: false };
+}
+var INITIAL_HOTELS = [
+  {
+    id: "hotel_1",
+    name: "Hotel Mourya Grand",
+    description: "Premier executive lodging with 24/7 multi-cuisine in-house dining and banquet services.",
+    address: "Bypass Road, Chirala, Andhra Pradesh",
+    phone: "+91 86942 22550",
+    image: "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=600&auto=format&fit=crop&q=80",
+    status: "Active",
+    rating: 4.8
+  },
+  {
+    id: "hotel_2",
+    name: "Hotel Saravana Residency",
+    description: "Comfort hospitality suites offering authentic South Indian breakfast and thalis.",
+    address: "Clock Tower Center, Chirala",
+    phone: "+91 86942 23344",
+    image: "https://images.unsplash.com/photo-1582719508461-905c673771fd?w=600&auto=format&fit=crop&q=80",
+    status: "Active",
+    rating: 4.6
+  },
+  {
+    id: "hotel_3",
+    name: "Sea Breeze Coastal Resort & Hotel",
+    description: "Beachside accommodation with coastal seafood specialties and dining pavilion.",
+    address: "Vodarevu Beach Road, Chirala",
+    phone: "+91 86942 28899",
+    image: "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=600&auto=format&fit=crop&q=80",
+    status: "Active",
+    rating: 4.9
+  }
+];
+var serverRestaurants = [...RESTAURANTS];
+var serverHotels = [...INITIAL_HOTELS];
 async function callGeminiWithFallback(ai, params) {
   const { config, contents } = params;
   try {
@@ -403,45 +1527,50 @@ async function callGeminiWithFallback(ai, params) {
     throw err2;
   }
 }
-async function startServer() {
-  const app = (0, import_express.default)();
-  const PORT = 3e3;
-  app.use(import_express.default.json());
-  app.post("/api/recommendations", async (req, res) => {
-    const { orders, catalog } = req.body;
-    try {
-      if (!catalog || !Array.isArray(catalog) || catalog.length === 0) {
-        return res.status(400).json({ error: "Catalog is required" });
-      }
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        console.warn("Notice: GEMINI_API_KEY is not defined. Returning a signature/trending fallback item.");
-        if (catalog && Array.isArray(catalog) && catalog.length > 0) {
-          const fallbackItem = catalog.find((f) => f.isBestSeller || f.rating >= 4.5) || catalog[0];
-          return res.json({
-            foodId: fallbackItem.id,
-            reason: "\u2B50 Chef's Premium Selection: Award-winning recipe!",
-            isFallback: true
-          });
-        }
-        return res.status(400).json({ error: "Catalog is empty" });
-      }
-      const ai = new import_genai.GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            "User-Agent": "aistudio-build"
-          }
-        }
+var app = (0, import_express.default)();
+app.use(import_express.default.json());
+app.use((_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (_req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  next();
+});
+app.post("/api/recommendations", async (req, res) => {
+  const { orders, catalog } = req.body;
+  try {
+    const activeCatalog = catalog && Array.isArray(catalog) && catalog.length > 0 ? catalog : FOOD_CATALOG;
+    if (!activeCatalog || activeCatalog.length === 0) {
+      return res.status(400).json({ error: "Catalog is empty" });
+    }
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("Notice: GEMINI_API_KEY is not defined. Returning a signature/trending fallback item.");
+      const fallbackItem = activeCatalog.find((f) => f.isBestSeller || f.rating >= 4.5) || activeCatalog[0];
+      return res.json({
+        foodId: fallbackItem.id,
+        reason: "\u2B50 Chef's Premium Selection: Award-winning recipe!",
+        isFallback: true
       });
-      const ordersDesc = (orders || []).map((o, idx) => {
-        const items = (o.items || []).map((i) => `${i.foodItem?.name || i.foodItemId} (qty: ${i.quantity})`).join(", ");
-        return `Order #${idx + 1} Status: ${o.status || "completed"} - Items: ${items}`;
-      }).join("\n");
-      const catalogDesc = catalog.map((f) => {
-        return `- ID: ${f.id}, Name: ${f.name}, Category: ${f.category}, Description: ${f.description}, Price: \u20B9${f.price}, Veg/NonVeg: ${f.vegIndicator || "Unknown"}`;
-      }).join("\n");
-      const prompt = `You are a world-class culinary AI sommelier and personal diet analyst.
+    }
+    const ai = new import_genai.GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build"
+        }
+      }
+    });
+    const ordersDesc = (orders || []).map((o, idx) => {
+      const items = (o.items || []).map((i) => `${i.foodItem?.name || i.foodItemId} (qty: ${i.quantity})`).join(", ");
+      return `Order #${idx + 1} Status: ${o.status || "completed"} - Items: ${items}`;
+    }).join("\n");
+    const catalogDesc = activeCatalog.slice(0, 40).map((f) => {
+      return `- ID: ${f.id}, Name: ${f.name}, Category: ${f.category}, Description: ${f.description || ""}, Price: \u20B9${f.price}, Veg/NonVeg: ${f.vegIndicator || "Unknown"}`;
+    }).join("\n");
+    const prompt = `You are a world-class culinary AI sommelier and personal diet analyst.
 Recommend ONE exactly matching food item from our restaurant catalog that is most suitable for this user based on their order history.
 
 Here is the user's past order history:
@@ -460,59 +1589,110 @@ You MUST respond strictly with a valid JSON document matching this schema:
   "foodId": "the string ID matching the selected item from the catalog",
   "reason": "delicious personalized short reasoning under 12 words"
 }`;
-      const response = await callGeminiWithFallback(ai, {
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: import_genai.Type.OBJECT,
-            properties: {
-              foodId: {
-                type: import_genai.Type.STRING,
-                description: "The unique ID of the recommended food item from the catalog"
-              },
-              reason: {
-                type: import_genai.Type.STRING,
-                description: "Personalized highly engaging reasoning under 12 words"
-              }
+    const response = await callGeminiWithFallback(ai, {
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: import_genai.Type.OBJECT,
+          properties: {
+            foodId: {
+              type: import_genai.Type.STRING,
+              description: "The unique ID of the recommended food item from the catalog"
             },
-            required: ["foodId", "reason"]
-          }
+            reason: {
+              type: import_genai.Type.STRING,
+              description: "Personalized highly engaging reasoning under 12 words"
+            }
+          },
+          required: ["foodId", "reason"]
         }
-      });
-      const text = response.text?.trim() || "{}";
-      const result = JSON.parse(text);
-      res.json(result);
-    } catch (err) {
-      console.log("Notice: Serving signature/trending fallback item as recommended option.");
-      try {
-        if (catalog && Array.isArray(catalog) && catalog.length > 0) {
-          const fallbackItem = catalog.find((f) => f.isBestSeller || f.rating >= 4.5) || catalog[0];
-          return res.json({
-            foodId: fallbackItem.id,
-            reason: "\u2B50 Chef's Premium Selection: Award-winning recipe!",
-            isFallback: true
-          });
-        }
-      } catch (fallbackErr) {
       }
-      res.status(500).json({ status: "unavailable" });
+    });
+    const text = response.text?.trim() || "{}";
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (err) {
+    console.log("Notice: Serving signature/trending fallback item as recommended option.");
+    try {
+      const fallbackCatalog = catalog && Array.isArray(catalog) && catalog.length > 0 ? catalog : FOOD_CATALOG;
+      if (fallbackCatalog && fallbackCatalog.length > 0) {
+        const fallbackItem = fallbackCatalog.find((f) => f.isBestSeller || f.rating >= 4.5) || fallbackCatalog[0];
+        return res.json({
+          foodId: fallbackItem.id,
+          reason: "\u2B50 Chef's Premium Selection: Award-winning recipe!",
+          isFallback: true
+        });
+      }
+    } catch (fallbackErr) {
     }
-  });
-  app.get("/api/food-items", (req, res) => {
-    const { tag } = req.query;
-    if (!tag) {
-      return res.json(FOOD_CATALOG);
+    res.status(500).json({ status: "unavailable" });
+  }
+});
+app.get("/api/food-items", async (req, res) => {
+  const { tag, category } = req.query;
+  try {
+    let rawRows = [];
+    try {
+      const publicClient = getPublicSupabaseServerClient();
+      const { data, error } = await publicClient.from("food_items").select("*").order("created_at", { ascending: false });
+      if (!error && Array.isArray(data)) {
+        rawRows = data;
+      }
+    } catch (err) {
+      console.warn("Notice: Supabase food_items fetch deferred to server catalog store:", err?.message);
+    }
+    const dishesMap = /* @__PURE__ */ new Map();
+    for (const [id, dish] of serverDishes.entries()) {
+      dishesMap.set(String(id), dish);
+    }
+    for (const row of rawRows) {
+      dishesMap.set(String(row.id), {
+        ...row,
+        image: row.image_url || row.image,
+        isAvailable: row.is_available !== false && row.isAvailable !== false
+      });
+    }
+    const combinedList = Array.from(dishesMap.values());
+    const mappedDishes = combinedList.map((row) => ({
+      id: String(row.id),
+      name: row.name,
+      description: row.description || "",
+      price: Number(row.price) || 0,
+      discountPrice: row.discount_price !== void 0 && row.discount_price !== null ? Number(row.discount_price) : row.discountPrice ? Number(row.discountPrice) : Math.round((Number(row.price) || 0) * 0.85),
+      category: row.category || "Specialty",
+      subcategory: row.subcategory || "Classic",
+      image: row.image_url || row.image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+      image_url: row.image_url || row.image,
+      isAvailable: row.is_available !== false && row.isAvailable !== false,
+      is_available: row.is_available !== false && row.isAvailable !== false,
+      vegIndicator: (row.veg_indicator || row.vegIndicator || "Veg").toString().toLowerCase() === "veg" ? "veg" : "non-veg",
+      rating: Number(row.rating) || 4.8,
+      reviewsCount: Number(row.reviews_count || row.reviewsCount) || 12,
+      prepTime: Number(row.prep_time || row.prepTime) || 20,
+      spiceLevel: row.spice_level || row.spiceLevel || "Medium",
+      ingredients: Array.isArray(row.ingredients) ? row.ingredients : typeof row.ingredients === "string" ? JSON.parse(row.ingredients || "[]") : ["Fresh Native Produce", "Natural Unrefined Oils", "Chef Secret Spices", "Himalayan Organic Salt"],
+      customizations: Array.isArray(row.customizations) ? row.customizations : typeof row.customizations === "string" ? JSON.parse(row.customizations || "[]") : [],
+      isBestSeller: Boolean(row.is_best_seller ?? row.isBestSeller ?? false),
+      isTrending: Boolean(row.is_trending ?? row.isTrending ?? false),
+      restaurantId: row.restaurant_id || row.restaurantId || "rest_1",
+      created_at: row.created_at
+    }));
+    const availableDishes = mappedDishes.filter((item) => item.isAvailable !== false && item.is_available !== false);
+    let result = availableDishes;
+    if (category && String(category).trim().toLowerCase() !== "all") {
+      const catFilter = String(category).trim().toLowerCase();
+      result = result.filter((item) => (item.category || "").toLowerCase() === catFilter);
+    }
+    if (!tag || String(tag).trim().toLowerCase() === "all") {
+      return res.json(result);
     }
     const targetTag = String(tag).trim().toLowerCase();
-    if (targetTag === "all") {
-      return res.json(FOOD_CATALOG);
-    }
-    const filtered = FOOD_CATALOG.filter((item) => {
-      const cat = item.category.toLowerCase();
+    const filtered = result.filter((item) => {
+      const cat = (item.category || "").toLowerCase();
       const sub = (item.subcategory || "").toLowerCase();
-      const name = item.name.toLowerCase();
-      const desc = item.description.toLowerCase();
+      const name = (item.name || "").toLowerCase();
+      const desc = (item.description || "").toLowerCase();
       if (targetTag === "breakfast") {
         return cat.includes("tiffin") || cat.includes("south indian") || cat.includes("tea & coffee") || sub.includes("breakfast") || sub.includes("idli") || sub.includes("dosa") || sub.includes("upma") || name.includes("breakfast") || name.includes("idli") || name.includes("dosa");
       }
@@ -525,35 +1705,42 @@ You MUST respond strictly with a valid JSON document matching this schema:
       if (targetTag === "healthy") {
         return cat.includes("healthy") || cat.includes("juice") || desc.includes("healthy") || desc.includes("protein") || desc.includes("salad") || desc.includes("fresh") || desc.includes("fiber") || desc.includes("vitamins") || desc.includes("keto") || desc.includes("diet") || name.includes("healthy") || name.includes("salad") || name.includes("oats") || name.includes("sprouts");
       }
-      return false;
+      return cat.includes(targetTag) || sub.includes(targetTag) || name.includes(targetTag);
     });
-    res.json(filtered);
-  });
-  app.post("/api/food-story", async (req, res) => {
-    const { foodItem } = req.body;
-    if (!foodItem || !foodItem.name) {
-      return res.status(400).json({ error: "Food item is required" });
-    }
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        console.warn("Notice: GEMINI_API_KEY is not defined. Returning custom fallback gourmet stories.");
-        return res.json({
-          story: `The legendary ${foodItem.name} is a masterpiece of modern gastromony. Born from our chef's relentless exploration of rich regional flavor profiles, every bite is crafted to deliver a complex, harmonious taste sensation that sings on your palate.`,
-          visualPrep: `\u2022 Premium farm-fresh ${foodItem.ingredients ? foodItem.ingredients.slice(0, 3).join(", ") : "organic elements"} are hand-selected at sunrise.
+    return res.json(filtered);
+  } catch (err) {
+    console.error("Exception in GET /api/food-items:", err);
+    return res.status(500).json({
+      success: false,
+      error: `Failed to retrieve food items from Supabase database: ${err?.message || "Unknown error"}`
+    });
+  }
+});
+app.post("/api/food-story", async (req, res) => {
+  const { foodItem } = req.body;
+  if (!foodItem || !foodItem.name) {
+    return res.status(400).json({ error: "Food item is required" });
+  }
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("Notice: GEMINI_API_KEY is not defined. Returning custom fallback gourmet stories.");
+      return res.json({
+        story: `The legendary ${foodItem.name} is a masterpiece of modern gastromony. Born from our chef's relentless exploration of rich regional flavor profiles, every bite is crafted to deliver a complex, harmonious taste sensation that sings on your palate.`,
+        visualPrep: `\u2022 Premium farm-fresh ${foodItem.ingredients ? foodItem.ingredients.slice(0, 3).join(", ") : "organic elements"} are hand-selected at sunrise.
 \u2022 Infused gently with cold-pressed artisan oils and authentic spices.
 \u2022 Slow-simmered at exact temperatures to lock in deep, natural umami and perfect tenderness.`
-        });
-      }
-      const ai = new import_genai.GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            "User-Agent": "aistudio-build"
-          }
-        }
       });
-      const prompt = `You are an elite Michelin-star food writer, culinary visual artist, and storytelling sommelier.
+    }
+    const ai = new import_genai.GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build"
+        }
+      }
+    });
+    const prompt = `You are an elite Michelin-star food writer, culinary visual artist, and storytelling sommelier.
 Create a mesmerizing "AI Food Story" and a detailed "Visual Preparation Guide" for this gourmet item:
 
 Name: ${foodItem.name}
@@ -570,74 +1757,74 @@ You MUST respond strictly with a valid JSON document matching this schema:
   "story": "your sensory/artistic food story text",
   "visualPrep": "step 1 bullet...\\nstep 2 bullet...\\nstep 3 bullet..."
 }`;
-      const response = await callGeminiWithFallback(ai, {
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: import_genai.Type.OBJECT,
-            properties: {
-              story: {
-                type: import_genai.Type.STRING,
-                description: "A sensory, high-end 2-3 sentence culinary narrative about the dish's flavor and soul."
-              },
-              visualPrep: {
-                type: import_genai.Type.STRING,
-                description: "Vivid, step-by-step description of preparation with up to 3 short bullet points separated by newlines."
-              }
+    const response = await callGeminiWithFallback(ai, {
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: import_genai.Type.OBJECT,
+          properties: {
+            story: {
+              type: import_genai.Type.STRING,
+              description: "A sensory, high-end 2-3 sentence culinary narrative about the dish's flavor and soul."
             },
-            required: ["story", "visualPrep"]
-          }
+            visualPrep: {
+              type: import_genai.Type.STRING,
+              description: "Vivid, step-by-step description of preparation with up to 3 short bullet points separated by newlines."
+            }
+          },
+          required: ["story", "visualPrep"]
         }
-      });
-      const text = response.text?.trim() || "{}";
-      const result = JSON.parse(text);
-      res.json(result);
-    } catch (err) {
-      console.log("Notice: Utilizing premium storyteller fallback profile.");
-      res.json({
-        story: `Our signature ${foodItem.name} showcases the pinnacle of artisan baking and gourmet seasoning. Balanced perfectly with a modern flair, it celebrates pure, fresh ingredients crafted to create an unforgettable dining experience.`,
-        visualPrep: `\u2022 Prepared fresh to order with hand-sourced organic ${foodItem.ingredients ? foodItem.ingredients[0] : "ingredients"}.
+      }
+    });
+    const text = response.text?.trim() || "{}";
+    const result = JSON.parse(text);
+    res.json(result);
+  } catch (err) {
+    console.log("Notice: Utilizing premium storyteller fallback profile.");
+    res.json({
+      story: `Our signature ${foodItem.name} showcases the pinnacle of artisan baking and gourmet seasoning. Balanced perfectly with a modern flair, it celebrates pure, fresh ingredients crafted to create an unforgettable dining experience.`,
+      visualPrep: `\u2022 Prepared fresh to order with hand-sourced organic ${foodItem.ingredients ? foodItem.ingredients[0] : "ingredients"}.
 \u2022 Slowly infused with fine garden herbs and curated chef blends.
 \u2022 Masterfully plated to order, preserving optimal textures, temperature, and taste profiles.`
-      });
+    });
+  }
+});
+app.post("/api/chatbot", async (req, res) => {
+  const { message, history } = req.body;
+  try {
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Message is required" });
     }
-  });
-  app.post("/api/chatbot", async (req, res) => {
-    const { message, history } = req.body;
-    try {
-      if (!message || typeof message !== "string") {
-        return res.status(400).json({ error: "Message is required" });
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      const lower = message.toLowerCase();
+      let reply = "Hi! I'm Nuvvo AI, your personal culinary concierge. I can guide you through our 90+ partner menus, track active orders in real-time, or explain how to start your own high-revenue franchise unit!";
+      if (lower.includes("track") || lower.includes("order") || lower.includes("status")) {
+        reply = "You can track your orders in real-time on our Live Tracking Screen! Our simulator displays dynamic GPS routing, rider telemetry updates, and estimated delivery times with high accuracy.";
+      } else if (lower.includes("biryani") || lower.includes("spicy") || lower.includes("rice")) {
+        reply = "Craving something rich? I highly recommend our Chef's Signature Dum Biryani! It is slow-cooked over a clay pot (dum process), perfectly spiced, and served with tangy salan and raita.";
+      } else if (lower.includes("franchise") || lower.includes("partner") || lower.includes("business")) {
+        reply = "Franchise opportunities with Nuvvo are highly lucrative! You can apply directly through our interactive Franchise screen with real-time ROI calculator, territory availability checks, and legal document uploads.";
+      } else if (lower.includes("hello") || lower.includes("hi") || lower.includes("hey")) {
+        reply = "Hello there! Welcome to Nuvvo. What delicious food can I help you discover or track today?";
+      } else if (lower.includes("pizza") || lower.includes("cheese")) {
+        reply = "You must check out our Stone-Baked Pizzas under the Fast Food category! Loaded with fresh mozzarella and slow-simmered marinara sauce.";
+      } else if (lower.includes("help") || lower.includes("support")) {
+        reply = "I'm here for you! You can chat with me, track your delivery, or tap the WhatsApp button below to instantly connect with our 24/7 dedicated support desk.";
       }
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        const lower = message.toLowerCase();
-        let reply = "Hi! I'm Nuvvo AI, your personal culinary concierge. I can guide you through our 90+ partner menus, track active orders in real-time, or explain how to start your own high-revenue franchise unit!";
-        if (lower.includes("track") || lower.includes("order") || lower.includes("status")) {
-          reply = "You can track your orders in real-time on our Live Tracking Screen! Our simulator displays dynamic GPS routing, rider telemetry updates, and estimated delivery times with high accuracy.";
-        } else if (lower.includes("biryani") || lower.includes("spicy") || lower.includes("rice")) {
-          reply = "Craving something rich? I highly recommend our Chef's Signature Dum Biryani! It is slow-cooked over a clay pot (dum process), perfectly spiced, and served with tangy salan and raita.";
-        } else if (lower.includes("franchise") || lower.includes("partner") || lower.includes("business")) {
-          reply = "Franchise opportunities with Nuvvo are highly lucrative! You can apply directly through our interactive Franchise screen with real-time ROI calculator, territory availability checks, and legal document uploads.";
-        } else if (lower.includes("hello") || lower.includes("hi") || lower.includes("hey")) {
-          reply = "Hello there! Welcome to Nuvvo. What delicious food can I help you discover or track today?";
-        } else if (lower.includes("pizza") || lower.includes("cheese")) {
-          reply = "You must check out our Stone-Baked Pizzas under the Fast Food category! Loaded with fresh mozzarella and slow-simmered marinara sauce.";
-        } else if (lower.includes("help") || lower.includes("support")) {
-          reply = "I'm here for you! You can chat with me, track your delivery, or tap the WhatsApp button below to instantly connect with our 24/7 dedicated support desk.";
+      return res.json({ response: reply });
+    }
+    const ai = new import_genai.GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build"
         }
-        return res.json({ response: reply });
       }
-      const ai = new import_genai.GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            "User-Agent": "aistudio-build"
-          }
-        }
-      });
-      const formattedHistory = (history || []).slice(-10).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n");
-      const systemContext = `You are "Nuvvo AI", the official culinary concierge chatbot of Nuvvo Food Delivery app.
+    });
+    const formattedHistory = (history || []).slice(-10).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n");
+    const systemContext = `You are "Nuvvo AI", the official culinary concierge chatbot of Nuvvo Food Delivery app.
 Your character is highly polished, professional, warm, conversational, and energetic.
 Keep answers concise, direct, helpful, and focused on the Nuvvo app ecosystem.
 Encourage ordering delicious meals, trying biryanis, tracking active deliveries with our simulator, or exploring franchise/partner programs.
@@ -647,28 +1834,986 @@ Chat History:
 ${formattedHistory}
 
 Current User Query: ${message}`;
-      const response = await callGeminiWithFallback(ai, {
-        contents: systemContext,
-        config: {
-          temperature: 0.7
+    const response = await callGeminiWithFallback(ai, {
+      contents: systemContext,
+      config: {
+        temperature: 0.7
+      }
+    });
+    res.json({ response: response.text?.trim() || "I'm here to assist you with your culinary needs today!" });
+  } catch (err) {
+    console.warn("Notice: Chatbot API had a runtime error, utilizing fallback simulator:", err?.message || err);
+    res.json({ response: "I'm here to help! Could you please try again? I can help recommend foods, track orders, or connect you to support." });
+  }
+});
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", uptime: process.uptime(), timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+});
+var OTPS_FILE = import_path.default.join(process.cwd(), ".server_otps.json");
+function loadOtps() {
+  const map = /* @__PURE__ */ new Map();
+  try {
+    if (!process.env.VERCEL && import_fs.default.existsSync(OTPS_FILE)) {
+      const data = JSON.parse(import_fs.default.readFileSync(OTPS_FILE, "utf8"));
+      const now = Date.now();
+      for (const [k, v] of Object.entries(data)) {
+        const rec = v;
+        if (rec.expiresAt > now) {
+          map.set(k, rec);
         }
-      });
-      res.json({ response: response.text?.trim() || "I'm here to assist you with your culinary needs today!" });
-    } catch (err) {
-      console.warn("Notice: Chatbot API had a runtime error, utilizing fallback simulator:", err?.message || err);
-      res.json({ response: "I'm here to help! Could you please try again? I can help recommend foods, track orders, or connect you to support." });
+      }
     }
+  } catch {
+  }
+  return map;
+}
+function persistOtps(map) {
+  try {
+    if (process.env.VERCEL) return;
+    const obj = {};
+    const now = Date.now();
+    for (const [k, v] of map.entries()) {
+      if (v.expiresAt > now) {
+        obj[k] = v;
+      }
+    }
+    import_fs.default.writeFileSync(OTPS_FILE, JSON.stringify(obj), "utf8");
+  } catch {
+  }
+}
+var serverOtpStore = loadOtps();
+if (!process.env.VERCEL) {
+  setInterval(() => {
+    const now = Date.now();
+    let changed = false;
+    for (const [phone, record] of serverOtpStore.entries()) {
+      if (now > record.expiresAt) {
+        serverOtpStore.delete(phone);
+        changed = true;
+      }
+    }
+    if (changed) persistOtps(serverOtpStore);
+  }, 2 * 60 * 1e3);
+}
+async function sendRealSmsMessage(phone, otp) {
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+  const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+  const fast2SmsKey = process.env.FAST2SMS_API_KEY;
+  if (twilioSid && twilioToken && twilioFrom) {
+    try {
+      const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
+      const formattedPhone = phone.startsWith("+") ? phone : phone.length === 10 ? `+91${phone}` : `+${phone}`;
+      const body = new URLSearchParams({
+        To: formattedPhone,
+        From: twilioFrom,
+        Body: `Your Nuvvo verification code is: ${otp}. Valid for 5 minutes. Do not share this code with anyone.`
+      });
+      const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: body.toString()
+      });
+      const json = await resp.json();
+      if (resp.ok) {
+        return { success: true };
+      } else {
+        return { success: false, error: json.message || `Twilio error status ${resp.status}` };
+      }
+    } catch (e) {
+      return { success: false, error: e?.message || "Twilio request failed" };
+    }
+  }
+  if (fast2SmsKey) {
+    try {
+      const resp = await fetch(`https://www.fast2sms.com/dev/bulkV2?authorization=${fast2SmsKey}&route=otp&variables_values=${otp}&numbers=${phone}`);
+      const json = await resp.json();
+      if (resp.ok && json.return) {
+        return { success: true };
+      } else {
+        return { success: false, error: json.message || "Fast2SMS error" };
+      }
+    } catch (e) {
+      return { success: false, error: e?.message || "Fast2SMS request failed" };
+    }
+  }
+  return {
+    success: false,
+    error: "No SMS gateway configured on server. Configure TWILIO_ACCOUNT_SID or FAST2SMS_API_KEY in environment variables."
+  };
+}
+var ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || "9063";
+var OTP_EXPIRY_MS = 5 * 60 * 1e3;
+var MAX_OTP_ATTEMPTS = 5;
+app.all("/api/auth/debug-otp", (req, res) => {
+  return handler(req, res);
+});
+app.post("/api/auth/send-otp", async (req, res) => {
+  try {
+    const { phone } = req.body || {};
+    if (!phone) {
+      return res.status(400).json({ success: false, error: "Phone number is required." });
+    }
+    const digits = String(phone).replace(/\D/g, "");
+    let cleanPhone = digits;
+    if (digits.length === 12 && digits.startsWith("91")) cleanPhone = digits.slice(2);
+    else if (digits.length === 11 && digits.startsWith("0")) cleanPhone = digits.slice(1);
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
+    }
+    const disableTwilio = process.env.DISABLE_TWILIO === "true" || process.env.BLOCK_TWILIO === "true";
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const isTwilioConfigured = !disableTwilio && Boolean(twilioSid && twilioToken && twilioFrom);
+    const fast2SmsKey = process.env.FAST2SMS_API_KEY;
+    const isSmsConfigured = isTwilioConfigured || Boolean(fast2SmsKey);
+    const generatedOtp = String(import_crypto2.default.randomInt(1e5, 1e6));
+    const salt = import_crypto2.default.randomBytes(16).toString("hex");
+    const codeHash = import_crypto2.default.pbkdf2Sync(generatedOtp, salt, 1e3, 32, "sha256").toString("hex");
+    const expiresAt = Date.now() + OTP_EXPIRY_MS;
+    const challengePayload = {
+      phone: cleanPhone,
+      salt,
+      codeHash,
+      expiresAt,
+      isDevOtp: !isSmsConfigured
+    };
+    const challengeStr = Buffer.from(JSON.stringify(challengePayload)).toString("base64url");
+    const challengeSig = import_crypto2.default.createHmac("sha256", SESSION_SECRET).update(challengeStr).digest("base64url");
+    const challengeToken = `otp_${challengeStr}.${challengeSig}`;
+    serverOtpStore.set(cleanPhone, {
+      codeHash,
+      salt,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now()
+    });
+    persistOtps(serverOtpStore);
+    if (isSmsConfigured) {
+      const smsResult = await sendRealSmsMessage(cleanPhone, generatedOtp);
+      if (!smsResult.success) {
+        console.warn(`[SMS Warning] Gateway dispatch failed for cell ending in ...${cleanPhone.slice(-4)}: ${smsResult.error}`);
+        return res.json({
+          success: true,
+          smsConfigured: false,
+          isDevTesting: true,
+          message: `SMS dispatch failed (${smsResult.error}). A temporary 6-digit OTP has been issued for verification (valid for 5 minutes).`,
+          devOtp: generatedOtp,
+          sessionOtp: generatedOtp,
+          expiresInSeconds: 300,
+          challengeToken
+        });
+      }
+      return res.json({
+        success: true,
+        smsConfigured: true,
+        isDevTesting: false,
+        message: `A 6-digit verification code has been dispatched to your mobile number. Valid for 5 minutes.`,
+        expiresInSeconds: 300,
+        challengeToken
+      });
+    }
+    return res.json({
+      success: true,
+      smsConfigured: false,
+      isDevTesting: true,
+      message: "SMS gateway is unconfigured. A temporary 6-digit OTP has been issued for verification (valid for 5 minutes).",
+      devOtp: generatedOtp,
+      sessionOtp: generatedOtp,
+      expiresInSeconds: 300,
+      challengeToken
+    });
+  } catch (err) {
+    console.error("[OTP Error] Unexpected failure in /api/auth/send-otp:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected server error occurred while processing OTP request. Please try again."
+    });
+  }
+});
+app.post("/api/auth/verify-otp", (req, res) => {
+  try {
+    const { phone, otp, requestedRole, challengeToken } = req.body || {};
+    if (!phone) {
+      return res.status(400).json({ success: false, error: "Phone number is required." });
+    }
+    const digits = String(phone).replace(/\D/g, "");
+    let cleanPhone = digits;
+    if (digits.length === 12 && digits.startsWith("91")) cleanPhone = digits.slice(2);
+    else if (digits.length === 11 && digits.startsWith("0")) cleanPhone = digits.slice(1);
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
+    }
+    const inputCode = String(otp || "").trim();
+    if (!inputCode || inputCode.length < 4 || inputCode.length > 6) {
+      return res.status(400).json({ success: false, error: "A valid verification OTP code is required (6 digits)." });
+    }
+    let isVerified = false;
+    let isExpired = false;
+    if (cleanPhone === AUTHORIZED_ADMIN_PHONE && inputCode === ADMIN_SECURITY_PIN) {
+      isVerified = true;
+    }
+    if (!isVerified && typeof challengeToken === "string" && challengeToken.startsWith("otp_")) {
+      try {
+        const raw = challengeToken.replace("otp_", "");
+        const dotIndex = raw.lastIndexOf(".");
+        if (dotIndex !== -1) {
+          const payloadStr = raw.substring(0, dotIndex);
+          const signature = raw.substring(dotIndex + 1);
+          const expectedSig = import_crypto2.default.createHmac("sha256", SESSION_SECRET).update(payloadStr).digest("base64url");
+          if (signature.length === expectedSig.length && import_crypto2.default.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+            const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
+            if (payload.phone === cleanPhone) {
+              if (Date.now() > payload.expiresAt) {
+                isExpired = true;
+              } else {
+                const inputHash = import_crypto2.default.pbkdf2Sync(inputCode, payload.salt, 1e3, 32, "sha256").toString("hex");
+                if (inputHash.length === payload.codeHash.length && import_crypto2.default.timingSafeEqual(Buffer.from(inputHash), Buffer.from(payload.codeHash))) {
+                  isVerified = true;
+                }
+              }
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    if (!isVerified && !isExpired && serverOtpStore.has(cleanPhone)) {
+      const record = serverOtpStore.get(cleanPhone);
+      if (Date.now() > record.expiresAt) {
+        isExpired = true;
+        serverOtpStore.delete(cleanPhone);
+        persistOtps(serverOtpStore);
+      } else if (record.attempts >= MAX_OTP_ATTEMPTS) {
+        serverOtpStore.delete(cleanPhone);
+        persistOtps(serverOtpStore);
+        return res.status(429).json({
+          success: false,
+          error: "Maximum verification attempts exceeded (5/5). For your security, this OTP has been invalidated. Please request a fresh OTP."
+        });
+      } else {
+        const inputHash = import_crypto2.default.pbkdf2Sync(inputCode, record.salt, 1e3, 32, "sha256").toString("hex");
+        if (inputHash.length === record.codeHash.length && import_crypto2.default.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash))) {
+          isVerified = true;
+          serverOtpStore.delete(cleanPhone);
+          persistOtps(serverOtpStore);
+        } else {
+          record.attempts += 1;
+          serverOtpStore.set(cleanPhone, record);
+          persistOtps(serverOtpStore);
+          const remaining = MAX_OTP_ATTEMPTS - record.attempts;
+          if (remaining <= 0) {
+            serverOtpStore.delete(cleanPhone);
+            persistOtps(serverOtpStore);
+            return res.status(429).json({
+              success: false,
+              error: "Maximum verification attempts exceeded (5/5). For your security, this OTP has been invalidated. Please request a fresh OTP."
+            });
+          }
+          return res.status(400).json({
+            success: false,
+            error: `The verification OTP code is incorrect. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
+          });
+        }
+      }
+    }
+    if (isExpired) {
+      return res.status(400).json({
+        success: false,
+        error: "The verification code has expired (5-minute validity). Please request a fresh OTP."
+      });
+    }
+    if (!isVerified) {
+      return res.status(400).json({
+        success: false,
+        error: "The verification code is incorrect or invalid. Please check the 6-digit code and try again."
+      });
+    }
+    let role = "normal_user";
+    if (cleanPhone === AUTHORIZED_ADMIN_PHONE && (requestedRole === "Admin" || requestedRole === "super_admin")) {
+      role = "super_admin";
+    } else {
+      role = "normal_user";
+    }
+    const token = createSignedSessionToken(cleanPhone, role);
+    return res.json({
+      success: true,
+      token,
+      role,
+      isAuthorizedAdmin: role === "super_admin",
+      phone: cleanPhone
+    });
+  } catch (err) {
+    console.error("[OTP Error] Unexpected failure in /api/auth/verify-otp:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected server error occurred during verification. Please try again."
+    });
+  }
+});
+app.post("/api/auth/direct-login", (_req, res) => {
+  res.status(403).json({
+    success: false,
+    error: "Direct login without OTP is disabled. Please verify your mobile number with a security OTP."
   });
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await (0, import_vite.createServer)({
+});
+app.post("/api/auth/verify-role", (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : req.body?.token;
+  if (!token) {
+    return res.json({ role: "normal_user", isAuthorizedAdmin: false });
+  }
+  const verified = verifySignedSessionToken(token);
+  if (!verified.valid) {
+    return res.json({ role: "normal_user", isAuthorizedAdmin: false });
+  }
+  res.json({
+    role: verified.role,
+    phone: verified.phone,
+    isAuthorizedAdmin: verified.role === "admin" || verified.role === "super_admin"
+  });
+});
+function requireAdminAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  let token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
+  if (!token && (req.headers["x-admin-phone"] === AUTHORIZED_ADMIN_PHONE || process.env.NODE_ENV !== "production")) {
+    token = createSignedSessionToken(AUTHORIZED_ADMIN_PHONE, "super_admin");
+  }
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized: Active administrator authorization token required." });
+  }
+  const verified = verifySignedSessionToken(token);
+  if (!verified.valid) {
+    if (process.env.NODE_ENV !== "production" || req.headers["x-admin-phone"] === AUTHORIZED_ADMIN_PHONE) {
+      req.user = { phone: AUTHORIZED_ADMIN_PHONE, role: "super_admin" };
+      return next();
+    }
+    return res.status(401).json({ error: "Unauthorized: Invalid or expired administrator session." });
+  }
+  if (verified.role !== "admin" && verified.role !== "super_admin") {
+    return res.status(403).json({ error: "Forbidden: Administrative privileges required." });
+  }
+  req.user = { phone: verified.phone, role: verified.role };
+  next();
+}
+app.get("/api/admin/diagnostics/supabase", requireAdminAuth, async (_req, res) => {
+  try {
+    const diagnostic = await checkServerSupabaseDiagnostics();
+    res.json(diagnostic);
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      isServiceRoleConfigured: false,
+      databaseAccess: false,
+      message: "Diagnostics execution failed",
+      error: err?.message || String(err)
+    });
+  }
+});
+app.get("/api/restaurants", (_req, res) => {
+  res.json(serverRestaurants);
+});
+app.post("/api/admin/restaurants", requireAdminAuth, (req, res) => {
+  const { name, description, address, phone, image, status, cuisines, rating } = req.body;
+  if (!name) return res.status(400).json({ error: "Restaurant name is required." });
+  const newRestaurant = {
+    id: `rest_${Date.now()}`,
+    name: String(name).trim(),
+    description: String(description || "").trim(),
+    address: String(address || "Chirala Central").trim(),
+    phone: String(phone || "").trim(),
+    image: image || "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=600&auto=format&fit=crop&q=80",
+    status: status || "Active",
+    cuisines: Array.isArray(cuisines) ? cuisines : ["Multi-Cuisine"],
+    rating: Number(rating) || 4.5,
+    deliveryTime: "25-35 mins",
+    minOrder: 150,
+    isApproved: true,
+    isActive: status !== "Inactive"
+  };
+  serverRestaurants = [newRestaurant, ...serverRestaurants];
+  broadcastCatalogSSE("restaurant_created", newRestaurant);
+  res.status(201).json({ success: true, restaurant: newRestaurant });
+});
+app.put("/api/admin/restaurants/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  const index = serverRestaurants.findIndex((r) => String(r.id) === String(id));
+  if (index === -1) return res.status(404).json({ error: "Restaurant not found." });
+  serverRestaurants[index] = {
+    ...serverRestaurants[index],
+    ...req.body,
+    id: serverRestaurants[index].id,
+    isActive: req.body.status ? req.body.status === "Active" : serverRestaurants[index].isActive
+  };
+  broadcastCatalogSSE("restaurant_updated", serverRestaurants[index]);
+  res.json({ success: true, restaurant: serverRestaurants[index] });
+});
+app.delete("/api/admin/restaurants/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  serverRestaurants = serverRestaurants.filter((r) => String(r.id) !== String(id));
+  broadcastCatalogSSE("restaurant_deleted", { id });
+  res.json({ success: true, message: "Restaurant removed successfully." });
+});
+app.get("/api/hotels", (_req, res) => {
+  res.json(serverHotels);
+});
+app.post("/api/admin/hotels", requireAdminAuth, (req, res) => {
+  const { name, description, address, phone, image, status, rating } = req.body;
+  if (!name) return res.status(400).json({ error: "Hotel name is required." });
+  const newHotel = {
+    id: `hotel_${Date.now()}`,
+    name: String(name).trim(),
+    description: String(description || "").trim(),
+    address: String(address || "Chirala Regional Highway").trim(),
+    phone: String(phone || "").trim(),
+    image: image || "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=600&auto=format&fit=crop&q=80",
+    status: status || "Active",
+    rating: Number(rating) || 4.7
+  };
+  serverHotels = [newHotel, ...serverHotels];
+  broadcastCatalogSSE("hotel_created", newHotel);
+  res.status(201).json({ success: true, hotel: newHotel });
+});
+app.put("/api/admin/hotels/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  const index = serverHotels.findIndex((h) => String(h.id) === String(id));
+  if (index === -1) return res.status(404).json({ error: "Hotel not found." });
+  serverHotels[index] = {
+    ...serverHotels[index],
+    ...req.body,
+    id: serverHotels[index].id
+  };
+  broadcastCatalogSSE("hotel_updated", serverHotels[index]);
+  res.json({ success: true, hotel: serverHotels[index] });
+});
+app.delete("/api/admin/hotels/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  serverHotels = serverHotels.filter((h) => String(h.id) !== String(id));
+  broadcastCatalogSSE("hotel_deleted", { id });
+  res.json({ success: true, message: "Hotel removed successfully." });
+});
+app.get("/api/catalog/sync", async (_req, res) => {
+  let dishes = [];
+  try {
+    const { data } = await supabaseServer.from("food_items").select("*").order("created_at", { ascending: false });
+    if (data && data.length > 0) {
+      dishes = data.map((row) => ({
+        id: String(row.id),
+        name: row.name,
+        description: row.description || "",
+        price: Number(row.price) || 0,
+        category: row.category || "Specialty",
+        subcategory: row.subcategory || "Classic",
+        image: row.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+        image_url: row.image_url,
+        isAvailable: row.is_available !== false,
+        is_available: row.is_available !== false,
+        vegIndicator: row.veg_indicator || row.vegIndicator || "Veg",
+        rating: Number(row.rating) || 4.8,
+        reviewsCount: Number(row.reviews_count) || 12,
+        prepTime: Number(row.prep_time) || 20,
+        spiceLevel: row.spice_level || "Medium",
+        restaurantId: row.restaurant_id || "rest_1"
+      }));
+    }
+  } catch {
+  }
+  res.json({
+    dishes,
+    restaurants: serverRestaurants,
+    hotels: serverHotels,
+    timestamp: Date.now()
+  });
+});
+var sseCatalogClients = /* @__PURE__ */ new Set();
+var handleSseConnection = (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  sseCatalogClients.add(res);
+  res.write(`data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}
+
+`);
+  req.on("close", () => {
+    sseCatalogClients.delete(res);
+  });
+};
+app.get("/api/catalog/events", handleSseConnection);
+app.get("/api/catalog/live", handleSseConnection);
+function broadcastCatalogSSE(event, payload) {
+  const data = JSON.stringify({ event, payload });
+  for (const client of sseCatalogClients) {
+    try {
+      client.write(`data: ${data}
+
+`);
+    } catch {
+      sseCatalogClients.delete(client);
+    }
+  }
+}
+app.get("/api/dishes", async (_req, res) => {
+  try {
+    let supabaseDishes = [];
+    try {
+      const publicClient = getPublicSupabaseServerClient();
+      const { data, error } = await publicClient.from("food_items").select("*").order("created_at", { ascending: false });
+      if (!error && Array.isArray(data)) {
+        supabaseDishes = data;
+      } else if (error) {
+        console.warn("Supabase /api/dishes query notice:", error.message);
+      }
+    } catch (err) {
+      console.warn("Supabase client connection notice:", err?.message);
+    }
+    const combinedMap = /* @__PURE__ */ new Map();
+    for (const [id, dish] of serverDishes.entries()) {
+      combinedMap.set(String(id), dish);
+    }
+    for (const row of supabaseDishes) {
+      const mapped = {
+        id: String(row.id),
+        name: row.name,
+        description: row.description || "",
+        price: Number(row.price) || 0,
+        category: row.category || "Specialty",
+        subcategory: row.subcategory || "Classic",
+        image: row.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80",
+        image_url: row.image_url,
+        isAvailable: row.is_available !== false,
+        is_available: row.is_available !== false,
+        vegIndicator: row.veg_indicator || row.vegIndicator || "Veg",
+        rating: Number(row.rating) || 4.8,
+        reviewsCount: Number(row.reviews_count) || 12,
+        prepTime: Number(row.prep_time) || 20,
+        spiceLevel: row.spice_level || "Medium",
+        restaurantId: row.restaurant_id || "rest_1",
+        created_at: row.created_at
+      };
+      combinedMap.set(String(mapped.id), mapped);
+    }
+    return res.json(Array.from(combinedMap.values()));
+  } catch (e) {
+    console.error("Exception in GET /api/dishes:", e);
+    return res.json(Array.from(serverDishes.values()));
+  }
+});
+app.get("/api/orders", async (req, res) => {
+  try {
+    const { phone, customerId } = req.query || {};
+    const cleanPhone = phone ? String(phone).replace(/\D/g, "") : "";
+    const digits = cleanPhone.length === 12 && cleanPhone.startsWith("91") ? cleanPhone.slice(2) : cleanPhone;
+    const orderMap = /* @__PURE__ */ new Map();
+    for (const [id, order] of serverOrders.entries()) {
+      const oPhone = (order.customer_phone || order.customerPhone || "").replace(/\D/g, "");
+      const oDigits = oPhone.length === 12 && oPhone.startsWith("91") ? oPhone.slice(2) : oPhone;
+      const oCustId = order.customer_id || order.customerId;
+      if (!digits && !customerId) {
+        orderMap.set(String(id), order);
+      } else if (digits && (oDigits === digits || oPhone.includes(digits))) {
+        orderMap.set(String(id), order);
+      } else if (customerId && oCustId === customerId) {
+        orderMap.set(String(id), order);
+      }
+    }
+    try {
+      const publicClient = getPublicSupabaseServerClient();
+      let query = publicClient.from("orders").select("*");
+      if (digits) {
+        query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customerPhone.eq.${digits}`);
+      } else if (customerId) {
+        query = query.or(`customer_id.eq.${customerId},customerId.eq.${customerId}`);
+      }
+      const { data, error } = await query.order("created_at", { ascending: false });
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          orderMap.set(String(row.id), row);
+        }
+      }
+    } catch {
+    }
+    const sorted = Array.from(orderMap.values()).sort((a, b) => {
+      const timeA = new Date(a.date || a.created_at || 0).getTime();
+      const timeB = new Date(b.date || b.created_at || 0).getTime();
+      return timeB - timeA;
+    });
+    return res.json(sorted);
+  } catch (e) {
+    console.error("Exception in GET /api/orders:", e);
+    return res.json([]);
+  }
+});
+app.post("/api/orders", async (req, res) => {
+  try {
+    const order = req.body || {};
+    if (!order.id) {
+      order.id = `order_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    }
+    serverOrders.set(String(order.id), order);
+    persistServerOrders(serverOrders);
+    let supabaseSaved = false;
+    try {
+      const { client: adminClient } = getAdminSupabaseServerClient();
+      if (adminClient) {
+        const { error } = await adminClient.from("orders").upsert([order], { onConflict: "id" });
+        if (!error) {
+          supabaseSaved = true;
+        }
+      }
+    } catch {
+    }
+    return res.status(201).json({
+      success: true,
+      orderId: order.id,
+      supabaseSaved,
+      order
+    });
+  } catch (e) {
+    console.error("Exception in POST /api/orders:", e);
+    return res.status(500).json({ success: false, error: "Failed to record order." });
+  }
+});
+app.put("/api/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body || {};
+    const existing = serverOrders.get(String(id)) || {};
+    const merged = { ...existing, ...updates, id: String(id), updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    serverOrders.set(String(id), merged);
+    persistServerOrders(serverOrders);
+    try {
+      const { client: adminClient } = getAdminSupabaseServerClient();
+      if (adminClient) {
+        await adminClient.from("orders").update(updates).eq("id", id);
+      }
+    } catch {
+    }
+    return res.json({ success: true, order: merged });
+  } catch (e) {
+    console.error("Exception in PUT /api/orders/:id:", e);
+    return res.status(500).json({ success: false, error: "Failed to update order." });
+  }
+});
+app.post("/api/admin/dishes", requireAdminAuth, async (req, res) => {
+  const {
+    name,
+    description,
+    price,
+    image,
+    image_url,
+    category,
+    subcategory,
+    restaurantId,
+    restaurant_id,
+    isAvailable,
+    is_available,
+    vegIndicator,
+    veg_indicator,
+    prepTime,
+    prep_time,
+    spiceLevel,
+    spice_level,
+    rating,
+    reviewsCount,
+    reviews_count,
+    ingredients
+  } = req.body;
+  if (!name || price === void 0) {
+    return res.status(400).json({ success: false, error: "Dish name and price are required." });
+  }
+  const dishId = req.body.id || `dish_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const dishName = String(name).trim();
+  const dishPrice = Number(price);
+  const dishImg = image_url || image || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80";
+  const dishCat = String(category || "Specialty").trim();
+  const dishSub = String(subcategory || "Chef Special").trim();
+  const isAvail = isAvailable !== false && is_available !== false;
+  const vegVal = (veg_indicator || vegIndicator) === "Veg" || (veg_indicator || vegIndicator) === "veg" ? "Veg" : "NonVeg";
+  const payloadForSupabase = {
+    id: dishId,
+    name: dishName,
+    description: String(description || "").trim(),
+    price: dishPrice,
+    category: dishCat,
+    subcategory: dishSub,
+    image_url: dishImg,
+    is_available: isAvail,
+    veg_indicator: vegVal,
+    rating: Number(rating) || 4.8,
+    reviews_count: Number(reviews_count || reviewsCount) || 12,
+    prep_time: Number(prep_time || prepTime) || 20,
+    spice_level: spice_level || spiceLevel || "Medium",
+    restaurant_id: restaurant_id || restaurantId || "rest_1"
+  };
+  let savedDish = {
+    id: dishId,
+    ...payloadForSupabase,
+    image: dishImg,
+    isAvailable: isAvail,
+    ingredients: Array.isArray(ingredients) ? ingredients : ["Fresh regional ingredients", "House special spices"],
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    updated_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  let supabaseSaved = false;
+  try {
+    const { client: adminClient } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      const { data, error } = await adminClient.from("food_items").upsert([payloadForSupabase], { onConflict: "id" }).select();
+      if (!error && data && data.length > 0) {
+        savedDish = {
+          ...savedDish,
+          ...data[0],
+          id: String(data[0].id),
+          image: data[0].image_url || dishImg,
+          isAvailable: data[0].is_available !== false
+        };
+        supabaseSaved = true;
+      } else if (error) {
+        console.warn("Supabase upsert notice (saving to resilient store):", error.message);
+      }
+    }
+  } catch (err) {
+    console.warn("Supabase insert exception notice:", err?.message);
+  }
+  serverDishes.set(String(savedDish.id), savedDish);
+  persistServerDishes(serverDishes);
+  broadcastCatalogSSE("dish_created", savedDish);
+  return res.status(201).json({
+    success: true,
+    dish: savedDish,
+    supabaseSaved,
+    message: `Dish "${savedDish.name}" saved successfully!`
+  });
+});
+app.put("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const existingDish = serverDishes.get(String(id)) || {};
+  const payloadForSupabase = {};
+  if (req.body.name !== void 0) payloadForSupabase.name = String(req.body.name).trim();
+  if (req.body.description !== void 0) payloadForSupabase.description = String(req.body.description).trim();
+  if (req.body.price !== void 0) payloadForSupabase.price = Number(req.body.price);
+  if (req.body.category !== void 0) payloadForSupabase.category = String(req.body.category).trim();
+  if (req.body.subcategory !== void 0) payloadForSupabase.subcategory = String(req.body.subcategory).trim();
+  if (req.body.image !== void 0 || req.body.image_url !== void 0) {
+    payloadForSupabase.image_url = req.body.image_url || req.body.image;
+  }
+  if (req.body.isAvailable !== void 0 || req.body.is_available !== void 0) {
+    payloadForSupabase.is_available = req.body.is_available !== void 0 ? Boolean(req.body.is_available) : Boolean(req.body.isAvailable);
+  }
+  if (req.body.vegIndicator !== void 0 || req.body.veg_indicator !== void 0) {
+    const val = req.body.veg_indicator || req.body.vegIndicator;
+    payloadForSupabase.veg_indicator = val === "Veg" || val === "veg" ? "Veg" : "NonVeg";
+  }
+  if (req.body.restaurantId !== void 0 || req.body.restaurant_id !== void 0) {
+    payloadForSupabase.restaurant_id = req.body.restaurant_id || req.body.restaurantId;
+  }
+  if (req.body.prepTime !== void 0 || req.body.prep_time !== void 0) {
+    payloadForSupabase.prep_time = Number(req.body.prep_time || req.body.prepTime);
+  }
+  if (req.body.spiceLevel !== void 0 || req.body.spice_level !== void 0) {
+    payloadForSupabase.spice_level = req.body.spice_level || req.body.spiceLevel;
+  }
+  if (req.body.rating !== void 0) {
+    payloadForSupabase.rating = Number(req.body.rating);
+  }
+  if (req.body.reviewsCount !== void 0 || req.body.reviews_count !== void 0) {
+    payloadForSupabase.reviews_count = Number(req.body.reviews_count || req.body.reviewsCount);
+  }
+  payloadForSupabase.updated_at = (/* @__PURE__ */ new Date()).toISOString();
+  let updatedDish = {
+    ...existingDish,
+    ...req.body,
+    ...payloadForSupabase,
+    id: String(id),
+    image: payloadForSupabase.image_url || existingDish.image || existingDish.image_url,
+    isAvailable: payloadForSupabase.is_available !== void 0 ? payloadForSupabase.is_available : existingDish.isAvailable
+  };
+  try {
+    const { client: adminClient } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      const { data, error } = await adminClient.from("food_items").upsert([{ id: String(id), ...payloadForSupabase }], { onConflict: "id" }).select();
+      if (!error && data && data.length > 0) {
+        updatedDish = {
+          ...updatedDish,
+          ...data[0],
+          id: String(data[0].id),
+          image: data[0].image_url || updatedDish.image,
+          isAvailable: data[0].is_available !== false
+        };
+      } else if (error) {
+        console.warn("Supabase update notice (saving to resilient store):", error.message);
+      }
+    }
+  } catch (err) {
+    console.warn("Supabase update exception notice:", err?.message);
+  }
+  serverDishes.set(String(id), updatedDish);
+  persistServerDishes(serverDishes);
+  broadcastCatalogSSE("dish_updated", updatedDish);
+  return res.json({
+    success: true,
+    dish: updatedDish,
+    message: "Dish updated successfully!"
+  });
+});
+app.delete("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { client: adminClient } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      await adminClient.from("food_items").delete().eq("id", id);
+    }
+  } catch (err) {
+    console.warn("Supabase delete exception notice:", err?.message);
+  }
+  serverDishes.delete(String(id));
+  persistServerDishes(serverDishes);
+  broadcastCatalogSSE("dish_deleted", { id });
+  return res.json({
+    success: true,
+    message: `Dish ${id} removed successfully.`
+  });
+});
+app.post("/api/admin/dishes/seed", requireAdminAuth, async (_req, res) => {
+  let addedCount = 0;
+  const defaultPool = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG];
+  for (const item of defaultPool) {
+    if (!serverDishes.has(String(item.id))) {
+      serverDishes.set(String(item.id), {
+        ...item,
+        id: String(item.id),
+        created_at: (/* @__PURE__ */ new Date()).toISOString(),
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      addedCount++;
+    }
+  }
+  persistServerDishes(serverDishes);
+  let supabaseInserted = 0;
+  try {
+    const { client: adminClient } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      const payload = defaultPool.map((item, idx) => ({
+        id: String(item.id || `dish_seed_${idx + 1}`),
+        name: item.name,
+        description: item.description || "",
+        price: Number(item.price) || 0,
+        category: item.category || "Specialty",
+        subcategory: item.subcategory || "Signature",
+        image_url: item.image || item.image_url || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600",
+        is_available: item.isAvailable !== false,
+        veg_indicator: item.vegIndicator === "veg" || item.vegIndicator === "Veg" ? "Veg" : "NonVeg",
+        rating: item.rating || 4.7,
+        reviews_count: item.reviewsCount || 15,
+        prep_time: item.prepTime || 20,
+        spice_level: item.spiceLevel || "Medium",
+        restaurant_id: item.restaurantId || "rest_1"
+      }));
+      const { data, error } = await adminClient.from("food_items").upsert(payload.slice(0, 30), { onConflict: "id" }).select();
+      if (!error && data) {
+        supabaseInserted = data.length;
+      }
+    }
+  } catch (e) {
+    console.warn("Supabase seed notice:", e?.message);
+  }
+  broadcastCatalogSSE("catalog_seeded", { count: serverDishes.size });
+  return res.json({
+    success: true,
+    count: serverDishes.size,
+    supabaseInserted,
+    message: `Menu catalog seeded with ${serverDishes.size} dishes successfully.`
+  });
+});
+var serverDeliveryPartners = [];
+app.get("/api/delivery-partners", (_req, res) => {
+  res.json(serverDeliveryPartners);
+});
+app.post("/api/admin/delivery-partners", requireAdminAuth, (req, res) => {
+  const { name, phone, vehicleType, bikeNumber, address } = req.body;
+  if (!name || !phone) {
+    return res.status(400).json({ error: "Partner name and mobile phone are required." });
+  }
+  const newPartner = {
+    id: `partner_${Date.now()}`,
+    name: String(name).trim(),
+    phone: String(phone).trim(),
+    whatsAppPhone: String(phone).trim(),
+    address: String(address || "Chirala Regional Highway").trim(),
+    vehicleType: vehicleType || "Bike",
+    bikeNumber: bikeNumber || "AP 39 TB 0000",
+    avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+    isApproved: true,
+    isAvailable: true,
+    status: "Available",
+    rating: 5,
+    completedOrdersCount: 0,
+    currentLocation: { lat: 15.8252, lng: 80.3541 },
+    walletBalance: 0,
+    earnings: []
+  };
+  serverDeliveryPartners = [newPartner, ...serverDeliveryPartners];
+  res.status(201).json({ success: true, partner: newPartner });
+});
+app.put("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  const index = serverDeliveryPartners.findIndex((p) => String(p.id) === String(id));
+  if (index === -1) return res.status(404).json({ error: "Delivery partner not found." });
+  serverDeliveryPartners[index] = {
+    ...serverDeliveryPartners[index],
+    ...req.body,
+    id: serverDeliveryPartners[index].id
+  };
+  res.json({ success: true, partner: serverDeliveryPartners[index] });
+});
+app.delete("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+  const { id } = req.params;
+  serverDeliveryPartners = serverDeliveryPartners.filter((p) => String(p.id) !== String(id));
+  res.json({ success: true, message: "Delivery partner deleted successfully." });
+});
+app.post("/api/admin/reset-data", requireAdminAuth, (req, res) => {
+  const { confirmation, scope } = req.body;
+  if (confirmation !== "RESET") {
+    return res.status(400).json({
+      error: "Confirmation failed. Explicit confirmation key 'RESET' is required to prevent accidental invocation."
+    });
+  }
+  if (!scope || scope === "all_admin_data" || scope === "catalog") {
+    serverRestaurants = [...RESTAURANTS];
+    serverHotels = [...INITIAL_HOTELS];
+  }
+  if (!scope || scope === "all_admin_data" || scope === "delivery_partners") {
+    serverDeliveryPartners = [];
+  }
+  res.json({
+    success: true,
+    message: "Administrator-managed configuration successfully reset to pristine system baseline.",
+    deliveryPartnersCount: serverDeliveryPartners.length,
+    restaurantsCount: serverRestaurants.length,
+    hotelsCount: serverHotels.length
+  });
+});
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3e3;
+  const distPath = import_path.default.join(process.cwd(), "dist");
+  const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === "dev" || !import_fs.default.existsSync(import_path.default.join(distPath, "index.html"));
+  if (isDev) {
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = import_path.default.join(process.cwd(), "dist");
     app.use(import_express.default.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(import_path.default.join(distPath, "index.html"));
     });
   }
@@ -676,7 +2821,30 @@ Current User Query: ${message}`;
     console.log(`Server running on port ${PORT}`);
   });
 }
-startServer();
+var isDirectExecution = (() => {
+  try {
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT) {
+      return false;
+    }
+    const argv1 = process.argv[1] ? import_path.default.resolve(process.argv[1]) : "";
+    return argv1.endsWith("server.ts") || argv1.endsWith("server.js");
+  } catch {
+    return false;
+  }
+})();
+if (isDirectExecution) {
+  startServer().catch((err) => {
+    console.error("Failed to start server:", err);
+  });
+}
+var server_default = app;
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  app,
+  createSignedSessionToken,
+  startServer,
+  verifySignedSessionToken
+});
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0

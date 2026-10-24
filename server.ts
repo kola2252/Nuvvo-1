@@ -4,15 +4,15 @@ import fs from "fs";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { FOOD_CATALOG, RESTAURANTS } from "./src/data/catalog";
-import { CHIRALA_TOP13_FOOD_ITEMS } from "./src/data/chiralaPartners";
+import { FOOD_CATALOG, RESTAURANTS } from "./src/data/catalog.ts";
+import { CHIRALA_TOP13_FOOD_ITEMS } from "./src/data/chiralaPartners.ts";
 import { 
   getAdminSupabaseServerClient, 
   getPublicSupabaseServerClient, 
   createServerClient,
   checkServerSupabaseDiagnostics
-} from "./src/utils/supabase/server";
-import debugOtpHandler from "./api/auth/debug-otp";
+} from "./src/utils/supabase/server.ts";
+import debugOtpHandler from "./api/auth/debug-otp.ts";
 
 dotenv.config();
 

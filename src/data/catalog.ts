@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { FoodItem, VegIndicator, Restaurant, Review } from '../types';
+import type { FoodItem, Restaurant, Review } from '../types.ts';
+import { VegIndicator } from '../types.ts';
 
 // Curated list of mock restaurants
 export const RESTAURANTS: Restaurant[] = [

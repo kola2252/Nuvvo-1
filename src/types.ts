@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export enum VegIndicator {
-  VEG = 'veg',
-  NON_VEG = 'non-veg',
-}
+export const VegIndicator = {
+  VEG: 'veg',
+  NON_VEG: 'non-veg',
+} as const;
+export type VegIndicator = (typeof VegIndicator)[keyof typeof VegIndicator];
 
 export interface Review {
   id: string;

@@ -1,4 +1,4 @@
-import { createClient as createSupabaseClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Resolves the Supabase URL from environment variables.

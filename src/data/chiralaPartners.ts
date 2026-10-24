@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Restaurant, FoodItem, VegIndicator } from '../types';
+import type { Restaurant, FoodItem } from '../types.ts';
+import { VegIndicator } from '../types.ts';
 
 // Unsplash high quality food and hotel images mapping
 const IMAGES = {
