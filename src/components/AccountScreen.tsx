@@ -204,8 +204,12 @@ export default function AccountScreen() {
   const [isConvertingCredits, setIsConvertingCredits] = useState(false);
 
   const [referredFriendsList, setReferredFriendsList] = useState<any[]>(() => {
-    const stored = localStorage.getItem('nuvvo_referred_friends');
-    return stored ? JSON.parse(stored) : [];
+    try {
+      const stored = localStorage.getItem('nuvvo_referred_friends');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
   });
 
   // Admin-exclusive referral points control states
@@ -231,8 +235,12 @@ export default function AccountScreen() {
   });
 
   const [walletHistory, setWalletHistory] = useState<any[]>(() => {
-    const stored = localStorage.getItem('nuvvo_wallet_history');
-    return stored ? JSON.parse(stored) : [];
+    try {
+      const stored = localStorage.getItem('nuvvo_wallet_history');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [walletFlowStep, setWalletFlowStep] = useState<'view' | 'input' | 'processing' | 'success' | 'failed'>('view');

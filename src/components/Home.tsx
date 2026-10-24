@@ -57,19 +57,20 @@ function Home() {
     const restById = new Map(restaurants.map(r => [r.id, r]));
     for (const item of foodCatalog) {
       if (item.restaurantId && restById.has(item.restaurantId)) {
-        map.set(item.id, restById.get(item.restaurantId));
+        map.set(String(item.id), restById.get(item.restaurantId));
       } else {
-        const match = item.id.match(/\d+/);
+        const idStr = String(item.id || '');
+        const match = idStr.match(/\d+/);
         const num = match ? parseInt(match[0], 10) : 0;
-        map.set(item.id, restaurants[num % restaurants.length]);
+        map.set(String(item.id), restaurants[num % restaurants.length]);
       }
     }
     return map;
   }, [foodCatalog, restaurants]);
 
-  const getFoodItemRestaurant = (foodId: string) => {
+  const getFoodItemRestaurant = (foodId: string | number) => {
     if (!restaurants || restaurants.length === 0) return null;
-    return foodItemRestaurantMap.get(foodId) || restaurants[0] || null;
+    return foodItemRestaurantMap.get(String(foodId)) || restaurants[0] || null;
   };
 
   const restaurantDishesMap = useMemo(() => {
