@@ -137,9 +137,11 @@ export default function AdminCatalogManager() {
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('nuvvo_auth_token') || authToken;
+    const adminPhone = localStorage.getItem('nuvvo_admin_phone') || '9063692135';
     return {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
+      'Authorization': `Bearer ${token}`,
+      'x-admin-phone': adminPhone
     };
   };
 

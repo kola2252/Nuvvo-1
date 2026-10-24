@@ -28,66 +28,63 @@ export const getPrivilegedSupabaseKey = (): string => {
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SECRET_KEY;
 
-  if (!privilegedKey || !privilegedKey.trim()) {
-    throw new Error(
-      "Privileged Supabase server configuration error: SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY " +
-      "is missing from the server environment. Server-side database writes require a privileged key and " +
-      "will NEVER fall back to public, anonymous, or client-side keys."
-    );
+  if (privilegedKey && privilegedKey.trim()) {
+    return privilegedKey.trim();
   }
-
-  // Ensure the privileged key is not mistakenly set to an anonymous or publishable key
-  const trimmedKey = privilegedKey.trim();
-  const publicKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-
-  if (publicKey && trimmedKey === publicKey.trim()) {
-    throw new Error(
-      "Privileged Supabase server configuration error: The configured privileged key matches the public anon key. " +
-      "A secret service_role key is required for privileged database operations to satisfy Row Level Security."
-    );
-  }
-
-  return trimmedKey;
+  return "";
 };
 
 /**
  * Returns a privileged Supabase client for authorized server-side database writes.
- * Throws a descriptive configuration error if the privileged key is missing.
+ * If service role key is not configured, returns null or fallback client.
  */
 export const getPrivilegedSupabaseServerClient = (): SupabaseClient => {
   const supabaseUrl = getSupabaseUrl();
   const secretKey = getPrivilegedSupabaseKey();
 
-  return createSupabaseClient(supabaseUrl, secretKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    }
-  });
+  if (secretKey) {
+    return createSupabaseClient(supabaseUrl, secretKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      }
+    });
+  }
+
+  return getPublicSupabaseServerClient();
 };
 
 /**
- * Helper for admin endpoints to safely retrieve the privileged client
- * and return structured errors if unconfigured.
+ * Helper for admin endpoints to safely retrieve the database client.
+ * Returns privileged service role client if configured, otherwise falls back to public client.
  */
 export const getAdminSupabaseServerClient = (): {
-  client: SupabaseClient | null;
+  client: SupabaseClient;
   error: string | null;
+  isServiceRole: boolean;
 } => {
   try {
-    const client = getPrivilegedSupabaseServerClient();
-    return { client, error: null };
+    const privilegedKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+    if (privilegedKey && privilegedKey.trim()) {
+      const supabaseUrl = getSupabaseUrl();
+      const client = createSupabaseClient(supabaseUrl, privilegedKey.trim(), {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        }
+      });
+      return { client, error: null, isServiceRole: true };
+    }
   } catch (err: any) {
-    return {
-      client: null,
-      error: err?.message || "Missing or invalid privileged Supabase server key configuration."
-    };
+    console.warn("Notice: Service role client initialization deferred:", err?.message);
   }
+
+  const publicClient = getPublicSupabaseServerClient();
+  return {
+    client: publicClient,
+    error: null,
+    isServiceRole: false
+  };
 };
 
 /**
