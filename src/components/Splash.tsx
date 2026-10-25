@@ -18,11 +18,7 @@ function Splash() {
         if (old >= 100) {
           clearInterval(timer);
           setTimeout(() => {
-            if (user && user.isProfileComplete) {
-              setCurrentPage('home');
-            } else {
-              setCurrentPage('auth');
-            }
+            setCurrentPage('home');
           }, 300);
           return 100;
         }

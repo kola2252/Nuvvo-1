@@ -807,7 +807,7 @@ export default function AdminCatalogManager() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className={`w-2 h-2 rounded-full ${dish.vegIndicator === 'Veg' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                      <h5 className="font-black text-zinc-900 dark:text-zinc-100 truncate">{dish.name}</h5>
+                      <h5 className="font-black text-zinc-900 dark:text-zinc-50 truncate">{dish.name}</h5>
                     </div>
                     <p className="text-[10px] text-zinc-400 truncate mt-0.5">{dish.description || 'No description provided'}</p>
                     <div className="flex items-center gap-2 mt-1">

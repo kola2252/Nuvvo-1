@@ -115,13 +115,13 @@ export default function FavoritesScreen() {
                         ) : (
                           <span className="nonveg-icon shrink-0"><span className="nonveg-dot" /></span>
                         )}
-                        <h4 className="font-extrabold text-sm text-zinc-900 dark:text-zinc-100 truncate">{food.name}</h4>
+                        <h4 className="font-extrabold text-sm text-zinc-900 dark:text-zinc-50 truncate">{food.name}</h4>
                       </div>
                       <p className="text-[10px] text-zinc-400 uppercase font-mono font-bold mt-0.5">{food.category}</p>
                     </div>
 
                     <div className="flex items-center justify-between mt-2.5">
-                      <span className="text-sm font-black text-zinc-855 dark:text-zinc-50 font-mono">₹{food.discountPrice || food.price}</span>
+                      <span className="text-sm font-black text-zinc-900 dark:text-zinc-50 font-mono">₹{food.discountPrice || food.price}</span>
                       
                       <div className="flex items-center gap-1.5">
                         <button

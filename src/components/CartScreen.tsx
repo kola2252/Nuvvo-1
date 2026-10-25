@@ -429,7 +429,7 @@ export default function CartScreen() {
                 />
                 <div className="flex-1 overflow-hidden">
                   <h4 
-                    className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate cursor-pointer hover:text-orange-500 transition-colors"
+                    className="text-xs font-extrabold text-zinc-900 dark:text-zinc-50 truncate cursor-pointer hover:text-orange-500 transition-colors"
                     onClick={() => setSelectedFoodItem(item.foodItem)}
                   >
                     {item.foodItem.name}

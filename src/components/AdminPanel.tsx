@@ -17,6 +17,7 @@ import QRCode from 'qrcode';
 import { VegIndicator, FranchiseApplication } from '../types';
 import SuperAdminGuard from './SuperAdminGuard';
 import AdminCatalogManager from './AdminCatalogManager';
+import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
 import { isAdminRole } from '../config/authConfig';
 
 export default function AdminPanel() {
@@ -485,6 +486,9 @@ export default function AdminPanel() {
               </div>
             </div>
 
+            {/* Live Supabase Revenue & Orders Dashboard Widget with D3 Bar Chart */}
+            <AdminDashboardSummaryWidget />
+
             {/* Server Supabase & Service Role Key Diagnostics */}
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
@@ -629,44 +633,8 @@ export default function AdminPanel() {
               </div>
             </div>
 
-            {/* STATS ROW */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-white dark:bg-zinc-900 p-4 rounded-3xl border shadow-sm">
-                <DollarSign className="w-5 h-5 text-emerald-500 mb-1" />
-                <span className="text-[10px] uppercase font-bold text-zinc-400">Total Sales</span>
-                <p className="text-xl font-black font-mono mt-1 text-zinc-800 dark:text-zinc-100">₹{revenueSum.toLocaleString()}</p>
-              </div>
-
-              <div className="bg-white dark:bg-zinc-900 p-4 rounded-3xl border shadow-sm">
-                <ShoppingBag className="w-5 h-5 text-orange-500 mb-1" />
-                <span className="text-[10px] uppercase font-bold text-zinc-400">Orders Logged</span>
-                <p className="text-xl font-black font-mono mt-1 text-zinc-800 dark:text-zinc-100">{orders.length}</p>
-              </div>
-            </div>
-
-            {/* BAR CHART SIMULATOR */}
-            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-4 shadow-sm">
-              <h4 className="text-xs font-bold text-zinc-450 uppercase mb-3">Hourly order intensity</h4>
-              
-              <div className="flex justify-between items-end h-28 pt-2 border-b">
-                {[
-                  { hour: '09:00', orders: 12 },
-                  { hour: '12:00', orders: 48 },
-                  { hour: '15:00', orders: 20 },
-                  { hour: '18:00', orders: 35 },
-                  { hour: '21:00', orders: 62 }
-                ].map((pt, i) => (
-                  <div key={i} className="flex flex-col items-center flex-1">
-                    <span className="text-[9px] font-bold text-orange-500 font-mono">{pt.orders}</span>
-                    <div 
-                      style={{ height: `${(pt.orders / 65) * 100}%` }} 
-                      className="w-4 bg-orange-500/10 border-t-2 border-orange-500 rounded-t-sm"
-                    />
-                    <span className="text-[8px] text-zinc-400 mt-1 font-mono">{pt.hour}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {/* LIVE SUPABASE REVENUE & ORDER COUNT SUMMARY WITH D3 BAR CHART */}
+            <AdminDashboardSummaryWidget />
 
             {/* RECENT ORDERS LOG LIST WITH PAYMENT STATUS FILTERS */}
             <div className="bg-white dark:bg-zinc-900 rounded-3xl p-4 border shadow-sm space-y-3">

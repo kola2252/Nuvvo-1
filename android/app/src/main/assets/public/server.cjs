@@ -2462,12 +2462,55 @@ app.post("/api/orders", async (req, res) => {
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
       if (adminClient) {
-        const { error } = await adminClient.from("orders").upsert([order], { onConflict: "id" });
+        const addressObj = typeof order.address === "object" && order.address !== null ? { ...order.address } : { formatted: String(order.address || "") };
+        addressObj.checkout_data = {
+          paymentDetails: order.paymentDetails || null,
+          phonePeNumber: order.phonePeNumber || null,
+          upiDetails: order.upiDetails || null,
+          deliveryPartnerId: order.deliveryPartnerId || null,
+          deliveryPartnerName: order.deliveryPartnerName || null,
+          deliveryPartnerPhone: order.deliveryPartnerPhone || null,
+          deliveryPartnerStatus: order.deliveryPartnerStatus || null,
+          eta: order.eta || 25,
+          scheduledTime: order.scheduledTime || null,
+          pointsEarned: order.pointsEarned || 0,
+          pointsRedeemed: order.pointsRedeemed || 0,
+          trackingHistory: order.trackingHistory || [],
+          rating: order.rating || null,
+          feedback: order.feedback || null,
+          placedAt: order.date || (/* @__PURE__ */ new Date()).toISOString()
+        };
+        const supabasePayload = {
+          id: String(order.id),
+          customer_id: String(order.customerId || order.customer_id || ""),
+          customer_phone: String(order.customerPhone || order.customer_phone || ""),
+          customer_name: String(order.customerName || order.customer_name || "Customer"),
+          items: Array.isArray(order.items) ? order.items : [],
+          subtotal: Number(order.subtotal || 0),
+          discount: Number(order.discount || 0),
+          delivery_fee: Number(order.deliveryFee !== void 0 ? order.deliveryFee : order.delivery_fee || 0),
+          packaging_fee: Number(order.packagingFee !== void 0 ? order.packagingFee : order.packaging_fee || 0),
+          tax: Number(order.tax || 0),
+          tip: Number(order.tip || 0),
+          final_amount: Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount || 0),
+          status: String(order.status || "accepted"),
+          address: addressObj,
+          instructions: String(order.instructions || ""),
+          coupon_used: String(order.couponUsed || order.coupon_used || ""),
+          payment_method: String(order.paymentMethod || order.payment_method || "UPI"),
+          payment_status: String(order.paymentStatus || order.payment_status || "pending"),
+          date: order.date || (/* @__PURE__ */ new Date()).toISOString(),
+          created_at: order.date || (/* @__PURE__ */ new Date()).toISOString()
+        };
+        const { error } = await adminClient.from("orders").upsert([supabasePayload], { onConflict: "id" });
         if (!error) {
           supabaseSaved = true;
+        } else {
+          console.warn("[Supabase Orders] Server POST upsert error:", error.message);
         }
       }
-    } catch {
+    } catch (err) {
+      console.warn("[Supabase Orders] Server POST exception:", err?.message);
     }
     return res.status(201).json({
       success: true,
@@ -2491,7 +2534,17 @@ app.put("/api/orders/:id", async (req, res) => {
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
       if (adminClient) {
-        await adminClient.from("orders").update(updates).eq("id", id);
+        const directCols = ["status", "payment_status", "instructions", "coupon_used", "items", "subtotal", "discount", "final_amount"];
+        const updatePayload = {};
+        for (const col of directCols) {
+          if (updates[col] !== void 0) updatePayload[col] = updates[col];
+        }
+        if (updates.paymentStatus) updatePayload.payment_status = updates.paymentStatus;
+        if (updates.finalAmount) updatePayload.final_amount = updates.finalAmount;
+        if (updates.address) updatePayload.address = updates.address;
+        if (Object.keys(updatePayload).length > 0) {
+          await adminClient.from("orders").update(updatePayload).eq("id", id);
+        }
       }
     } catch {
     }

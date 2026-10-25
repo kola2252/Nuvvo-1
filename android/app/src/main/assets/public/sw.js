@@ -93,7 +93,7 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "revision": "6edb0c90159a775de1c0f72d1ce84e79"
   }, {
     "url": "index.html",
-    "revision": "f35a20da510caedbaa38c8f47258a9ba"
+    "revision": "b5a3e56548faa3585dc8c71cee9d0b8a"
   }, {
     "url": "icon.svg",
     "revision": "df54dbf26b03d7a69aa355b6b3d70bd3"
@@ -104,55 +104,79 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "url": "apple-touch-icon.png",
     "revision": "cff22024542717948077f5673930568c"
   }, {
-    "url": "assets/trending-up-BHEaO9sI.js",
+    "url": "assets/vendor-supabase-CzkH_J5w.js",
     "revision": null
   }, {
-    "url": "assets/shield-Di3r8Rx3.js",
+    "url": "assets/vendor-recharts-CePjGGHw.js",
     "revision": null
   }, {
-    "url": "assets/radio-DOFGjpRE.js",
+    "url": "assets/vendor-react-pbUBPwhF.js",
+    "revision": null
+  }, {
+    "url": "assets/vendor-motion-DTROb1VG.js",
     "revision": null
   }, {
     "url": "assets/purify.es-Csrj9YNg.js",
     "revision": null
   }, {
-    "url": "assets/message-square-CnXpCxE0.js",
+    "url": "assets/payoutInvoiceGenerator-Dpe5SrK1.js",
     "revision": null
   }, {
-    "url": "assets/index.es-DUNTO7qF.js",
+    "url": "assets/orderInvoiceGenerator-DhuMrLRZ.js",
     "revision": null
   }, {
-    "url": "assets/index-DsuJmlUk.js",
+    "url": "assets/jspdf.es.min-BHEv8HAX.js",
     "revision": null
   }, {
-    "url": "assets/index-DkG9ecUj.css",
+    "url": "assets/index.es-D6gCsM-_.js",
     "revision": null
   }, {
-    "url": "assets/html2canvas.esm-QH1iLAAe.js",
+    "url": "assets/index-DkXbqapy.js",
     "revision": null
   }, {
-    "url": "assets/dollar-sign-jvjSjVDO.js",
+    "url": "assets/index-CeBskwAe.css",
     "revision": null
   }, {
-    "url": "assets/TrackingScreen-DC0wc5AD.js",
+    "url": "assets/html2canvas.esm-B0tyYwQk.js",
     "revision": null
   }, {
-    "url": "assets/SuperAdminPanel-UAnHP2VB.js",
+    "url": "assets/browser-CXCQpKXR.js",
     "revision": null
   }, {
-    "url": "assets/PartnerScreen-CmrGxBir.js",
+    "url": "assets/TrackingScreen-DzrOFOvF.js",
     "revision": null
   }, {
-    "url": "assets/OrderHistoryScreen-CCcQFDpi.js",
+    "url": "assets/SuperAdminPanel-ap2PoiwL.js",
     "revision": null
   }, {
-    "url": "assets/FranchiseScreen-C4jaIP4a.js",
+    "url": "assets/PartnerScreen-P-lYcejO.js",
     "revision": null
   }, {
-    "url": "assets/AreaChart-o5U8VGW-.js",
+    "url": "assets/OrderHistoryScreen-ysB-pQpa.js",
     "revision": null
   }, {
-    "url": "assets/AdminPanel-B2vwhpPf.js",
+    "url": "assets/FranchiseScreen-CbT-zrzB.js",
+    "revision": null
+  }, {
+    "url": "assets/FoodDetails-CilmB6dw.js",
+    "revision": null
+  }, {
+    "url": "assets/FavoritesScreen-I_48ObsS.js",
+    "revision": null
+  }, {
+    "url": "assets/DeliveryOptionsScreen-Bq5JAxO2.js",
+    "revision": null
+  }, {
+    "url": "assets/CartScreen-BZcqCH6I.js",
+    "revision": null
+  }, {
+    "url": "assets/AdminPanel-ByjKRAO8.js",
+    "revision": null
+  }, {
+    "url": "assets/AdminCatalogManager-B-qAi5Y4.js",
+    "revision": null
+  }, {
+    "url": "assets/AccountScreen-DxGfMfgK.js",
     "revision": null
   }, {
     "url": "assets/aistudio/Screenshot_2026-10-20_181745_1cab2153.png",
@@ -194,6 +218,15 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "cacheName": "google-fonts-cache",
     plugins: [new workbox.ExpirationPlugin({
       maxEntries: 10,
+      maxAgeSeconds: 31536000
+    }), new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    })]
+  }), 'GET');
+  workbox.registerRoute(/^https:\/\/fonts\.gstatic\.com\/.*/i, new workbox.CacheFirst({
+    "cacheName": "google-fonts-webfonts",
+    plugins: [new workbox.ExpirationPlugin({
+      maxEntries: 30,
       maxAgeSeconds: 31536000
     }), new workbox.CacheableResponsePlugin({
       statuses: [0, 200]

@@ -11,16 +11,16 @@ import Splash from './components/Splash';
 import Auth from './components/Auth';
 import Home from './components/Home';
 import BottomNav from './components/BottomNav';
-import FoodDetails from './components/FoodDetails';
-import FavoritesScreen from './components/FavoritesScreen';
-import CartScreen from './components/CartScreen';
-import AccountScreen from './components/AccountScreen';
-import DeliveryOptionsScreen from './components/DeliveryOptionsScreen';
 import DesktopSupportWidgets from './components/DesktopSupportWidgets';
 import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
 
-// Code-split heavy secondary screens to speed up initial bundle load
+// Code-split screens to optimize initial bundle and accelerate app startup
+const FavoritesScreen = lazy(() => import('./components/FavoritesScreen'));
+const CartScreen = lazy(() => import('./components/CartScreen'));
+const AccountScreen = lazy(() => import('./components/AccountScreen'));
+const DeliveryOptionsScreen = lazy(() => import('./components/DeliveryOptionsScreen'));
+const FoodDetails = lazy(() => import('./components/FoodDetails'));
 const TrackingScreen = lazy(() => import('./components/TrackingScreen'));
 const PartnerScreen = lazy(() => import('./components/PartnerScreen'));
 const FranchiseScreen = lazy(() => import('./components/FranchiseScreen'));
@@ -219,7 +219,11 @@ export default function App() {
       </main>
 
       {/* Global Product Customization overlay */}
-      {selectedFoodItem && <FoodDetails />}
+      {selectedFoodItem && (
+        <Suspense fallback={null}>
+          <FoodDetails />
+        </Suspense>
+      )}
 
       {/* Persistent Swiggy Bottom Control Deck */}
       {showBottomNav && <BottomNav />}

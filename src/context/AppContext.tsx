@@ -21,7 +21,7 @@ import {
   insertFoodItemToSupabase, 
   updateFoodItemInSupabase, 
   deleteFoodItemFromSupabase, 
-  seedFoodItemsToSupabase,
+  mapFoodItemToSupabaseRow,
   mapSupabaseRowToFoodItem,
   LIVE_FOOD_SYNC_CHANNEL,
   broadcastFoodMutation,
@@ -31,7 +31,14 @@ import {
   CLIENT_SESSION_ID
 } from '../services/supabaseFood';
 import { supabase } from '../utils/supabase/client';
-import { saveOrderToSupabase, updateOrderInSupabase } from '../services/supabaseOrders';
+import { 
+  saveOrderToSupabase, 
+  updateOrderInSupabase, 
+  fetchUserOrdersFromSupabase, 
+  fetchAllOrdersFromSupabase, 
+  LIVE_ORDERS_CHANNEL, 
+  mapSupabaseRowToOrder 
+} from '../services/supabaseOrders';
 
 function safeParse<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -1976,6 +1983,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
       .subscribe();
 
+    // Realtime Server-Sent Events (SSE) listener as triple redundancy alongside Supabase CDC and Broadcast
+    let sseSource: EventSource | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'EventSource' in window) {
+        sseSource = new EventSource('/api/catalog/stream');
+        sseSource.onmessage = (event) => {
+          try {
+            if (!event.data) return;
+            const msg = JSON.parse(event.data);
+            if (msg.event === 'dish_created' && msg.payload) {
+              const d = msg.payload;
+              setFoodCatalogList(prev => {
+                if (prev.some(item => String(item.id) === String(d.id))) {
+                  return prev.map(item => String(item.id) === String(d.id) ? { ...item, ...d } : item);
+                }
+                return [d, ...prev];
+              });
+            } else if (msg.event === 'dish_updated' && msg.payload) {
+              const d = msg.payload;
+              setFoodCatalogList(prev => prev.map(item => String(item.id) === String(d.id) ? { ...item, ...d } : item));
+            } else if (msg.event === 'dish_deleted' && msg.payload?.id) {
+              const delId = String(msg.payload.id);
+              setFoodCatalogList(prev => prev.filter(item => String(item.id) !== delId));
+            } else if (msg.event === 'restaurant_created' && msg.payload) {
+              const r = msg.payload;
+              setRestaurantsList(prev => {
+                if (prev.some(item => String(item.id) === String(r.id))) {
+                  return prev.map(item => String(item.id) === String(r.id) ? { ...item, ...r } : item);
+                }
+                return [r, ...prev];
+              });
+            } else if (msg.event === 'restaurant_updated' && msg.payload) {
+              const r = msg.payload;
+              setRestaurantsList(prev => prev.map(item => String(item.id) === String(r.id) ? { ...item, ...r } : item));
+            } else if (msg.event === 'restaurant_deleted' && msg.payload?.id) {
+              const delId = String(msg.payload.id);
+              setRestaurantsList(prev => prev.filter(item => String(item.id) !== delId));
+            } else if (msg.event === 'catalog_seeded') {
+              fetchSupabaseCatalog(true);
+            }
+          } catch {}
+        };
+        sseSource.onerror = () => {
+          // Handled silently; EventSource automatically attempts auto-reconnect
+        };
+      }
+    } catch {}
+
     // App Resume / Network Reconnect Listeners for Play Store / Mobile reliability
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -1998,6 +2053,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 45000);
 
     return () => {
+      if (sseSource) {
+        sseSource.close();
+      }
       supabase.removeChannel(channel);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
@@ -2006,164 +2064,309 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // Add Food Item: Persist to Supabase public.food_items via authenticated admin route with direct fallback
+  // --- Real-time Orders Synchronization with Supabase Database ---
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadOrdersFromSupabase = async () => {
+      try {
+        let result: { data: Order[] | null; error: any; fromSupabase: boolean };
+        if (isAdmin || isSuperAdmin) {
+          result = await fetchAllOrdersFromSupabase();
+        } else if (user?.phone) {
+          result = await fetchUserOrdersFromSupabase(user.phone);
+        } else {
+          return;
+        }
+
+        if (!isMounted || !result.data || result.data.length === 0) return;
+
+        setOrders(prev => {
+          const map = new Map<string, Order>();
+          // Add Supabase orders first
+          for (const ord of result.data!) {
+            map.set(String(ord.id), ord);
+          }
+          // Preserve any local uncommitted orders
+          for (const ord of prev) {
+            if (!map.has(String(ord.id))) {
+              map.set(String(ord.id), ord);
+            }
+          }
+          const merged = Array.from(map.values()).sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+          );
+          try {
+            localStorage.setItem('nuvvo_orders', JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
+      } catch (err) {
+        console.warn('Notice: Order sync with Supabase deferred:', err);
+      }
+    };
+
+    loadOrdersFromSupabase();
+
+    // Listen for Realtime Postgres Changes on orders table
+    const ordersChannel = supabase
+      .channel('nuvvo_orders_db_feed')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        (payload) => {
+          if (!isMounted) return;
+          if (payload.eventType === 'INSERT' && payload.new) {
+            const newOrd = mapSupabaseRowToOrder(payload.new);
+            setOrders(prev => {
+              if (prev.some(o => String(o.id) === String(newOrd.id))) {
+                return prev.map(o => String(o.id) === String(newOrd.id) ? { ...o, ...newOrd } : o);
+              }
+              const next = [newOrd, ...prev];
+              try {
+                localStorage.setItem('nuvvo_orders', JSON.stringify(next));
+              } catch {}
+              return next;
+            });
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            const updatedOrd = mapSupabaseRowToOrder(payload.new);
+            setOrders(prev => {
+              const next = prev.map(o => String(o.id) === String(updatedOrd.id) ? { ...o, ...updatedOrd } : o);
+              try {
+                localStorage.setItem('nuvvo_orders', JSON.stringify(next));
+              } catch {}
+              return next;
+            });
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'order_mutation' },
+        ({ payload }) => {
+          if (!isMounted || !payload?.order) return;
+          const { eventType, order: mutOrder } = payload;
+          setOrders(prev => {
+            let next: Order[];
+            if (eventType === 'INSERT') {
+              if (prev.some(o => String(o.id) === String(mutOrder.id))) {
+                next = prev.map(o => String(o.id) === String(mutOrder.id) ? { ...o, ...mutOrder } : o);
+              } else {
+                next = [mutOrder, ...prev];
+              }
+            } else if (eventType === 'UPDATE') {
+              next = prev.map(o => String(o.id) === String(mutOrder.id) ? { ...o, ...mutOrder } : o);
+            } else {
+              next = prev.filter(o => String(o.id) !== String(mutOrder.id));
+            }
+            try {
+              localStorage.setItem('nuvvo_orders', JSON.stringify(next));
+            } catch {}
+            return next;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(ordersChannel);
+    };
+  }, [user?.phone, isAdmin, isSuperAdmin]);
+
+  // Add Food Item: Persist to Supabase public.food_items with strict Admin/SuperAdmin guard
   const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
+    // Strict RBAC: Only Admin or Super Admin can perform menu mutations
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      const err = 'Access Denied: Only an authorized Admin or Super Admin can add new dishes.';
+      console.warn(err);
+      return { success: false, error: err };
+    }
+
     try {
       const token = localStorage.getItem('nuvvo_auth_token') || '';
       const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
 
-      const res = await fetch('/api/admin/dishes', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'x-admin-phone': adminPhone
-        },
-        body: JSON.stringify(item)
-      });
-
-      let savedDish: FoodItem;
-      if (res.ok) {
-        const json = await res.json();
-        savedDish = mapSupabaseRowToFoodItem(json.dish);
-      } else {
-        // Direct Supabase fallback
-        const directRes = await insertFoodItemToSupabase(item);
-        if (directRes.data) {
-          savedDish = directRes.data;
-        } else {
-          const fallbackId = `dish_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-          savedDish = {
-            id: fallbackId,
-            name: item.name,
-            description: item.description || '',
-            price: Number(item.price),
-            category: item.category || 'Biryani & Rice',
-            subcategory: item.subcategory || 'Chef Special',
-            vegIndicator: item.vegIndicator || VegIndicator.NON_VEG,
-            rating: item.rating ?? 4.8,
-            reviewsCount: item.reviewsCount ?? 15,
-            prepTime: item.prepTime || 20,
-            image: item.image || item.image_url || 'https://images.unsplash.com/photo-1589302168068-964664d93dc0?w=600&auto=format&fit=crop&q=80',
-            image_url: item.image || item.image_url || 'https://images.unsplash.com/photo-1589302168068-964664d93dc0?w=600&auto=format&fit=crop&q=80',
-            ingredients: item.ingredients || ['Fresh regional ingredients'],
-            spiceLevel: item.spiceLevel || 'Medium',
-            reviews: item.reviews || [],
-            restaurantId: item.restaurantId || 'rest_1',
-            is_available: item.is_available !== false && item.isAvailable !== false,
-            isAvailable: item.isAvailable !== false && item.is_available !== false
-          };
-        }
-      }
-
-      setFoodCatalogList(prev => [savedDish, ...prev.filter(d => String(d.id) !== String(savedDish.id))]);
-      broadcastFoodMutation('INSERT', { item: savedDish });
-      addAuditLog('Menu Updated', `Registered dish "${savedDish.name}" in Supabase.`);
-      setFoodError(null);
-      return { success: true, data: savedDish };
-    } catch (err: any) {
-      console.warn('Exception during addFoodItem to Supabase:', err);
-      const fallbackId = `dish_${Date.now()}`;
-      const activeItem: FoodItem = {
+      const fallbackId = `dish_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      const newDishItem: FoodItem = {
         ...item,
-        id: fallbackId,
-        vegIndicator: item.vegIndicator || VegIndicator.NON_VEG,
+        id: (item as any).id || fallbackId,
+        name: item.name.trim(),
+        description: (item.description || '').trim(),
+        price: Number(item.price),
+        category: (item.category || 'Specialty').trim(),
+        subcategory: (item.subcategory || 'Signature').trim(),
+        vegIndicator: item.vegIndicator || VegIndicator.VEG,
         rating: item.rating ?? 4.8,
         reviewsCount: item.reviewsCount ?? 15,
         prepTime: item.prepTime || 20,
-        image: item.image || item.image_url || 'https://images.unsplash.com/photo-1589302168068-964664d93dc0?w=600&auto=format&fit=crop&q=80',
-        category: item.category || 'Main Course',
-        subcategory: item.subcategory || 'Special',
-        ingredients: item.ingredients || [],
+        image: item.image || item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+        image_url: item.image || item.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600',
+        ingredients: item.ingredients || ['Fresh regional ingredients'],
         spiceLevel: item.spiceLevel || 'Medium',
-        reviews: item.reviews || []
+        reviews: item.reviews || [],
+        restaurantId: item.restaurantId || 'rest_1',
+        is_available: item.is_available !== false && item.isAvailable !== false,
+        isAvailable: item.isAvailable !== false && item.is_available !== false,
+        created_at: new Date().toISOString()
       };
-      setFoodCatalogList(prev => [activeItem, ...prev.filter(d => String(d.id) !== String(activeItem.id))]);
-      broadcastFoodMutation('INSERT', { item: activeItem });
+
+      // 1. Direct Supabase database insertion
+      try {
+        const payload = mapFoodItemToSupabaseRow(newDishItem);
+        await supabase
+          .from('food_items')
+          .upsert([payload], { onConflict: 'id' });
+      } catch (dbErr: any) {
+        console.warn('Direct Supabase insert notice:', dbErr?.message);
+      }
+
+      // 2. Server API persistence
+      try {
+        await fetch('/api/admin/dishes', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'x-admin-phone': adminPhone
+          },
+          body: JSON.stringify(newDishItem)
+        });
+      } catch (apiErr) {
+        console.warn('Server API dish post notice:', apiErr);
+      }
+
+      // 3. Update state and broadcast instant realtime event across all customer screens
+      setFoodCatalogList(prev => [newDishItem, ...prev.filter(d => String(d.id) !== String(newDishItem.id))]);
+      broadcastFoodMutation('INSERT', { item: newDishItem });
+      addAuditLog('Menu Updated', `Admin/SuperAdmin added dish "${newDishItem.name}" (₹${newDishItem.price}) to Supabase.`);
       setFoodError(null);
-      return { success: true, data: activeItem };
+      return { success: true, data: newDishItem };
+    } catch (err: any) {
+      console.error('Exception during addFoodItem:', err);
+      return { success: false, error: err?.message || 'Failed to add dish' };
     }
   };
 
-  // Update Food Item: Update in Supabase public.food_items via authenticated admin route
+  // Update Food Item: Update in Supabase public.food_items with strict Admin/SuperAdmin guard
   const updateFoodItem = async (id: string, updatedFields: Partial<FoodItem>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
+    // Strict RBAC: Only Admin or Super Admin can modify dishes
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      const err = 'Access Denied: Only an authorized Admin or Super Admin can modify dishes.';
+      console.warn(err);
+      return { success: false, error: err };
+    }
+
     try {
       const token = localStorage.getItem('nuvvo_auth_token') || '';
       const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
 
-      let updatedRecord: FoodItem | undefined;
-      const res = await fetch(`/api/admin/dishes/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'x-admin-phone': adminPhone
-        },
-        body: JSON.stringify(updatedFields)
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json.dish) {
-          updatedRecord = mapSupabaseRowToFoodItem(json.dish);
+      // 1. Direct Supabase database update
+      try {
+        const payload: Record<string, any> = {};
+        if (updatedFields.name !== undefined) payload.name = String(updatedFields.name).trim();
+        if (updatedFields.description !== undefined) payload.description = String(updatedFields.description).trim();
+        if (updatedFields.price !== undefined) payload.price = Number(updatedFields.price);
+        if (updatedFields.category !== undefined) payload.category = String(updatedFields.category).trim();
+        if (updatedFields.subcategory !== undefined) payload.subcategory = String(updatedFields.subcategory).trim();
+        if (updatedFields.image !== undefined || updatedFields.image_url !== undefined) {
+          payload.image_url = updatedFields.image_url || updatedFields.image;
         }
+        if (updatedFields.isAvailable !== undefined || updatedFields.is_available !== undefined) {
+          payload.is_available = updatedFields.is_available !== undefined ? Boolean(updatedFields.is_available) : Boolean(updatedFields.isAvailable);
+        }
+        if (updatedFields.vegIndicator !== undefined) {
+          payload.veg_indicator = updatedFields.vegIndicator === VegIndicator.VEG ? 'Veg' : 'NonVeg';
+        }
+
+        if (Object.keys(payload).length > 0) {
+          await supabase
+            .from('food_items')
+            .update(payload)
+            .eq('id', id);
+        }
+      } catch (dbErr: any) {
+        console.warn('Direct Supabase update notice:', dbErr?.message);
       }
 
-      if (!updatedRecord) {
-        const directRes = await updateFoodItemInSupabase(id, updatedFields);
-        if (directRes.data) {
-          updatedRecord = directRes.data;
-        }
+      // 2. Server API update
+      try {
+        await fetch(`/api/admin/dishes/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'x-admin-phone': adminPhone
+          },
+          body: JSON.stringify(updatedFields)
+        });
+      } catch (apiErr) {
+        console.warn('Server API dish update notice:', apiErr);
       }
 
+      // 3. Update local state and broadcast instant realtime update to all customer devices
       setFoodCatalogList(prev => prev.map(item => {
         if (String(item.id) === String(id)) {
-          return updatedRecord ? updatedRecord : { ...item, ...updatedFields };
+          return { ...item, ...updatedFields };
         }
         return item;
       }));
 
       broadcastFoodMutation('UPDATE', { id, updatedFields });
-      addAuditLog('Menu Updated', `Updated dish ID ${id} in Supabase.`);
-      setFoodError(null);
-      return { success: true, data: updatedRecord };
-    } catch (err: any) {
-      console.warn('Exception during updateFoodItem in Supabase:', err);
-      setFoodCatalogList(prev => prev.map(item => String(item.id) === String(id) ? { ...item, ...updatedFields } : item));
-      broadcastFoodMutation('UPDATE', { id, updatedFields });
+      addAuditLog('Menu Updated', `Admin/SuperAdmin updated dish ID ${id} in Supabase.`);
       setFoodError(null);
       return { success: true };
+    } catch (err: any) {
+      console.error('Exception during updateFoodItem in Supabase:', err);
+      return { success: false, error: err?.message || 'Failed to update dish' };
     }
   };
 
-  // Delete Food Item: Remove from Supabase public.food_items via authenticated admin route
+  // Delete Food Item: Remove from Supabase public.food_items with strict Admin/SuperAdmin guard
   const deleteFoodItem = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    // Strict RBAC: Only Admin or Super Admin can delete dishes
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      const err = 'Access Denied: Only an authorized Admin or Super Admin can remove dishes.';
+      console.warn(err);
+      return { success: false, error: err };
+    }
+
     try {
       const token = localStorage.getItem('nuvvo_auth_token') || '';
       const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
 
-      await fetch(`/api/admin/dishes/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'x-admin-phone': adminPhone
-        }
-      });
+      // 1. Direct Supabase deletion
+      try {
+        await supabase
+          .from('food_items')
+          .delete()
+          .eq('id', id);
+      } catch (dbErr: any) {
+        console.warn('Direct Supabase delete notice:', dbErr?.message);
+      }
 
-      // Also invoke direct Supabase helper
-      deleteFoodItemFromSupabase(id).catch(() => {});
+      // 2. Server API deletion
+      try {
+        await fetch(`/api/admin/dishes/${id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'x-admin-phone': adminPhone
+          }
+        });
+      } catch (apiErr) {
+        console.warn('Server API delete dish notice:', apiErr);
+      }
 
+      // 3. Update state and broadcast removal across all customer screens
       setFoodCatalogList(prev => prev.filter(item => String(item.id) !== String(id)));
       broadcastFoodMutation('DELETE', { id });
-      addAuditLog('Menu Updated', `Permanently removed dish ID ${id} from Supabase.`);
+      addAuditLog('Menu Updated', `Admin/SuperAdmin permanently deleted dish ID ${id} from Supabase.`);
       setFoodError(null);
       return { success: true };
     } catch (err: any) {
-      console.warn('Exception during deleteFoodItem in Supabase:', err);
-      setFoodCatalogList(prev => prev.filter(item => String(item.id) !== String(id)));
-      broadcastFoodMutation('DELETE', { id });
-      setFoodError(null);
-      return { success: true };
+      console.error('Exception during deleteFoodItem in Supabase:', err);
+      return { success: false, error: err?.message || 'Failed to delete dish' };
     }
   };
 
@@ -2512,8 +2715,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true, id: newId };
   };
 
-  // Direct Restaurant CRUD with automatic Play Store / Mobile sync
+  // Direct Restaurant CRUD with strict Admin/SuperAdmin guard and realtime broadcast
   const addRestaurant = (restaurant: Restaurant) => {
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      console.warn('Access Denied: Only an authorized Admin or Super Admin can add restaurants.');
+      return;
+    }
+    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+
+    // Persist to backend server
+    fetch('/api/admin/restaurants', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'x-admin-phone': adminPhone
+      },
+      body: JSON.stringify(restaurant)
+    }).catch(() => {});
+
     setRestaurantsList(prev => {
       const filtered = prev.filter(r => r.id !== restaurant.id);
       const next = [restaurant, ...filtered];
@@ -2536,6 +2757,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRestaurant = (id: string, updatedFields: Partial<Restaurant>) => {
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      console.warn('Access Denied: Only an authorized Admin or Super Admin can modify restaurants.');
+      return;
+    }
+    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+
+    // Persist to backend server
+    fetch(`/api/admin/restaurants/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'x-admin-phone': adminPhone
+      },
+      body: JSON.stringify(updatedFields)
+    }).catch(() => {});
+
     setRestaurantsList(prev => {
       const next = prev.map(r => r.id === id ? { ...r, ...updatedFields } : r);
       try {
@@ -2548,6 +2787,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteRestaurant = (id: string) => {
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      console.warn('Access Denied: Only an authorized Admin or Super Admin can delete restaurants.');
+      return;
+    }
+    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+
+    // Persist to backend server
+    fetch(`/api/admin/restaurants/${id}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'x-admin-phone': adminPhone
+      }
+    }).catch(() => {});
+
     setRestaurantsList(prev => {
       const next = prev.filter(r => r.id !== id);
       try {
@@ -3318,7 +3573,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPointsToRedeem(0);
 
     setOrders(prev => [newOrder, ...prev]);
-    saveOrderToSupabase(newOrder);
+    saveOrderToSupabase(newOrder).then(res => {
+      if (res.success) {
+        console.log('[Supabase] Checkout order successfully stored in database:', newOrder.id);
+      } else {
+        console.warn('[Supabase] Checkout order storage notice:', res.error);
+      }
+    }).catch(err => {
+      console.error('[Supabase] Checkout order storage exception:', err);
+    });
     clearCart();
     setActiveTrackingOrder(newOrder);
 

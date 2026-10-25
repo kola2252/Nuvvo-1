@@ -1,4 +1,3 @@
-import { jsPDF } from 'jspdf';
 import { Order } from '../types';
 
 /**
@@ -6,7 +5,8 @@ import { Order } from '../types';
  * Featuring customized brand colors (Orange/Amber), structured billing table, tax breakdowns (CGST/SGST),
  * rider tip details, loyalty point redemptions, and an authentic digital PAID/CANCELLED stamp.
  */
-export function downloadOrderInvoice(order: Order) {
+export async function downloadOrderInvoice(order: Order) {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',

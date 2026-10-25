@@ -964,7 +964,7 @@ function Home() {
                         const isRestClosed = getRestaurantOpenStatus(rest).status !== 'open';
 
                         return (
-                          <div key={food.id} className="flex items-center justify-between gap-2 p-1.5 rounded-xl bg-slate-50 dark:bg-zinc-850 border border-slate-150/70 dark:border-zinc-800/80">
+                          <div key={food.id} className="flex items-center justify-between gap-2 p-1.5 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-150/70 dark:border-zinc-700/80">
                             <div className="flex items-center gap-1.5 min-w-0 flex-1">
                               <span className="shrink-0">
                                 {food.vegIndicator === VegIndicator.VEG ? (
@@ -974,10 +974,10 @@ function Home() {
                                 )}
                               </span>
                               <div className="min-w-0 flex-1">
-                                <p className="text-[10.5px] font-extrabold text-zinc-850 dark:text-zinc-150 truncate">
+                                <p className="text-[10.5px] font-extrabold text-zinc-900 dark:text-zinc-50 truncate">
                                   {food.name}
                                 </p>
-                                <span className="text-[10px] font-black text-zinc-700 dark:text-zinc-300 font-mono">
+                                <span className="text-[10px] font-black text-zinc-700 dark:text-zinc-200 font-mono">
                                   ₹{food.discountPrice || food.price}
                                 </span>
                               </div>
@@ -1203,8 +1203,8 @@ function Home() {
           <HeartCrack className="w-12 h-12 text-zinc-300" />
           <p className="text-zinc-500 font-bold text-xs">
             {foodCatalog.length === 0 
-              ? 'No dishes found in the live Supabase catalog currently.' 
-              : 'No dishes found matching your precise criteria.'}
+              ? 'Fresh and delicious meals are being prepared. Please check back shortly!' 
+              : 'No dishes found matching your current filter criteria.'}
           </p>
           {foodCatalog.length === 0 && (isAdmin || isSuperAdmin) ? (
             <button
@@ -1285,7 +1285,7 @@ function Home() {
                     <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest block mb-0.5">
                       {food.category} • {food.subcategory}
                     </span>
-                    <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-100 line-clamp-1 group-hover:text-orange-500 transition-colors tracking-tight">
+                    <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-50 line-clamp-1 group-hover:text-orange-500 transition-colors tracking-tight">
                       {food.name}
                     </h4>
                     
@@ -1957,7 +1957,7 @@ function Home() {
                         <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest block mb-0.5">
                           {food.category} • {food.subcategory}
                         </span>
-                        <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-100 line-clamp-1 group-hover:text-orange-500 transition-colors tracking-tight">
+                        <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-50 line-clamp-1 group-hover:text-orange-500 transition-colors tracking-tight">
                           {food.name}
                         </h4>
                         
@@ -2513,7 +2513,7 @@ function Home() {
                           return (
                             <div
                               key={food.id}
-                              className="bg-white dark:bg-zinc-850/90 border border-slate-200/80 dark:border-zinc-800 rounded-2xl p-3 shadow-xs hover:shadow-md transition flex items-center justify-between gap-3 group"
+                              className="bg-white dark:bg-zinc-800 border border-slate-200/80 dark:border-zinc-700/80 rounded-2xl p-3 shadow-xs hover:shadow-md transition flex items-center justify-between gap-3 group"
                             >
                               {/* Left Info Column */}
                               <div className="flex-1 min-w-0 space-y-1">
@@ -2530,12 +2530,12 @@ function Home() {
                                       ★ Bestseller
                                     </span>
                                   )}
-                                  <span className="text-[9px] text-zinc-400 font-medium">
+                                  <span className="text-[9px] text-zinc-500 dark:text-zinc-300 font-medium">
                                     {food.category}
                                   </span>
                                 </div>
 
-                                <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-100 leading-snug group-hover:text-orange-500 transition-colors">
+                                <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-snug group-hover:text-orange-500 transition-colors">
                                   {food.name}
                                 </h4>
 

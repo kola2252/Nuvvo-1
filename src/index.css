@@ -11,6 +11,14 @@
   --color-orange-700: #cb610d;
   --color-orange-400: #ff9a44;
   --color-orange-100: #ffe9d6;
+  --color-zinc-150: #f0f0f3;
+  --color-zinc-250: #e2e2e7;
+  --color-zinc-350: #b5b5c3;
+  --color-zinc-450: #888899;
+  --color-zinc-650: #4a4a58;
+  --color-zinc-750: #33333e;
+  --color-zinc-805: #22222b;
+  --color-zinc-850: #1b1b22;
 }
 
 html, body {

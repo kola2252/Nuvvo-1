@@ -510,7 +510,7 @@ export default function OrderHistoryScreen() {
                               }`} />
                             </span>
 
-                            <span className="font-bold text-zinc-800 dark:text-zinc-200">
+                            <span className="font-bold text-zinc-900 dark:text-zinc-50">
                               {item.foodItem?.name || 'Gourmet Dish'}
                             </span>
                             <span className="text-zinc-400 font-mono font-bold">

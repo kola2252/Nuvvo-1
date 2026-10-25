@@ -1,11 +1,11 @@
-import { jsPDF } from 'jspdf';
 import { RiderPayout, RiderEarningRecord } from '../types';
 
 /**
  * Auto-generates and downloads a highly styled PDF invoice/statement for a payout.
  * Contains logo, order details, platform commission breakdown, and settlement totals.
  */
-export function downloadPayoutInvoice(payout: RiderPayout, earningRecords: RiderEarningRecord[] = []) {
+export async function downloadPayoutInvoice(payout: RiderPayout, earningRecords: RiderEarningRecord[] = []) {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
