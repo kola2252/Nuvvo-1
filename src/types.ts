@@ -216,6 +216,9 @@ export interface Order {
   deliveryPartnerAvatar?: string;
   deliveryPartnerVehicle?: string;
   deliveryPartnerRating?: number;
+  deliveryPartnerFeedback?: string;
+  deliveryPartnerRatingTags?: string[];
+  deliveryPartnerRatingDate?: string;
   deliveryPartnerLocation?: { lat: number; lng: number; addressLabel?: string };
   scheduledTime?: string;
   pointsEarned?: number;
@@ -287,6 +290,9 @@ export interface DeliveryPartnerProfile {
   isAvailable: boolean;
   status?: 'Available' | 'Delivering Order' | 'Busy' | 'Offline' | 'Suspended' | 'Registration Pending' | 'Rejected';
   rating?: number;
+  ratingsCount?: number;
+  complimentsCount?: number;
+  recentCompliments?: string[];
   completedOrdersCount?: number;
   currentLocation?: { lat: number; lng: number; addressLabel?: string };
   walletBalance: number;
@@ -390,6 +396,9 @@ export interface StorePaymentSettings {
   staticQrImage?: string;
   isLive: boolean;
   lastUpdated?: string;
+  enableUpi?: boolean;
+  enableCod?: boolean;
+  customerInstructions?: string;
 }
 
 export interface Banner {

@@ -14,6 +14,7 @@ import {
 import { Order, OrderStatus } from '../types';
 import { fetchUserOrdersFromSupabase } from '../services/supabaseOrders';
 import { downloadOrderInvoice } from '../utils/orderInvoiceGenerator';
+import WhatsAppOrderConfirmation from './WhatsAppOrderConfirmation';
 
 export default function OrderHistoryScreen() {
   const { 
@@ -649,15 +650,24 @@ export default function OrderHistoryScreen() {
 
                   {/* Action Buttons Toolbar */}
                   <div className="p-3 bg-slate-50/70 dark:bg-zinc-850/50 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadInvoice(order)}
-                      className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-750 text-zinc-700 dark:text-zinc-200 font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs"
-                      title="Download Official PDF Tax Invoice"
-                    >
-                      <Download className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>Invoice</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadInvoice(order)}
+                        className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-750 text-zinc-700 dark:text-zinc-200 font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs"
+                        title="Download Official PDF Tax Invoice"
+                      >
+                        <Download className="w-3.5 h-3.5 text-zinc-500" />
+                        <span>Invoice</span>
+                      </button>
+
+                      {/* Free WhatsApp Order Confirmation Click-to-Chat */}
+                      <WhatsAppOrderConfirmation 
+                        order={order} 
+                        customerPhone={user?.phone || order.customerPhone} 
+                        compact 
+                      />
+                    </div>
 
                     <div className="flex items-center gap-2">
                       {/* Active Order live tracking button */}

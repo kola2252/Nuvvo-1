@@ -34,7 +34,7 @@ interface PaymentMethodScreenProps {
   onCompletePayment: (method: PaymentMethodType, paymentDetails?: any) => void;
 }
 
-type PaymentCategory = 'UPI' | 'COD' | 'Wallet' | 'Credit Card';
+type PaymentCategory = 'UPI' | 'COD' | 'PhonePe' | 'Wallet' | 'Credit Card';
 
 export default function PaymentMethodScreen({
   amountPayable,
@@ -62,9 +62,16 @@ export default function PaymentMethodScreen({
   const activePhonePeNumber = storePaymentSettings?.phonePeNumber || '9876543210';
   const activeAccountHolder = storePaymentSettings?.accountHolderName || 'Arjun Gorrepati (Nuvvo Foods)';
   const staticQrImage = storePaymentSettings?.staticQrImage;
+  const isUpiEnabled = storePaymentSettings?.enableUpi !== false;
+  const isCodEnabled = storePaymentSettings?.enableCod !== false;
+  const customInstructions = storePaymentSettings?.customerInstructions;
 
-  // Selected category & method - UPI is prioritized and selected by default
-  const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>('UPI');
+  // Selected category & method - respects admin enable/disable flags
+  const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>(() => {
+    if (isUpiEnabled) return 'UPI';
+    if (isCodEnabled) return 'COD';
+    return 'Wallet';
+  });
   
   // Stable Order Reference for the checkout session to prevent duplicate orders
   const [orderRef] = useState<string>(() => {
@@ -118,6 +125,25 @@ export default function PaymentMethodScreen({
       return 0;
     }
   });
+
+  // PhonePe Gateway status check (non-blocking, server-verified)
+  const [phonePeStatus, setPhonePeStatus] = useState<{ isConfigured: boolean; environment?: string; missingVariables?: string[] } | null>(null);
+  const [isInitiatingPhonePe, setIsInitiatingPhonePe] = useState<boolean>(false);
+
+  useEffect(() => {
+    fetch('/api/payment/phonepe/status')
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setPhonePeStatus({
+            isConfigured: Boolean(d.isConfigured),
+            environment: d.environment,
+            missingVariables: d.missingVariables || []
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Generate 100% crystal-clear dynamic QR Code (SVG Vector + 1024px PNG) with High Error Correction 'H'
   useEffect(() => {
@@ -324,6 +350,26 @@ export default function PaymentMethodScreen({
     onCompletePayment(method, details);
   };
 
+  // Official PhonePe Standard Checkout Gateway initiation
+  const handlePhonePeGatewayPayment = () => {
+    if (isSubmittingOrder || isInitiatingPhonePe) return;
+    setIsInitiatingPhonePe(true);
+    setIsSubmittingOrder(true);
+
+    const details = {
+      provider: 'PHONEPE_GATEWAY',
+      paymentMethod: 'PhonePe',
+      category: 'PhonePe',
+      amount: amountPayable,
+      transactionRef: orderRef,
+      orderId: `order_${orderRef}`,
+      paymentStatus: 'initiated',
+      notes: 'Initiated via PhonePe Official Payment Gateway'
+    };
+
+    onCompletePayment('PhonePe', details);
+  };
+
   return (
     <div id="payment-selection-screen" className="min-h-screen bg-slate-50 dark:bg-zinc-950 pb-36 text-zinc-900 dark:text-zinc-50 transition-colors duration-200">
       
@@ -450,30 +496,61 @@ export default function PaymentMethodScreen({
           )}
         </div>
 
+        {/* Custom Admin Payment Instructions */}
+        {customInstructions && customInstructions.trim() && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2 shadow-2xs">
+            <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <span className="font-extrabold uppercase text-[10px] tracking-wider block text-amber-800 dark:text-amber-300">
+                Payment Instructions:
+              </span>
+              <p className="text-[11px] leading-relaxed text-zinc-700 dark:text-zinc-300">
+                {customInstructions.trim()}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* 2. PAYMENT METHOD SELECTOR TABS */}
         <div className="flex bg-slate-200/70 dark:bg-zinc-850 p-1 rounded-2xl gap-1">
-          <button
-            type="button"
-            onClick={() => setSelectedCategory('UPI')}
-            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              selectedCategory === 'UPI'
-                ? 'bg-orange-500 text-white shadow-sm'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5" /> Direct UPI
-          </button>
+          {isUpiEnabled && (
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('UPI')}
+              className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                selectedCategory === 'UPI'
+                  ? 'bg-orange-500 text-white shadow-sm'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5" /> Direct UPI
+            </button>
+          )}
+
+          {isCodEnabled && (
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('COD')}
+              className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                selectedCategory === 'COD'
+                  ? 'bg-orange-500 text-white shadow-sm'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <IndianRupee className="w-3.5 h-3.5" /> Cash on Delivery (COD)
+            </button>
+          )}
 
           <button
             type="button"
-            onClick={() => setSelectedCategory('COD')}
-            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              selectedCategory === 'COD'
-                ? 'bg-orange-500 text-white shadow-sm'
+            onClick={() => setSelectedCategory('PhonePe')}
+            className={`flex-1 py-2.5 px-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              selectedCategory === 'PhonePe'
+                ? 'bg-purple-600 text-white shadow-sm'
                 : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
             }`}
           >
-            <IndianRupee className="w-3.5 h-3.5" /> Pay on Delivery
+            <Zap className="w-3.5 h-3.5" /> PhonePe PG
           </button>
 
           <button
@@ -899,6 +976,100 @@ export default function PaymentMethodScreen({
                   Pay ₹{amountPayable} from Wallet
                 </button>
               )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* 6. OFFICIAL PHONEPE PAYMENT GATEWAY SECTION */}
+        {selectedCategory === 'PhonePe' && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-4"
+          >
+            <div className="bg-white dark:bg-zinc-900 border-2 border-purple-500/30 dark:border-purple-500/20 rounded-3xl p-5 shadow-xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-purple-600 text-white font-extrabold text-base flex items-center justify-center shadow-md shadow-purple-600/30">
+                    पे
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>PhonePe Payment Gateway</span>
+                    </h4>
+                    <p className="text-[10px] text-zinc-400 font-medium">
+                      Official PG Standard Checkout (Cards, NetBanking, UPI)
+                    </p>
+                  </div>
+                </div>
+
+                <span className="text-[9px] bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 font-extrabold uppercase px-2 py-0.5 rounded-full border border-purple-200 dark:border-purple-800">
+                  {phonePeStatus?.environment === 'PRODUCTION' ? 'Live PG' : 'Sandbox PG'}
+                </span>
+              </div>
+
+              {/* Supported payment instruments banner */}
+              <div className="p-3 bg-purple-500/5 dark:bg-purple-950/20 border border-purple-500/15 rounded-2xl text-[11px] space-y-2">
+                <span className="font-extrabold text-[10px] uppercase tracking-wider text-purple-700 dark:text-purple-300 block">
+                  Accepted Payment Methods:
+                </span>
+                <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-bold text-zinc-700 dark:text-zinc-300">
+                  <div className="p-2 rounded-xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
+                    📱 UPI Apps
+                  </div>
+                  <div className="p-2 rounded-xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
+                    💳 Cards (Visa/MC)
+                  </div>
+                  <div className="p-2 rounded-xl bg-white dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700">
+                    🏦 NetBanking
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Notice if credentials are not yet injected into Vercel */}
+              {phonePeStatus && !phonePeStatus.isConfigured && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-xs text-amber-800 dark:text-amber-300 space-y-1">
+                  <p className="font-bold flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 shrink-0" /> Merchant Setup Notice:
+                  </p>
+                  <p className="text-[10.5px] leading-relaxed">
+                    PhonePe API credentials (<code>PHONEPE_MERCHANT_ID</code>, <code>PHONEPE_SALT_KEY</code>, <code>PHONEPE_SALT_INDEX</code>) are awaiting setup in Vercel. You can still test order placement or switch to <strong>Direct UPI QR</strong> or <strong>Cash on Delivery</strong>.
+                  </p>
+                </div>
+              )}
+
+              {/* Price Row */}
+              <div className="flex justify-between items-center py-2 px-1 text-xs font-mono font-bold">
+                <span className="text-zinc-500">Order Total Payable:</span>
+                <span className="text-base font-black text-purple-600 dark:text-purple-400">₹{amountPayable}</span>
+              </div>
+
+              {/* Primary Gateway Proceed Button */}
+              <button
+                type="button"
+                id="phonepe-gateway-proceed-btn"
+                disabled={isSubmittingOrder || isInitiatingPhonePe}
+                onClick={handlePhonePeGatewayPayment}
+                className="w-full py-4 bg-purple-600 hover:bg-purple-700 active:scale-[0.98] text-white font-black rounded-2xl text-sm transition-all cursor-pointer shadow-lg shadow-purple-600/25 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isInitiatingPhonePe ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Connecting to PhonePe...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>Pay ₹{amountPayable} with PhonePe Gateway</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+
+              <div className="flex items-center justify-center gap-1.5 text-[9.5px] text-zinc-400 font-medium">
+                <ShieldCheck className="w-3.5 h-3.5 text-purple-500" />
+                <span>256-Bit Encrypted Bank Grade Checkout • S2S Verified</span>
+              </div>
             </div>
           </motion.div>
         )}

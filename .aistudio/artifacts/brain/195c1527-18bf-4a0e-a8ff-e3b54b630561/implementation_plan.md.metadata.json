@@ -1,6 +1,6 @@
 {
-  "summary": "Streamline the Add Dishes and Edit Dishes workflow by completely removing the description input field from administrator forms, and cleanly hide descriptions across all customer cards and detail views for a distraction-free food ordering experience.",
-  "updatedAt": "2026-10-12T20:55:31.857016791Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Official PhonePe Payment Gateway Integration (Standard Checkout v1): Server-side payment request initiation, cryptographic SHA256 X-VERIFY checksum generation, server-to-server webhook callback verification, direct Check Status API confirmation, and Supabase order payment state synchronization.",
+  "updatedAt":  "2026-10-26T19:05:56.087289532Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

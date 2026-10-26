@@ -39,6 +39,7 @@ import {
   LIVE_ORDERS_CHANNEL, 
   mapSupabaseRowToOrder 
 } from '../services/supabaseOrders';
+import { getAppSettingFromSupabase, saveAppSettingToSupabase } from '../services/supabaseSettings';
 
 function safeParse<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -538,6 +539,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     qrNote: 'Food bill amount directly deposited to PhonePe connected Bank Account',
     enableStaticQrFallback: false,
     staticQrImage: '',
+    enableUpi: true,
+    enableCod: true,
+    customerInstructions: 'Please complete payment using your preferred method. For UPI, scan QR code or send to our business UPI ID. For Cash on Delivery, please keep exact cash ready upon delivery.',
     isLive: true
   };
 
@@ -545,6 +549,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [storePaymentSettings, setStorePaymentSettings] = useState<StorePaymentSettings>(() => {
     return safeParse<StorePaymentSettings>('nuvvo_store_payment_settings', DEFAULT_STORE_PAYMENT_SETTINGS);
   });
+
+  // Hydrate payment configuration from Supabase app_settings table
+  useEffect(() => {
+    getAppSettingFromSupabase<Partial<StorePaymentSettings>>('payment_config').then(supabaseConfig => {
+      if (supabaseConfig && typeof supabaseConfig === 'object') {
+        setStorePaymentSettings(prev => ({
+          ...prev,
+          ...supabaseConfig
+        }));
+      }
+    }).catch(err => {
+      console.warn('[AppSettings] Notice synchronizing initial payment settings:', err?.message);
+    });
+  }, []);
 
   useEffect(() => {
     try {
@@ -564,9 +582,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       localStorage.setItem('nuvvo_store_payment_settings', JSON.stringify(updated));
     } catch {}
+
+    // Persist to Supabase public.app_settings table
+    saveAppSettingToSupabase(
+      'payment_config',
+      updated,
+      'Customer payment options, COD & UPI configuration'
+    ).catch(err => {
+      console.warn('[AppSettings] Error saving payment_config to Supabase:', err);
+    });
+
     // Broadcast realtime update to all customer devices and checkouts
     broadcastPaymentSettingsMutation(updated);
-    addAuditLog('Payment Settings Updated', `Admin updated PhonePe UPI ID: ${updated.upiId}, Bank: ${updated.bankName}`);
+    addAuditLog('Payment Settings Updated', `Admin updated COD: ${updated.enableCod ? 'Enabled' : 'Disabled'}, UPI ID: ${updated.upiId}`);
     return true;
   };
 

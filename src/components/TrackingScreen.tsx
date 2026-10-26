@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { OrderStatus } from '../types';
 import { APIProvider, Map, AdvancedMarker, Pin, InfoWindow, MapControl, ControlPosition, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
+import WhatsAppOrderConfirmation from './WhatsAppOrderConfirmation';
 
 // Stable GPS Seed coordinates for Chirala area (Center: 15.8246, 80.3533)
 const CHIRALA_CENTER = { lat: 15.8246, lng: 80.3533 };
@@ -390,7 +391,8 @@ export default function TrackingScreen() {
     pageHistory, goBack, closePage,
     notificationPermission, requestNotificationPermission,
     triggerPushNotification,
-    deliveryPartners, storePaymentSettings
+    deliveryPartners, storePaymentSettings,
+    updateOrderPaymentStatus, setActiveTrackingOrder
   } = useApp();
 
   const assignedPartner = deliveryPartners?.find(p => p.id === activeTrackingOrder?.deliveryPartnerId) || 
@@ -1334,6 +1336,14 @@ export default function TrackingScreen() {
           )}
         </AnimatePresence>
 
+        {/* FREE WHATSAPP ORDER CONFIRMATION CARD (CLICK-TO-CHAT) */}
+        {activeTrackingOrder && (
+          <WhatsAppOrderConfirmation 
+            order={activeTrackingOrder}
+            customerPhone={user?.phone || activeTrackingOrder.customerPhone}
+          />
+        )}
+
         {/* PAYMENT VERIFICATION STATUS CARD (Requirements #8, #14 & #15) */}
         {activeTrackingOrder && (
           <div id="tracking-payment-status-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
@@ -1414,6 +1424,35 @@ export default function TrackingScreen() {
                   <span>UTR: #{activeTrackingOrder.upiDetails.customerUtr}</span>
                 )}
                 <span>Receiver: {activeTrackingOrder.upiDetails.upiId || storePaymentSettings?.upiId || 'arjun.gorrepati@axl'}</span>
+              </div>
+            )}
+
+            {/* PhonePe Gateway Live Verification Button */}
+            {(activeTrackingOrder.paymentMethod === 'PhonePe' || (activeTrackingOrder as any).paymentDetails?.provider === 'PHONEPE_GATEWAY') && 
+              activeTrackingOrder.paymentStatus !== 'confirmed' && activeTrackingOrder.paymentStatus !== 'success' && (
+              <div className="pt-2 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between">
+                <span className="text-[10px] text-zinc-400 font-mono">PhonePe PG Real-time Sync</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(`/api/payment/phonepe/verify/${activeTrackingOrder.id}`);
+                      const json = await res.json();
+                      if (json.success && (json.paymentStatus === 'confirmed' || json.paymentStatus === 'success')) {
+                        updateOrderPaymentStatus(activeTrackingOrder.id, 'confirmed', 'Verified via PhonePe Gateway');
+                        alert('✅ Payment verified and confirmed by PhonePe Gateway!');
+                      } else {
+                        alert(`PhonePe Gateway Status: ${json.paymentStatus || 'Pending'}\nTransaction state: ${json.statusResult?.state || 'Awaiting completion'}`);
+                      }
+                    } catch {
+                      alert('Could not reach verification server. Please try again in a few moments.');
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold text-[10.5px] border border-purple-200 dark:border-purple-800 transition cursor-pointer flex items-center gap-1 active:scale-95"
+                >
+                  <RefreshCw className="w-3 h-3 text-purple-600" />
+                  <span>Verify with PhonePe</span>
+                </button>
               </div>
             )}
           </div>

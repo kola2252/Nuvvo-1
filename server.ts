@@ -13,6 +13,16 @@ import {
   checkServerSupabaseDiagnostics
 } from "./src/utils/supabase/server.ts";
 import debugOtpHandler from "./api/auth/debug-otp.ts";
+import { 
+  sendOrderConfirmationWhatsApp, 
+  getWhatsAppConfigStatus 
+} from "./src/utils/whatsappService.ts";
+import {
+  getPhonePeConfigStatus,
+  createPhonePePaymentRequest,
+  verifyPhonePePaymentStatus,
+  verifyPhonePeCallbackChecksum
+} from "./src/utils/phonepe.ts";
 
 dotenv.config();
 
@@ -286,6 +296,7 @@ async function callGeminiWithFallback(ai: any, params: { model?: string; content
 export const app = express();
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Enable CORS for universal client access
 app.use((_req, res, next) => {
@@ -805,7 +816,7 @@ Current User Query: ${message}`;
 
   // Periodically clean up expired OTP records in standalone server mode
   if (!process.env.VERCEL) {
-    setInterval(() => {
+    const otpCleanTimer = setInterval(() => {
       const now = Date.now();
       let changed = false;
       for (const [phone, record] of serverOtpStore.entries()) {
@@ -816,6 +827,9 @@ Current User Query: ${message}`;
       }
       if (changed) persistOtps(serverOtpStore);
     }, 2 * 60 * 1000);
+    if (typeof otpCleanTimer.unref === 'function') {
+      otpCleanTimer.unref();
+    }
   }
 
   // Helper to send real SMS via configured provider (Twilio / Fast2SMS)
@@ -1559,10 +1573,20 @@ Current User Query: ${message}`;
         console.warn('[Supabase Orders] Server POST exception:', err?.message);
       }
 
+      // Trigger WhatsApp Business Cloud API notification (idempotent, never breaks order placement)
+      let whatsappResult: any = null;
+      try {
+        whatsappResult = await sendOrderConfirmationWhatsApp(order);
+      } catch (waErr: any) {
+        console.warn('[WhatsApp] Post-order notification notice:', waErr?.message);
+        whatsappResult = { success: false, status: 'failed', error: waErr?.message };
+      }
+
       return res.status(201).json({
         success: true,
         orderId: order.id,
         supabaseSaved,
+        whatsappNotification: whatsappResult,
         order
       });
     } catch (e: any) {
@@ -1609,6 +1633,520 @@ Current User Query: ${message}`;
       console.error('Exception in PUT /api/orders/:id:', e);
       return res.status(500).json({ success: false, error: 'Failed to update order.' });
     }
+  });
+
+  // --- PHONEPE PAYMENT GATEWAY APIS (OFFICIAL PG v1 STANDARD CHECKOUT) ---
+
+  // 1. Safe Diagnostic Status (Admin or Frontend inspection without exposing secrets)
+  app.get("/api/payment/phonepe/status", (_req, res) => {
+    try {
+      const status = getPhonePeConfigStatus();
+      return res.json({
+        success: true,
+        ...status
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to get PhonePe status' });
+    }
+  });
+
+  // 2. Server-side Payment Initiation
+  // Associates strictly with the existing Nuvvo order ID and verifies the amount from server storage
+  app.post("/api/payment/phonepe/initiate", async (req, res) => {
+    try {
+      const { orderId } = req.body || {};
+      if (!orderId) {
+        return res.status(400).json({ success: false, error: "Order ID is required to initiate PhonePe payment." });
+      }
+
+      // Retrieve existing order from server store or Supabase
+      let order = serverOrders.get(String(orderId));
+      if (!order) {
+        try {
+          const { client: adminClient } = getAdminSupabaseServerClient();
+          if (adminClient) {
+            const { data } = await adminClient
+              .from('orders')
+              .select('*')
+              .eq('id', String(orderId))
+              .maybeSingle();
+            if (data) {
+              order = data;
+              serverOrders.set(String(orderId), order);
+            }
+          }
+        } catch {}
+      }
+
+      if (!order) {
+        return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+      }
+
+      // Verify payment status: Prevent duplicate payments for already paid orders
+      const currentStatus = String(order.payment_status || order.paymentStatus || '').toLowerCase();
+      if (currentStatus === 'confirmed' || currentStatus === 'paid' || currentStatus === 'success') {
+        return res.status(400).json({ 
+          success: false, 
+          error: "This order has already been paid and confirmed.",
+          isAlreadyPaid: true 
+        });
+      }
+
+      // REQUIREMENT 4: Strictly server-verified amount from the persisted order record.
+      // Never trust any client-supplied amount parameter!
+      const verifiedAmount = Number(
+        order.final_amount !== undefined 
+          ? order.final_amount 
+          : (order.finalAmount !== undefined ? order.finalAmount : (order.subtotal || 0))
+      );
+
+      if (verifiedAmount <= 0) {
+        return res.status(400).json({ success: false, error: "Invalid order amount for payment initiation." });
+      }
+
+      // Customer contact details
+      const customerPhone = String(order.customer_phone || order.customerPhone || '9876543210');
+      const customerId = String(order.customer_id || order.customerId || '');
+
+      // Resolve application base URL for callbacks & browser redirects
+      const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+      const host = req.headers['x-forwarded-host'] || req.headers.host;
+      const origin = req.headers.origin;
+      const detectedUrl = origin ? String(origin) : `${proto}://${host}`;
+      const appBaseUrl = process.env.APP_URL || detectedUrl;
+
+      // Initiate PhonePe Standard Checkout session
+      const initiateResult = await createPhonePePaymentRequest(
+        String(order.id),
+        verifiedAmount,
+        customerPhone,
+        customerId,
+        appBaseUrl
+      );
+
+      if (!initiateResult.success) {
+        return res.status(initiateResult.code === 'PHONEPE_NOT_CONFIGURED' ? 503 : 502).json({
+          success: false,
+          code: initiateResult.code,
+          message: initiateResult.message,
+          missingVariables: initiateResult.missingVariables,
+          error: initiateResult.error
+        });
+      }
+
+      // Record initiated transaction details in server state and Supabase
+      const paymentDetails = {
+        ...(typeof order.paymentDetails === 'object' ? order.paymentDetails : {}),
+        merchantTransactionId: initiateResult.merchantTransactionId,
+        provider: 'PHONEPE_GATEWAY',
+        initiatedAt: new Date().toISOString(),
+        amount: verifiedAmount,
+        status: 'initiated'
+      };
+
+      const updatedOrder = {
+        ...order,
+        payment_method: 'PhonePe',
+        paymentMethod: 'PhonePe',
+        payment_status: 'initiated',
+        paymentStatus: 'initiated',
+        paymentDetails
+      };
+
+      serverOrders.set(String(order.id), updatedOrder);
+      persistServerOrders(serverOrders);
+
+      // Async update in Supabase
+      try {
+        const { client: adminClient } = getAdminSupabaseServerClient();
+        if (adminClient) {
+          await adminClient
+            .from('orders')
+            .update({
+              payment_method: 'PhonePe',
+              payment_status: 'initiated'
+            })
+            .eq('id', String(order.id));
+        }
+      } catch {}
+
+      return res.json({
+        success: true,
+        orderId: order.id,
+        merchantTransactionId: initiateResult.merchantTransactionId,
+        redirectUrl: initiateResult.redirectUrl,
+        verifiedAmount
+      });
+    } catch (e: any) {
+      console.error('Exception in POST /api/payment/phonepe/initiate:', e);
+      return res.status(500).json({ success: false, error: e?.message || 'Failed to initiate PhonePe payment.' });
+    }
+  });
+
+  // 3. Official Server-to-Server (S2S) Callback Webhook
+  // Validates X-VERIFY checksum and verifies status directly using Check Status API
+  app.post("/api/payment/phonepe/callback", async (req, res) => {
+    try {
+      const xVerifyHeader = req.headers['x-verify'] as string | undefined;
+      const base64Response = req.body?.response;
+
+      if (!base64Response || !xVerifyHeader) {
+        console.warn('[PhonePe Webhook] Missing response body or X-VERIFY header');
+        return res.status(400).json({ success: false, error: 'Missing response body or X-VERIFY header.' });
+      }
+
+      // Step A: Cryptographic checksum validation
+      const checksumVerification = verifyPhonePeCallbackChecksum(base64Response, xVerifyHeader);
+      if (!checksumVerification.isValid) {
+        console.warn('[PhonePe Webhook] Invalid checksum:', checksumVerification.error);
+        return res.status(400).json({ success: false, error: checksumVerification.error });
+      }
+
+      const callbackData = checksumVerification.payload?.data || {};
+      const merchantTransactionId = callbackData.merchantTransactionId;
+
+      if (!merchantTransactionId) {
+        return res.status(400).json({ success: false, error: 'Missing merchantTransactionId in payload.' });
+      }
+
+      // Step B: Double verify directly with official PhonePe Check Status API (Requirement 5)
+      const statusVerification = await verifyPhonePePaymentStatus(merchantTransactionId);
+
+      // Extract order ID associated with transaction ID
+      let matchedOrder: any = null;
+      for (const [id, o] of serverOrders.entries()) {
+        const oTxnId = o.paymentDetails?.merchantTransactionId;
+        if (oTxnId === merchantTransactionId || merchantTransactionId.includes(String(id).replace(/[^a-zA-Z0-9]/g, '').slice(-18))) {
+          matchedOrder = o;
+          break;
+        }
+      }
+
+      if (!matchedOrder) {
+        try {
+          const { client: adminClient } = getAdminSupabaseServerClient();
+          if (adminClient) {
+            const { data } = await adminClient
+              .from('orders')
+              .select('*')
+              .order('created_at', { ascending: false })
+              .limit(50);
+            if (data) {
+              for (const row of data) {
+                if (merchantTransactionId.includes(String(row.id).replace(/[^a-zA-Z0-9]/g, '').slice(-18))) {
+                  matchedOrder = row;
+                  serverOrders.set(String(row.id), row);
+                  break;
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // Idempotency: Prevent duplicate processing if order is already marked confirmed/paid (Requirement 6)
+      if (matchedOrder) {
+        const existingStatus = String(matchedOrder.payment_status || matchedOrder.paymentStatus || '').toLowerCase();
+        if ((existingStatus === 'confirmed' || existingStatus === 'paid' || existingStatus === 'success') && statusVerification.success) {
+          console.log(`[PhonePe Webhook] Order ${matchedOrder.id} already verified as paid. Skipping duplicate processing.`);
+          return res.status(200).json({ success: true, message: 'Already processed (idempotent).' });
+        }
+
+        const newPaymentStatus = statusVerification.success ? 'confirmed' : (statusVerification.state === 'FAILED' ? 'failed' : 'pending');
+
+        const updatedPaymentDetails = {
+          ...(typeof matchedOrder.paymentDetails === 'object' ? matchedOrder.paymentDetails : {}),
+          merchantTransactionId,
+          phonePeTransactionId: statusVerification.transactionId,
+          paymentInstrument: statusVerification.paymentInstrument,
+          verifiedAmount: statusVerification.amountInRupees,
+          verifiedAt: new Date().toISOString(),
+          paymentStatus: newPaymentStatus
+        };
+
+        const updatedOrder = {
+          ...matchedOrder,
+          payment_status: newPaymentStatus,
+          paymentStatus: newPaymentStatus,
+          paymentDetails: updatedPaymentDetails
+        };
+
+        serverOrders.set(String(matchedOrder.id), updatedOrder);
+        persistServerOrders(serverOrders);
+
+        // Update Supabase
+        try {
+          const { client: adminClient } = getAdminSupabaseServerClient();
+          if (adminClient) {
+            await adminClient
+              .from('orders')
+              .update({
+                payment_status: newPaymentStatus
+              })
+              .eq('id', String(matchedOrder.id));
+          }
+        } catch (dbErr: any) {
+          console.error('[PhonePe Webhook] Supabase update exception:', dbErr?.message);
+        }
+
+        // Trigger WhatsApp alert if newly confirmed
+        if (newPaymentStatus === 'confirmed') {
+          try {
+            await sendOrderConfirmationWhatsApp(updatedOrder);
+          } catch {}
+        }
+      }
+
+      // Always return HTTP 200 OK promptly to PhonePe
+      return res.status(200).json({ success: true, status: statusVerification.state });
+    } catch (err: any) {
+      console.error('[PhonePe Webhook Exception]:', err?.message || err);
+      return res.status(200).json({ success: false, error: err?.message });
+    }
+  });
+
+  // 4. Return Redirect Handler (when customer finishes on PhonePe UI)
+  // Handles both POST and GET redirects from PhonePe.
+  // Never trusts redirect body/query params — strictly runs server-side verification!
+  const handlePhonePeRedirect = async (req: any, res: any) => {
+    try {
+      const orderId = req.query?.orderId || req.body?.orderId;
+      const txnId = req.query?.txnId || req.body?.txnId || req.body?.merchantTransactionId;
+
+      let verifiedStatus = 'pending';
+
+      if (txnId) {
+        const verifyRes = await verifyPhonePePaymentStatus(String(txnId));
+        if (verifyRes.success) {
+          verifiedStatus = 'confirmed';
+        } else if (verifyRes.state === 'FAILED') {
+          verifiedStatus = 'failed';
+        }
+
+        // Update order in server state & Supabase
+        if (orderId) {
+          const order = serverOrders.get(String(orderId));
+          if (order) {
+            const updated = {
+              ...order,
+              payment_status: verifiedStatus,
+              paymentStatus: verifiedStatus
+            };
+            serverOrders.set(String(orderId), updated);
+            persistServerOrders(serverOrders);
+          }
+
+          try {
+            const { client: adminClient } = getAdminSupabaseServerClient();
+            if (adminClient) {
+              await adminClient
+                .from('orders')
+                .update({ payment_status: verifiedStatus })
+                .eq('id', String(orderId));
+            }
+          } catch {}
+        }
+      }
+
+      // Redirect customer safely back to tracking page in Nuvvo app
+      const targetUrl = `/?page=tracking&orderId=${encodeURIComponent(orderId || '')}&paymentStatus=${encodeURIComponent(verifiedStatus)}`;
+      return res.redirect(302, targetUrl);
+    } catch (e: any) {
+      console.error('[PhonePe Redirect Exception]:', e?.message || e);
+      return res.redirect(302, '/?page=tracking');
+    }
+  };
+
+  app.post("/api/payment/phonepe/redirect", handlePhonePeRedirect);
+  app.get("/api/payment/phonepe/redirect", handlePhonePeRedirect);
+
+  // 5. Client Status Verification API
+  // Allows customer tracking screen or admin to verify status in real-time
+  app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
+    try {
+      const { orderId } = req.params;
+      let order = serverOrders.get(String(orderId));
+
+      if (!order) {
+        try {
+          const { client: adminClient } = getAdminSupabaseServerClient();
+          if (adminClient) {
+            const { data } = await adminClient
+              .from('orders')
+              .select('*')
+              .eq('id', String(orderId))
+              .maybeSingle();
+            if (data) order = data;
+          }
+        } catch {}
+      }
+
+      if (!order) {
+        return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+      }
+
+      const txnId = order.paymentDetails?.merchantTransactionId;
+      if (!txnId) {
+        return res.json({
+          success: true,
+          orderId,
+          paymentStatus: order.payment_status || order.paymentStatus || 'pending',
+          verified: false,
+          message: 'No PhonePe merchant transaction ID associated with this order yet.'
+        });
+      }
+
+      const statusResult = await verifyPhonePePaymentStatus(txnId);
+      const newStatus = statusResult.success ? 'confirmed' : (statusResult.state === 'FAILED' ? 'failed' : 'pending');
+
+      // Update if status changed
+      if (newStatus !== (order.payment_status || order.paymentStatus)) {
+        const updated = {
+          ...order,
+          payment_status: newStatus,
+          paymentStatus: newStatus
+        };
+        serverOrders.set(String(orderId), updated);
+        persistServerOrders(serverOrders);
+
+        try {
+          const { client: adminClient } = getAdminSupabaseServerClient();
+          if (adminClient) {
+            await adminClient
+              .from('orders')
+              .update({ payment_status: newStatus })
+              .eq('id', String(orderId));
+          }
+        } catch {}
+      }
+
+      return res.json({
+        success: true,
+        orderId,
+        paymentStatus: newStatus,
+        statusResult
+      });
+    } catch (e: any) {
+      console.error('[PhonePe Verify API Exception]:', e);
+      return res.status(500).json({ success: false, error: e?.message || 'Verification failed' });
+    }
+  });
+
+  // --- WHATSAPP CLOUD API & ORDER NOTIFICATION DIAGNOSTIC APIS ---
+  app.get("/api/admin/whatsapp/status", requireAdminAuth, (_req, res) => {
+    const status = getWhatsAppConfigStatus();
+    return res.json({
+      success: true,
+      ...status
+    });
+  });
+
+  app.get("/api/admin/order-notifications", requireAdminAuth, async (_req, res) => {
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client) {
+        const { data, error } = await client
+          .from('order_notifications')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (!error && Array.isArray(data)) {
+          return res.json({ success: true, notifications: data });
+        }
+      }
+    } catch {}
+
+    return res.json({ success: true, notifications: [] });
+  });
+
+  app.post("/api/admin/order-notifications/resend/:orderId", requireAdminAuth, async (req, res) => {
+    const { orderId } = req.params;
+    const order = serverOrders.get(String(orderId));
+    if (!order) {
+      return res.status(404).json({ success: false, error: `Order ${orderId} not found` });
+    }
+
+    try {
+      const result = await sendOrderConfirmationWhatsApp(order);
+      return res.json({ success: result.success, result });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to dispatch WhatsApp alert' });
+    }
+  });
+
+  // --- APP SETTINGS SUPABASE PERSISTENCE APIS ---
+  const serverSettings = new Map<string, any>();
+
+  app.get("/api/settings/:key", async (req, res) => {
+    const { key } = req.params;
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client) {
+        const { data, error } = await client
+          .from('app_settings')
+          .select('key, value, description, updated_at')
+          .eq('key', key)
+          .maybeSingle();
+
+        if (!error && data && data.value !== undefined) {
+          return res.json({ success: true, key: data.key, value: data.value, setting: data });
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[Settings GET] Notice querying setting ${key} from Supabase:`, e?.message);
+    }
+
+    if (serverSettings.has(String(key))) {
+      const cached = serverSettings.get(String(key));
+      return res.json({ success: true, key, value: cached.value, setting: cached });
+    }
+
+    return res.status(404).json({ success: false, error: `Setting ${key} not found` });
+  });
+
+  app.post("/api/settings", requireAdminAuth, async (req, res) => {
+    const { key, value, description } = req.body;
+    if (!key || value === undefined) {
+      return res.status(400).json({ success: false, error: "Key and value are required." });
+    }
+
+    const payload = {
+      key: String(key),
+      value,
+      description: description ? String(description) : `Setting for ${key}`,
+      updated_at: new Date().toISOString(),
+      updated_by: (req as any).user?.phone || 'admin'
+    };
+
+    // Cache locally immediately
+    serverSettings.set(String(key), payload);
+
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client) {
+        const { data, error } = await client
+          .from('app_settings')
+          .upsert([payload], { onConflict: 'key' })
+          .select();
+
+        if (error) {
+          console.warn(`[Settings POST] Supabase app_settings table notice (run migration):`, error.message);
+          return res.json({ 
+            success: true, 
+            setting: payload, 
+            notice: "Cached in server memory. Run supabase_production_migration.sql to enable permanent database storage." 
+          });
+        }
+
+        return res.json({ success: true, setting: data?.[0] || payload });
+      }
+    } catch (e: any) {
+      console.warn(`[Settings POST] Exception writing to Supabase:`, e?.message);
+      return res.json({ success: true, setting: payload, notice: "Cached in server memory" });
+    }
+
+    return res.json({ success: true, setting: payload });
   });
 
   app.post("/api/admin/dishes", requireAdminAuth, async (req, res) => {

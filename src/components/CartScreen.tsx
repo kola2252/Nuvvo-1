@@ -317,6 +317,38 @@ export default function CartScreen() {
     );
 
     if (created) {
+      if (method === 'PhonePe' && paymentDetails?.provider === 'PHONEPE_GATEWAY') {
+        // Asynchronously call the server to initiate PhonePe Standard Checkout
+        (async () => {
+          try {
+            const res = await fetch('/api/payment/phonepe/initiate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId: created.id })
+            });
+
+            const json = await res.json();
+            if (json.success && json.redirectUrl) {
+              // Direct browser redirect to PhonePe official checkout portal
+              window.location.href = json.redirectUrl;
+              return;
+            } else {
+              console.warn('[PhonePe Gateway Checkout Notice]:', json);
+              if (json.code === 'PHONEPE_NOT_CONFIGURED') {
+                alert(`PhonePe Payment Gateway Notice:\n\n${json.message}\n\nYour order #${created.id.slice(-6).toUpperCase()} is saved in Payment Pending state. You can verify payment via Direct UPI QR or choose Cash on Delivery.`);
+              } else {
+                alert(`PhonePe Gateway: ${json.error || json.message || 'Unable to open gateway portal.'}\n\nYour order has been filed. Moving to tracking screen.`);
+              }
+              setCurrentPage('tracking');
+            }
+          } catch (err: any) {
+            console.error('[PhonePe Gateway Exception]:', err);
+            setCurrentPage('tracking');
+          }
+        })();
+        return;
+      }
+
       setTimeout(() => {
         setCurrentPage('tracking'); // Redirect smoothly to real-time live map simulation
       }, 400);
