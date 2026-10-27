@@ -1,129 +1,129 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React from 'react';
 import { useApp } from '../context/AppContext';
-import { Home as HomeIcon, ShoppingBag, Settings, Bike, Building, Compass } from 'lucide-react';
+import { Home as HomeIcon, Bike, ShoppingBag, Clock, User, Building } from 'lucide-react';
 import { motion } from 'motion/react';
+import { t } from '../utils/translations';
 
-interface TabButtonProps {
-  id: string;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  badge?: number;
-  isActive: boolean;
-  isPopping: boolean;
-  currentTheme: {
-    lightBgClass: string;
-    textClass: string;
-    bgClass: string;
+export default function BottomNav() {
+  const { currentPage, setCurrentPage, cart, language } = useApp();
+
+  const totalCartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  const getDeliveryLabel = () => {
+    if (language === 'te') return 'డెలివరీ';
+    if (language === 'hi') return 'डिलीवरी';
+    return 'Delivery';
   };
-  onClick: (id: string) => void;
-}
 
-const TabButton = React.memo(function TabButton({
-  id,
-  label,
-  icon: Icon,
-  badge,
-  isActive,
-  isPopping,
-  currentTheme,
-  onClick
-}: TabButtonProps) {
-  const handleClick = useCallback(() => {
-    onClick(id);
-  }, [onClick, id]);
+  const getFranchiseLabel = () => {
+    if (language === 'te') return 'ఫ్రాంచైజ్';
+    if (language === 'hi') return 'फ्रेंचाइजी';
+    return 'Franchise';
+  };
 
-  return (
-    <button
-      onClick={handleClick}
-      aria-label={id === 'cart' && badge && badge > 0 ? `${label}, ${badge} items in cart` : label}
-      aria-current={isActive ? 'page' : undefined}
-      className="flex flex-col items-center justify-center relative p-1.5 focus:outline-none transition-all cursor-pointer group"
-    >
-      {/* Animated background on active */}
-      <div className={`absolute w-10 h-10 -z-10 rounded-xl transition-all scale-75 opacity-0 ${
-        isActive ? `${currentTheme.lightBgClass} scale-100 opacity-100` : 'group-hover:bg-slate-100 dark:group-hover:bg-zinc-800'
-      }`} />
+  // Exactly six items in specified order: Home, Delivery, Cart, Orders, Settings, Franchise
+  const navItems = [
+    { 
+      id: 'delivery', 
+      target: 'delivery',
+      label: getDeliveryLabel(), 
+      icon: Bike, 
+      title: 'Delivery Tracking' 
+    },
+    { 
+      id: 'cart', 
+      target: 'cart',
+      label: t('cart', language) || 'Cart', 
+      icon: ShoppingBag, 
+      badge: totalCartCount, 
+      title: 'Cart' 
+    },
+    { 
+      id: 'orders', 
+      target: 'orders',
+      label: t('orders', language) || 'Orders', 
+      icon: Clock, 
+      title: 'Order History' 
+    },
+    { 
+      id: 'account', 
+      target: 'account',
+      label: t('settings', language) || 'Settings', 
+      icon: User, 
+      title: 'Settings' 
+    },
+    { 
+      id: 'franchise', 
+      target: 'franchise',
+      label: getFranchiseLabel(), 
+      icon: Building, 
+      title: 'Franchise' 
+    },
+  ];
 
-      <motion.div 
-        className="relative"
-        animate={id === 'cart' && isPopping ? {
-          scale: [1, 1.35, 0.95, 1.1, 1],
-          rotate: [0, -8, 8, -4, 0]
-        } : {}}
-        transition={{ duration: 0.45, ease: "easeOut" }}
-      >
-        <Icon className={`w-5 h-5 transition-colors ${
-          isActive ? `${currentTheme.textClass} scale-110` : 'text-zinc-450 dark:text-zinc-400 group-hover:text-zinc-650 dark:group-hover:text-zinc-200'
-        }`} />
-        
-        {/* Badge Counter for Cart */}
-        {badge && badge > 0 ? (
-          <span className={`absolute -top-1.5 -right-2.5 ${currentTheme.bgClass} border border-white dark:border-zinc-900 text-white font-bold text-[9px] w-4.5 h-4.5 rounded-full flex items-center justify-center animate-bounce`}>
-            {badge}
-          </span>
-        ) : null}
-      </motion.div>
-
-      <span className={`text-[9px] font-bold mt-1 tracking-tight transition-colors ${
-        isActive ? currentTheme.textClass : 'text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200'
-      }`}>
-        {label}
-      </span>
-    </button>
-  );
-});
-
-function BottomNav() {
-  const { currentPage, setCurrentPage, cart, currentTheme } = useApp();
-
-  const cartCount = useMemo(() => cart.reduce((temp, item) => temp + item.quantity, 0), [cart]);
-
-  const [isPopping, setIsPopping] = useState(false);
-  const prevCountRef = useRef(cartCount);
-
-  useEffect(() => {
-    if (cartCount > prevCountRef.current) {
-      setIsPopping(true);
-      const timer = setTimeout(() => {
-        setIsPopping(false);
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-    prevCountRef.current = cartCount;
-  }, [cartCount]);
-
-  const handleTabClick = useCallback((id: string) => {
-    setCurrentPage(id);
-  }, [setCurrentPage]);
-
-  const tabs = useMemo(() => {
-    return [
-      { id: 'home', label: 'Home', icon: HomeIcon },
-      { id: 'cart', label: 'Cart', icon: ShoppingBag, badge: cartCount },
-      { id: 'account', label: 'Settings', icon: Settings },
-      { id: 'partner', label: 'Rider', icon: Bike },
-      { id: 'franchise', label: 'Franchise', icon: Building },
-      { id: 'delivery-options', label: 'Delivery', icon: Compass },
-    ];
-  }, [cartCount]);
+  const fullNavItems = [
+    {
+      id: 'home',
+      target: 'home',
+      label: t('home', language) || 'Home',
+      icon: HomeIcon,
+      title: 'Home'
+    },
+    ...navItems
+  ];
 
   return (
-    <nav role="navigation" aria-label="Bottom navigation menu" className="fixed bottom-0 left-0 right-0 bg-white dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-800 py-2.5 px-4 shadow-[0_-10px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_-10px_40px_rgba(0,0,0,0.5)] flex justify-around items-center z-[150] transition-all duration-300">
-      {tabs.map(tab => (
-        <TabButton
-          key={tab.id}
-          id={tab.id}
-          label={tab.label}
-          icon={tab.icon}
-          badge={tab.badge}
-          isActive={currentPage === tab.id}
-          isPopping={isPopping}
-          currentTheme={currentTheme}
-          onClick={handleTabClick}
-        />
-      ))}
+    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-slate-200 dark:border-zinc-800 shadow-lg safe-bottom">
+      <div className="max-w-md mx-auto px-1 py-1.5 flex items-center justify-around">
+        {fullNavItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = 
+            (item.id === 'home' && currentPage === 'home') ||
+            (item.id === 'delivery' && (currentPage === 'delivery' || currentPage === 'tracking' || currentPage === 'delivery-options')) ||
+            (item.id === 'cart' && currentPage === 'cart') ||
+            (item.id === 'orders' && (currentPage === 'orders' || currentPage === 'order-history')) ||
+            (item.id === 'account' && (currentPage === 'account' || currentPage === 'settings')) ||
+            (item.id === 'franchise' && currentPage === 'franchise');
+
+          return (
+            <button
+              key={item.id}
+              onClick={() => setCurrentPage(item.target)}
+              title={item.title}
+              aria-label={item.title}
+              data-testid={`nav-${item.id}`}
+              className={`relative flex flex-col items-center justify-center py-1 px-1.5 rounded-2xl transition-all duration-200 cursor-pointer ${
+                isActive
+                  ? 'text-orange-600 dark:text-orange-500 font-bold'
+                  : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'
+              }`}
+            >
+              <div className="relative">
+                <Icon className={`w-5 h-5 transition-transform duration-200 ${isActive ? 'scale-110' : ''}`} />
+                {Boolean(item.badge && item.badge > 0) && (
+                  <motion.span
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    className="absolute -top-1.5 -right-2 bg-orange-600 text-white text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow-sm"
+                  >
+                    {item.badge > 99 ? '99+' : item.badge}
+                  </motion.span>
+                )}
+              </div>
+              <span className="text-[10px] mt-0.5 font-medium tracking-tight truncate max-w-[58px]">
+                {item.label}
+              </span>
+              {isActive && (
+                <motion.div
+                  layoutId="bottomNavIndicator"
+                  className="absolute bottom-0 w-8 h-0.5 bg-orange-600 dark:bg-orange-500 rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
     </nav>
   );
 }
-
-export default React.memo(BottomNav);

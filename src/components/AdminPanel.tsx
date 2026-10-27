@@ -11,7 +11,7 @@ import {
   Settings, Save, PieChart, BarChart2, DollarSign, Bike, Check, Flame, Upload, ShieldAlert,
   Briefcase, MapPin, Download, Send, Globe, Award, Ban, Phone, MessageSquare, FileText, X,
   Image as ImageIcon, Camera, RefreshCw, Trash2, AlertTriangle, Sparkles, Percent,
-  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone
+  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone, Star
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { VegIndicator, FranchiseApplication } from '../types';
@@ -19,6 +19,7 @@ import SuperAdminGuard from './SuperAdminGuard';
 import AdminCatalogManager from './AdminCatalogManager';
 import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
 import { isAdminRole } from '../config/authConfig';
+import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
 
 export default function AdminPanel() {
   const { 
@@ -26,7 +27,7 @@ export default function AdminPanel() {
     clearAllCoupons, resetDefaultCoupons, clearStats, seedSampleOrders,
     banners, deleteBanner, clearAllBanners, resetDefaultBanners, enableBanner,
     addFoodItem, updateFoodItem, deleteFoodItem, foodLoading, foodError, supabaseConnected, seedDishesToSupabase, refetchFoodCatalog,
-    franchiseApplications, deliveryPartner, user, updateFranchiseStatus,
+    franchiseApplications, deliveryPartner, deliveryPartners, user, updateFranchiseStatus,
     restaurants, registerNewRestaurantRequest, approveRestaurant, isAdmin, isSuperAdmin, setCurrentPage,
     updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings,
     requestAdminSaveConfirmation
@@ -58,6 +59,12 @@ export default function AdminPanel() {
   // PhonePe Gateway Diagnostic State
   const [phonepeStatus, setPhonepeStatus] = useState<any>(null);
   const [phonepeStatusLoading, setPhonepeStatusLoading] = useState<boolean>(false);
+
+  // Word Document (.doc) Export State
+  const [wordExportDate, setWordExportDate] = useState<string>(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+  const [wordExportSuccess, setWordExportSuccess] = useState<string | null>(null);
 
   const fetchPhonePeStatus = async () => {
     setPhonepeStatusLoading(true);
@@ -881,6 +888,216 @@ export default function AdminPanel() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* DAILY ORDERS MICROSOFT WORD (.DOC) EXPORT SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>Daily Orders Microsoft Word (.doc) Exporter</span>
+                      <span className="text-[9px] bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-bold px-2 py-0.5 rounded-full uppercase">
+                        Daily Audit
+                      </span>
+                    </h4>
+                    <p className="text-[10.5px] text-zinc-400">
+                      Export full daily invoices, customer location with GPS coordinates, itemized bills, and delivery boy ratings
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={wordExportDate}
+                    onChange={(e) => setWordExportDate(e.target.value)}
+                    className="text-xs bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-1.5 font-mono text-zinc-800 dark:text-zinc-200 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = downloadOrdersWordDocument(orders, deliveryPartners || [], {
+                        selectedDate: wordExportDate,
+                        title: `Nuvvo Daily Orders & Dispatch Archive (${wordExportDate})`
+                      });
+                      setWordExportSuccess(`Exported ${res.ordersCount} orders to ${res.filename}`);
+                      setTimeout(() => setWordExportSuccess(null), 5000);
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Word (.doc)</span>
+                  </button>
+                </div>
+              </div>
+
+              {wordExportSuccess && (
+                <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl text-xs font-bold text-blue-700 dark:text-blue-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                  <span>{wordExportSuccess}</span>
+                </div>
+              )}
+
+              {/* Quick stats for selected export date */}
+              {(() => {
+                const dateOrders = wordExportDate === 'all' 
+                  ? orders 
+                  : orders.filter(o => o.date && new Date(o.date).toISOString().split('T')[0] === wordExportDate);
+                const dayRevenue = dateOrders.reduce((sum, o) => sum + (o.finalAmount || o.subtotal || 0), 0);
+                const delivered = dateOrders.filter(o => o.status === 'delivered').length;
+                const ratedOrders = dateOrders.filter(o => typeof o.deliveryPartnerRating === 'number');
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Orders on Date</div>
+                      <div className="text-base font-black text-zinc-900 dark:text-zinc-100 font-mono mt-0.5">
+                        {dateOrders.length}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Day Revenue</div>
+                      <div className="text-base font-black text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+                        ₹{dayRevenue.toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Delivered Orders</div>
+                      <div className="text-base font-black text-blue-600 dark:text-blue-400 font-mono mt-0.5">
+                        {delivered}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Rider Ratings Logged</div>
+                      <div className="text-base font-black text-amber-500 font-mono mt-0.5">
+                        {ratedOrders.length}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* DELIVERY BOYS RATING & FLEET PERFORMANCE SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
+                    <Bike className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>Delivery Boys Rating & Fleet Performance Tracker</span>
+                      <span className="text-[9px] bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold px-2 py-0.5 rounded-full uppercase">
+                        Live Ratings
+                      </span>
+                    </h4>
+                    <p className="text-[10.5px] text-zinc-400">
+                      Customer ratings, compliment tags, and delivery performance metrics
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-zinc-500">
+                    Total Fleet: <span className="font-mono text-zinc-900 dark:text-zinc-100">{deliveryPartners?.length || 0} Riders</span>
+                  </span>
+                </div>
+              </div>
+
+              {(!deliveryPartners || deliveryPartners.length === 0) ? (
+                <div className="p-8 text-center bg-slate-50 dark:bg-zinc-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-700">
+                  <Bike className="w-8 h-8 text-zinc-300 dark:text-zinc-600 mx-auto mb-2" />
+                  <p className="text-xs font-bold text-zinc-700 dark:text-zinc-300">No Delivery Partners Registered Yet</p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">Delivery boys can register via the rider portal or be onboarded by admin.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {deliveryPartners.map((rider) => {
+                    const riderOrders = orders.filter(o => o.deliveryPartner?.id === rider.id || o.deliveryPartner?.phone === rider.phone);
+                    const ratedRiderOrders = riderOrders.filter(o => typeof o.deliveryPartnerRating === 'number');
+                    const avgRating = ratedRiderOrders.length > 0
+                      ? Number((ratedRiderOrders.reduce((acc, o) => acc + (o.deliveryPartnerRating || 0), 0) / ratedRiderOrders.length).toFixed(1))
+                      : (rider.rating || 5.0);
+
+                    const tags = Array.from(new Set([
+                      ...(rider.recentCompliments || []),
+                      ...ratedRiderOrders.flatMap(o => o.deliveryPartnerRatingTags || [])
+                    ])).slice(0, 5);
+
+                    return (
+                      <div
+                        key={rider.id}
+                        className="p-4 bg-slate-50 dark:bg-zinc-800/70 rounded-2xl border border-slate-200/90 dark:border-zinc-700/80 space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-base">
+                              {rider.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h5 className="text-xs font-black text-zinc-900 dark:text-zinc-100">{rider.name}</h5>
+                                <span className={`text-[8.5px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                                  rider.status === 'Available'
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                    : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300'
+                                }`}>
+                                  {rider.status || 'Active'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                                +91 {rider.phone} • Bike: {rider.bikeNumber || 'Nuvvo Fleet'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="flex items-center gap-1 justify-end">
+                              <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+                              <span className="text-sm font-black text-zinc-900 dark:text-zinc-50 font-mono">
+                                {avgRating}
+                              </span>
+                              <span className="text-[10px] text-zinc-400">/ 5</span>
+                            </div>
+                            <div className="text-[9.5px] text-zinc-400">
+                              {ratedRiderOrders.length > 0 ? `${ratedRiderOrders.length} reviews` : 'Initial Rating'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {tags.map((tag, idx) => (
+                              <span
+                                key={idx}
+                                className="text-[9px] font-bold bg-amber-100/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 px-2 py-0.5 rounded-full border border-amber-200/50 dark:border-amber-900/30"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {ratedRiderOrders.some(o => o.deliveryPartnerFeedback) && (
+                          <div className="text-[10.5px] text-zinc-600 dark:text-zinc-300 bg-white dark:bg-zinc-900 p-2.5 rounded-xl border border-slate-200/70 dark:border-zinc-700/60 italic">
+                            "{ratedRiderOrders.find(o => o.deliveryPartnerFeedback)?.deliveryPartnerFeedback}"
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-slate-200/50 dark:border-zinc-700/50">
+                          <span>Total Delivered: <b className="text-zinc-700 dark:text-zinc-200 font-mono">{riderOrders.filter(o => o.status === 'delivered').length}</b></span>
+                          <span>Earned: <b className="text-emerald-600 font-mono">₹{rider.currentBalance || 0}</b></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Embedded Catalog Manager inside Admin Settings */}

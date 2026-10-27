@@ -298,6 +298,16 @@ export const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Defensive fallback: parse JSON string body if a serverless wrapper passed it unparsed
+app.use((req, _res, next) => {
+  if (typeof req.body === 'string' && req.body.trim().startsWith('{')) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch {}
+  }
+  next();
+});
+
 // Enable CORS for universal client access
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -896,11 +906,11 @@ Current User Query: ${message}`;
   const MAX_OTP_ATTEMPTS = 5;
 
   // Diagnostic endpoint checking OTP environment variable secrets & crypto module readiness safely
-  app.all("/api/auth/debug-otp", (req, res) => {
+  app.all(["/api/auth/debug-otp", "/auth/debug-otp"], (req, res) => {
     return debugOtpHandler(req, res);
   });
 
-  app.post("/api/auth/send-otp", async (req, res) => {
+  app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
     try {
       const { phone } = req.body || {};
       if (!phone) {
@@ -1004,7 +1014,7 @@ Current User Query: ${message}`;
     }
   });
 
-  app.post("/api/auth/verify-otp", (req, res) => {
+  app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
     try {
       const { phone, otp, requestedRole, challengeToken } = req.body || {};
       if (!phone) {
@@ -1145,14 +1155,14 @@ Current User Query: ${message}`;
   });
 
   // Direct login endpoint without OTP is disabled for security
-  app.post("/api/auth/direct-login", (_req, res) => {
+  app.post(["/api/auth/direct-login", "/auth/direct-login"], (_req, res) => {
     res.status(403).json({
       success: false,
       error: "Direct login without OTP is disabled. Please verify your mobile number with a security OTP."
     });
   });
 
-  app.post("/api/auth/verify-role", (req, res) => {
+  app.post(["/api/auth/verify-role", "/auth/verify-role"], (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7).trim() : req.body?.token;
     if (!token) {

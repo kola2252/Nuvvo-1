@@ -3,8 +3,28 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/auth/send-otp",
+      "destination": "/api/auth/[...path]?path=send-otp"
+    },
+    {
+      "source": "/api/auth/verify-otp",
+      "destination": "/api/auth/[...path]?path=verify-otp"
+    },
+    {
+      "source": "/api/auth/verify-role",
+      "destination": "/api/auth/[...path]?path=verify-role"
+    },
+    {
+      "source": "/api/auth/debug-otp",
+      "destination": "/api/auth/[...path]?path=debug-otp"
+    },
+    {
+      "source": "/api/auth/(.*)",
+      "destination": "/api/auth/[...path]?path=$1"
+    },
+    {
       "source": "/api/(.*)",
-      "destination": "/api"
+      "destination": "/api?path=$1"
     },
     {
       "source": "/((?!api/).*)",

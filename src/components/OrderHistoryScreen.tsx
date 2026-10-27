@@ -24,7 +24,8 @@ export default function OrderHistoryScreen() {
     goBack, 
     reorderItems, 
     setActiveTrackingOrder,
-    submitOrderRating 
+    submitOrderRating,
+    submitDeliveryPartnerRating
   } = useApp();
 
   const [supabaseOrders, setSupabaseOrders] = useState<Order[]>([]);
@@ -41,6 +42,17 @@ export default function OrderHistoryScreen() {
   // Rating states for delivered orders
   const [ratingStates, setRatingStates] = useState<{
     [orderId: string]: { rating: number; hoverRating: number; feedback: string; submitted?: boolean }
+  }>({});
+
+  // Delivery Boy Rating states for delivered orders
+  const [partnerRatingStates, setPartnerRatingStates] = useState<{
+    [orderId: string]: {
+      rating: number;
+      hoverRating: number;
+      feedback: string;
+      tags: string[];
+      submitted?: boolean;
+    }
   }>({});
 
   // Fetch orders from Supabase on mount and user phone change
@@ -159,6 +171,20 @@ export default function OrderHistoryScreen() {
     }
 
     setRatingStates(prev => ({
+      ...prev,
+      [orderId]: { ...prev[orderId], submitted: true }
+    }));
+  };
+
+  const handleRateDeliveryPartner = (orderId: string) => {
+    const state = partnerRatingStates[orderId];
+    if (!state || state.rating === 0) return;
+
+    if (submitDeliveryPartnerRating) {
+      submitDeliveryPartnerRating(orderId, state.rating, state.feedback || '', state.tags || []);
+    }
+
+    setPartnerRatingStates(prev => ({
       ...prev,
       [orderId]: { ...prev[orderId], submitted: true }
     }));
@@ -456,6 +482,13 @@ export default function OrderHistoryScreen() {
                 feedback: order.feedback || '', 
                 submitted: !!order.rating 
               };
+              const partnerRatingState = partnerRatingStates[order.id] || {
+                rating: order.deliveryPartnerRating || 0,
+                hoverRating: 0,
+                feedback: order.deliveryPartnerFeedback || '',
+                tags: order.deliveryPartnerRatingTags || [],
+                submitted: !!order.deliveryPartnerRating
+              };
 
               return (
                 <div
@@ -641,6 +674,141 @@ export default function OrderHistoryScreen() {
                               >
                                 Submit Rating
                               </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Delivery Boy Rating Section for Delivered Orders */}
+                    {order.status === 'delivered' && (
+                      <div className="mt-2 pt-2 border-t border-dashed border-slate-200 dark:border-zinc-800">
+                        {order.deliveryPartnerRating || partnerRatingState.submitted ? (
+                          <div className="flex items-center justify-between text-xs bg-emerald-50/80 dark:bg-emerald-950/20 p-2 rounded-xl border border-emerald-200/50 dark:border-emerald-900/30">
+                            <div className="flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
+                              <Truck className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Rider Rating: {order.deliveryPartnerRating || partnerRatingState.rating} / 5 ⭐</span>
+                            </div>
+                            <span className="text-[10px] text-emerald-600 font-medium">
+                              {order.deliveryPartner?.name ? `(${order.deliveryPartner.name})` : 'Delivery Boy'}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="p-2.5 bg-amber-50/40 dark:bg-zinc-800/40 rounded-xl border border-amber-200/50 dark:border-zinc-700/50 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                <Truck className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                                <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200">
+                                  Rate Delivery Boy {order.deliveryPartner?.name ? `(${order.deliveryPartner.name})` : ''}:
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                {[1, 2, 3, 4, 5].map(star => (
+                                  <button
+                                    key={star}
+                                    type="button"
+                                    onClick={() => {
+                                      setPartnerRatingStates(prev => ({
+                                        ...prev,
+                                        [order.id]: {
+                                          ...(prev[order.id] || { feedback: '', tags: [] }),
+                                          rating: star,
+                                          hoverRating: 0
+                                        }
+                                      }));
+                                    }}
+                                    onMouseEnter={() => {
+                                      setPartnerRatingStates(prev => ({
+                                        ...prev,
+                                        [order.id]: {
+                                          ...(prev[order.id] || { rating: 0, feedback: '', tags: [] }),
+                                          hoverRating: star
+                                        }
+                                      }));
+                                    }}
+                                    onMouseLeave={() => {
+                                      setPartnerRatingStates(prev => ({
+                                        ...prev,
+                                        [order.id]: {
+                                          ...(prev[order.id] || { rating: 0, feedback: '', tags: [] }),
+                                          hoverRating: 0
+                                        }
+                                      }));
+                                    }}
+                                    className="p-0.5 cursor-pointer text-zinc-300 dark:text-zinc-700 hover:scale-110 transition"
+                                  >
+                                    <Star 
+                                      className={`w-4 h-4 ${
+                                        star <= (partnerRatingState.hoverRating || partnerRatingState.rating)
+                                          ? 'fill-amber-400 text-amber-400'
+                                          : 'text-zinc-300 dark:text-zinc-600'
+                                      }`} 
+                                    />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {partnerRatingState.rating > 0 && (
+                              <div className="space-y-2 pt-1">
+                                <div className="flex flex-wrap gap-1">
+                                  {['⚡ Fast Delivery', '😊 Polite Rider', '🍲 Hot Food Intact', '😷 Masked & Safe'].map(tag => {
+                                    const isSelected = (partnerRatingState.tags || []).includes(tag);
+                                    return (
+                                      <button
+                                        key={tag}
+                                        type="button"
+                                        onClick={() => {
+                                          const currentTags = partnerRatingState.tags || [];
+                                          const newTags = isSelected 
+                                            ? currentTags.filter(t => t !== tag)
+                                            : [...currentTags, tag];
+                                          setPartnerRatingStates(prev => ({
+                                            ...prev,
+                                            [order.id]: {
+                                              ...(prev[order.id] || { rating: partnerRatingState.rating, feedback: '' }),
+                                              tags: newTags
+                                            }
+                                          }));
+                                        }}
+                                        className={`text-[9.5px] px-2 py-0.5 rounded-full font-bold cursor-pointer transition ${
+                                          isSelected
+                                            ? 'bg-amber-500 text-white'
+                                            : 'bg-white dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-slate-200 dark:border-zinc-700'
+                                        }`}
+                                      >
+                                        {tag}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder="Optional compliment or notes..."
+                                    value={partnerRatingState.feedback || ''}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setPartnerRatingStates(prev => ({
+                                        ...prev,
+                                        [order.id]: {
+                                          ...(prev[order.id] || { rating: partnerRatingState.rating, tags: [] }),
+                                          feedback: val
+                                        }
+                                      }));
+                                    }}
+                                    className="flex-1 text-[11px] px-2 py-1 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 focus:outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRateDeliveryPartner(order.id)}
+                                    className="text-[10.5px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded-lg cursor-pointer transition active:scale-95 shrink-0"
+                                  >
+                                    Save Rider Rating
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
                         )}

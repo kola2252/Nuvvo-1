@@ -212,3 +212,8 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     saveProfileDetails: 'विवरण सहेजें'
   }
 };
+
+export function t(key: string, lang: AppLanguage = 'en'): string {
+  const dict = translations[lang] || translations.en;
+  return (dict as any)?.[key] || (translations.en as any)?.[key] || key;
+}

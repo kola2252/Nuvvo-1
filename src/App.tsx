@@ -95,9 +95,10 @@ export default function App() {
         return <Auth />;
       case 'home':
         return <Home />;
-      case 'orders':
+      case 'delivery':
       case 'tracking':
         return <TrackingScreen />;
+      case 'orders':
       case 'order-history':
         return <OrderHistoryScreen />;
       case 'favorites':
@@ -105,6 +106,7 @@ export default function App() {
       case 'cart':
         return <CartScreen />;
       case 'account':
+      case 'settings':
         return <AccountScreen />;
       case 'partner':
         return <PartnerScreen />;

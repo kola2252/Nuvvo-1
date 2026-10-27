@@ -169,6 +169,7 @@ interface AppContextProps {
   reorderItems: (order: Order) => void;
   changeOrderStatus: (orderId: string, status: OrderStatus, isSystemSimulation?: boolean) => void;
   submitOrderRating: (orderId: string, rating: number, feedback?: string) => void;
+  submitDeliveryPartnerRating: (orderId: string, rating: number, feedback?: string, tags?: string[]) => void;
   updateOrderPaymentStatus: (orderId: string, paymentStatus: PaymentStatusType | string, notes?: string) => void;
 
   // Live Track State
@@ -3016,9 +3017,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: cleanPhone })
       });
-      const data = await resp.json();
-      if (!resp.ok || !data.success) {
-        const errorMsg = data.error || 'Failed to transmit OTP. Please try again.';
+
+      const contentType = resp.headers.get('content-type') || '';
+      let data: any = null;
+      if (contentType.includes('application/json')) {
+        try {
+          data = await resp.json();
+        } catch {
+          data = null;
+        }
+      } else {
+        const text = await resp.text();
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = null;
+        }
+      }
+
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          return {
+            success: false,
+            error: 'Authentication service endpoint not found (HTTP 404). Please verify API routing.'
+          };
+        }
+        const errorMsg = data?.error || (resp.status >= 500 ? `Authentication server error (HTTP ${resp.status}).` : `Server request failed (HTTP ${resp.status}).`);
+        addAuditLog('OTP Failed', `Failed OTP generation for ${cleanPhone}: ${errorMsg}`);
+        return { success: false, error: errorMsg };
+      }
+
+      if (!data || !data.success) {
+        const errorMsg = data?.error || 'Failed to transmit OTP. Please try again.';
         addAuditLog('OTP Failed', `Failed OTP generation for ${cleanPhone}: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
@@ -3043,9 +3073,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     } catch (e: any) {
       console.error('Failed to request OTP from server:', e);
+      const isNetwork = !navigator.onLine || (e?.name === 'TypeError' && String(e?.message).includes('Failed to fetch'));
       return {
         success: false,
-        error: 'Network error: Failed to reach authentication server. Please check your connection and try again.'
+        error: isNetwork
+          ? 'Network error: Failed to reach authentication server. Please check your connection and try again.'
+          : (e?.message || 'Authentication request failed. Please try again.')
       };
     }
   };
@@ -3073,9 +3106,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       });
 
-      const data = await resp.json();
-      if (!resp.ok || !data.success) {
-        const errorMsg = data.error || 'The verification OTP code is incorrect. Please check the code and try again.';
+      const contentType = resp.headers.get('content-type') || '';
+      let data: any = null;
+      if (contentType.includes('application/json')) {
+        try {
+          data = await resp.json();
+        } catch {
+          data = null;
+        }
+      } else {
+        const text = await resp.text();
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = null;
+        }
+      }
+
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          return {
+            success: false,
+            error: 'Authentication verification endpoint not found (HTTP 404).'
+          };
+        }
+        const errorMsg = data?.error || (resp.status >= 500 ? `Verification server error (HTTP ${resp.status}).` : 'Verification failed.');
+        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
+        return { success: false, error: errorMsg };
+      }
+
+      if (!data || !data.success) {
+        const errorMsg = data?.error || 'The verification OTP code is incorrect. Please check the code and try again.';
         addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
@@ -3695,6 +3756,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       addAuditLog('Feedback Submitted', `Customer submitted feedback & ${rating}-star rating for Order #${orderId.slice(-6).toUpperCase()}`);
     }
+  };
+
+  const submitDeliveryPartnerRating = (orderId: string, rating: number, feedback?: string, tags?: string[]) => {
+    const ratingDate = new Date().toISOString();
+    setOrders(prev => prev.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          deliveryPartnerRating: rating,
+          deliveryPartnerFeedback: feedback,
+          deliveryPartnerRatingTags: tags,
+          deliveryPartnerRatingDate: ratingDate
+        };
+      }
+      return o;
+    }));
+
+    updateOrderInSupabase(orderId, {
+      deliveryPartnerRating: rating,
+      deliveryPartnerFeedback: feedback,
+      deliveryPartnerRatingTags: tags,
+      deliveryPartnerRatingDate: ratingDate
+    });
+
+    const targetOrder = orders.find(o => o.id === orderId);
+    const riderId = targetOrder?.deliveryPartner?.id;
+    if (riderId) {
+      setDeliveryPartners(prev => prev.map(p => {
+        if (p.id === riderId) {
+          const currentCount = p.ratingsCount || 0;
+          const currentRating = p.rating || 5.0;
+          const newCount = currentCount + 1;
+          const newRating = Number(((currentRating * currentCount + rating) / newCount).toFixed(1));
+          const existingCompliments = p.recentCompliments || [];
+          const newCompliments = tags && tags.length > 0 
+            ? Array.from(new Set([...tags, ...existingCompliments])).slice(0, 10)
+            : existingCompliments;
+          return {
+            ...p,
+            rating: newRating,
+            ratingsCount: newCount,
+            recentCompliments: newCompliments
+          };
+        }
+        return p;
+      }));
+    }
+
+    addAuditLog('Delivery Partner Rated', `Order #${orderId.slice(-6).toUpperCase()} rider given ${rating} stars.`);
   };
 
   const updateOrderPaymentStatus = (orderId: string, newPaymentStatus: PaymentStatusType | string, notes?: string) => {
@@ -5284,7 +5394,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       appliedCoupon, applyCouponCode, removeCouponCode,
       deliveryPartnerTip, setDeliveryPartnerTip,
       orderInstructions, setOrderInstructions,
-      orders, createNewOrder, reorderItems, changeOrderStatus, submitOrderRating, updateOrderPaymentStatus,
+      orders, createNewOrder, reorderItems, changeOrderStatus, submitOrderRating, submitDeliveryPartnerRating, updateOrderPaymentStatus,
       activeTrackingOrder, setActiveTrackingOrder, deliveryRouteProgress,
       deliveryPartner, registerAsPartner, partnerOtpVerify, updatePartnerAvailability,
       partnerAcceptOrder, partnerRejectOrder, partnerCompleteDelivery,

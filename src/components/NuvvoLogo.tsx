@@ -1,104 +1,69 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React from 'react';
 import { motion } from 'motion/react';
 
 interface NuvvoLogoProps {
-  className?: string;
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   showText?: boolean;
   animate?: boolean;
+  className?: string;
 }
 
 export default function NuvvoLogo({
-  className = '',
   size = 'md',
   showText = true,
-  animate = true
+  animate = false,
+  className = '',
 }: NuvvoLogoProps) {
-  // Dimensions based on size
-  const iconSizes = {
-    xs: 'w-10 h-10',
-    sm: 'w-16 h-16',
-    md: 'w-32 h-32',
-    lg: 'w-48 h-48',
-    xl: 'w-64 h-64'
+  const sizeMap = {
+    sm: { box: 'w-8 h-8', text: 'text-base', sub: 'text-[9px]' },
+    md: { box: 'w-14 h-14', text: 'text-2xl', sub: 'text-xs' },
+    lg: { box: 'w-20 h-20', text: 'text-3xl', sub: 'text-sm' },
+    xl: { box: 'w-28 h-28', text: 'text-4xl', sub: 'text-base' },
   };
 
-  const containerSizes = {
-    xs: 'space-y-1',
-    sm: 'space-y-1.5',
-    md: 'space-y-3',
-    lg: 'space-y-4',
-    xl: 'space-y-5'
-  };
+  const currentSize = sizeMap[size] || sizeMap.md;
 
-  return (
-    <div className={`flex flex-col items-center justify-center text-center ${containerSizes[size]} ${className}`}>
-      {/* Official Nuvvo Gold and Black Logo Badge Container */}
-      <motion.div
-        animate={
-          animate
-            ? {
-                y: [0, -3, 0],
-                scale: [1, 1.015, 1],
-              }
-            : {}
-        }
-        transition={{
-          repeat: Infinity,
-          duration: 3.5,
-          ease: "easeInOut"
-        }}
-        className={`relative ${iconSizes[size]} select-none rounded-full p-1 bg-black border border-amber-500/30 shadow-2xl flex items-center justify-center overflow-hidden`}
-      >
+  const content = (
+    <div className={`flex flex-col items-center justify-center ${className}`}>
+      <div className={`relative ${currentSize.box} rounded-2xl overflow-hidden shadow-lg shadow-orange-500/20 flex items-center justify-center bg-gradient-to-tr from-orange-600 via-amber-500 to-yellow-400 p-0.5`}>
         <img
           src="/nuvvo-logo.png"
           alt="Nuvvo Logo"
-          className="w-full h-full object-contain rounded-full drop-shadow-xl"
-          referrerPolicy="no-referrer"
+          className="w-full h-full object-cover rounded-[14px]"
+          onError={(e) => {
+            // Fallback to stylized vector badge if PNG is loading
+            (e.target as HTMLElement).style.display = 'none';
+          }}
         />
-      </motion.div>
+        <div className="absolute inset-0 flex items-center justify-center font-black text-white text-lg drop-shadow-md select-none pointer-events-none">
+          N
+        </div>
+      </div>
 
-      {/* Brand Text & Slogan */}
       {showText && (
-        <div className="flex flex-col items-center">
-          <motion.h2
-            initial={animate ? { scale: 0.95, opacity: 0 } : {}}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ delay: 0.1, duration: 0.5 }}
-            className={`font-black tracking-wider text-zinc-900 dark:text-zinc-100 font-sans uppercase ${
-              size === 'xs' ? 'text-sm' : size === 'sm' ? 'text-lg' : size === 'md' ? 'text-2xl' : size === 'lg' ? 'text-4xl' : 'text-5xl'
-            }`}
-          >
+        <div className="text-center mt-2">
+          <h1 className={`font-black tracking-tight text-zinc-900 dark:text-zinc-100 ${currentSize.text} leading-none`}>
             Nuvvo
-          </motion.h2>
-
-          <motion.div
-            initial={animate ? { opacity: 0, y: 5 } : {}}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2, duration: 0.5 }}
-            className="flex flex-col items-center w-full"
-          >
-            <p
-              className={`text-amber-600 dark:text-amber-400 font-extrabold uppercase tracking-widest ${
-                size === 'xs' ? 'text-[6px]' : size === 'sm' ? 'text-[7px]' : size === 'md' ? 'text-[10px]' : size === 'lg' ? 'text-xs' : 'text-sm'
-              }`}
-            >
-              Ruchi Nee Istam • Delivery Mem Istam
-            </p>
-
-            <div
-              className={`h-[2px] bg-gradient-to-r from-transparent via-amber-500 to-transparent rounded-full mt-1.5 opacity-80 ${
-                size === 'xs' ? 'w-16' : size === 'sm' ? 'w-24' : size === 'md' ? 'w-44' : size === 'lg' ? 'w-64' : 'w-80'
-              }`}
-            />
-          </motion.div>
+          </h1>
+          <p className={`font-bold tracking-widest uppercase text-orange-600 dark:text-orange-400 ${currentSize.sub} mt-0.5`}>
+            Food & Fast Delivery
+          </p>
         </div>
       )}
     </div>
   );
+
+  if (animate) {
+    return (
+      <motion.div
+        initial={{ scale: 0.85, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+      >
+        {content}
+      </motion.div>
+    );
+  }
+
+  return content;
 }
