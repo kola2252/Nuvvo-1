@@ -9,67 +9,85 @@ export default function BottomNav() {
 
   const totalCartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const getDeliveryLabel = () => {
-    if (language === 'te') return 'డెలివరీ';
-    if (language === 'hi') return 'डिलीवरी';
-    return 'Delivery';
-  };
-
-  const getFranchiseLabel = () => {
-    if (language === 'te') return 'ఫ్రాంచైజ్';
-    if (language === 'hi') return 'फ्रेंचाइजी';
-    return 'Franchise';
+  const getNavLabel = (key: 'home' | 'delivery' | 'cart' | 'orders' | 'settings' | 'franchise') => {
+    if (language === 'te') {
+      const teMap: Record<string, string> = {
+        home: 'హోమ్',
+        delivery: 'డెలివరీ',
+        cart: 'కార్ట్',
+        orders: 'ఆర్డర్లు',
+        settings: 'సెట్టింగులు',
+        franchise: 'ఫ్రాంచైజ్',
+      };
+      return teMap[key] || key;
+    }
+    if (language === 'hi') {
+      const hiMap: Record<string, string> = {
+        home: 'होम',
+        delivery: 'डिलीवरी',
+        cart: 'कार्ट',
+        orders: 'ऑर्डर',
+        settings: 'सेटिंग्स',
+        franchise: 'फ्रेंचाइजी',
+      };
+      return hiMap[key] || key;
+    }
+    const enMap: Record<string, string> = {
+      home: 'Home',
+      delivery: 'Delivery',
+      cart: 'Cart',
+      orders: 'Orders',
+      settings: 'Settings',
+      franchise: 'Franchise',
+    };
+    return enMap[key] || key;
   };
 
   // Exactly six items in specified order: Home, Delivery, Cart, Orders, Settings, Franchise
-  const navItems = [
+  const fullNavItems = [
+    { 
+      id: 'home', 
+      target: 'home',
+      label: getNavLabel('home'), 
+      icon: HomeIcon, 
+      title: getNavLabel('home') 
+    },
     { 
       id: 'delivery', 
       target: 'delivery',
-      label: getDeliveryLabel(), 
+      label: getNavLabel('delivery'), 
       icon: Bike, 
-      title: 'Delivery Tracking' 
+      title: getNavLabel('delivery') 
     },
     { 
       id: 'cart', 
       target: 'cart',
-      label: t('cart', language) || 'Cart', 
+      label: getNavLabel('cart'), 
       icon: ShoppingBag, 
       badge: totalCartCount, 
-      title: 'Cart' 
+      title: getNavLabel('cart') 
     },
     { 
       id: 'orders', 
       target: 'orders',
-      label: t('orders', language) || 'Orders', 
+      label: getNavLabel('orders'), 
       icon: Clock, 
-      title: 'Order History' 
+      title: getNavLabel('orders') 
     },
     { 
       id: 'account', 
       target: 'account',
-      label: t('settings', language) || 'Settings', 
+      label: getNavLabel('settings'), 
       icon: User, 
-      title: 'Settings' 
+      title: getNavLabel('settings') 
     },
     { 
       id: 'franchise', 
       target: 'franchise',
-      label: getFranchiseLabel(), 
+      label: getNavLabel('franchise'), 
       icon: Building, 
-      title: 'Franchise' 
+      title: getNavLabel('franchise') 
     },
-  ];
-
-  const fullNavItems = [
-    {
-      id: 'home',
-      target: 'home',
-      label: t('home', language) || 'Home',
-      icon: HomeIcon,
-      title: 'Home'
-    },
-    ...navItems
   ];
 
   return (

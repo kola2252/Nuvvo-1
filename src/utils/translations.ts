@@ -55,6 +55,11 @@ export interface TranslationDictionary {
   phone: string;
   deliveryAddress: string;
   saveProfileDetails: string;
+  home: string;
+  delivery: string;
+  cart: string;
+  orders: string;
+  settings: string;
 }
 
 export const translations: Record<AppLanguage, TranslationDictionary> = {
@@ -107,7 +112,12 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     changeEmail: 'Change Email',
     phone: 'Phone',
     deliveryAddress: 'Delivery Address',
-    saveProfileDetails: 'Save Details'
+    saveProfileDetails: 'Save Details',
+    home: 'Home',
+    delivery: 'Delivery',
+    cart: 'Cart',
+    orders: 'Orders',
+    settings: 'Settings'
   },
   te: {
     welcome: 'నువ్వో (NUVVO) కి స్వాగతం',
@@ -158,7 +168,12 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     changeEmail: 'ఈమెయిల్ మార్చండి',
     phone: 'ఫోన్ నంబర్',
     deliveryAddress: 'డెలివరీ అడ్రస్',
-    saveProfileDetails: 'వివరాలు సేవ్ చేయండి'
+    saveProfileDetails: 'వివరాలు సేవ్ చేయండి',
+    home: 'హోమ్',
+    delivery: 'డెలివరీ',
+    cart: 'కార్ట్',
+    orders: 'ఆర్డర్లు',
+    settings: 'సెట్టింగులు'
   },
   hi: {
     welcome: 'नुव्वो (NUVVO) में आपका स्वागत है',
@@ -209,7 +224,12 @@ export const translations: Record<AppLanguage, TranslationDictionary> = {
     changeEmail: 'ईमेल बदलें',
     phone: 'फ़ोन नंबर',
     deliveryAddress: 'डिलीवरी पता',
-    saveProfileDetails: 'विवरण सहेजें'
+    saveProfileDetails: 'विवरण सहेजें',
+    home: 'होम',
+    delivery: 'डिलीवरी',
+    cart: 'कार्ट',
+    orders: 'ऑर्डर',
+    settings: 'सेटिंग्स'
   }
 };
 

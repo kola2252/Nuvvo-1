@@ -1,4 +1,4 @@
-import app from "../../server.ts";
+import app from "../server-app.ts";
 
 export default function handler(req: any, res: any) {
   req.url = "/api/auth/verify-otp";

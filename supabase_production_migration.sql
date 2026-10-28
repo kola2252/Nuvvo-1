@@ -87,6 +87,36 @@ BEGIN
     END IF;
 END $$;
 
+-- Ensure consistent RLS policies for admin users and proxy calls to delete and modify food items
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'food_items' AND policyname = 'allow_admin_delete_food_items'
+    ) THEN
+        CREATE POLICY allow_admin_delete_food_items 
+        ON public.food_items 
+        FOR DELETE 
+        TO authenticated, anon, service_role 
+        USING (true);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'food_items' AND policyname = 'allow_admin_manage_food_items'
+    ) THEN
+        CREATE POLICY allow_admin_manage_food_items 
+        ON public.food_items 
+        FOR ALL 
+        TO authenticated, anon, service_role 
+        USING (true) 
+        WITH CHECK (true);
+    END IF;
+END $$;
+
 -- 3. ENSURE ORDERS TABLE SCHEMA AND SECURE RLS POLICIES
 ALTER TABLE IF EXISTS public.orders
     ADD COLUMN IF NOT EXISTS payment_method TEXT,

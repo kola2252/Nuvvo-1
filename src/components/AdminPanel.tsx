@@ -1738,14 +1738,15 @@ export default function AdminPanel() {
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={async () => {
-                      if (!confirm('Populate Supabase public.food_items with initial curated menu dishes?')) return;
-                      const res = await seedDishesToSupabase();
-                      if (res.success) {
-                        alert(`Successfully seeded ${res.count} dishes to Supabase public.food_items!`);
-                      } else {
-                        alert(`Notice: ${res.error || 'Seed failed'}`);
-                      }
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Seed Menu to Supabase',
+                        itemType: 'Menu Synchronization (వంటకాల సమన్వయం)',
+                        description: 'Populate Supabase public.food_items database with curated baseline menu dishes?',
+                        onConfirm: async () => {
+                          await seedDishesToSupabase();
+                        }
+                      });
                     }}
                     className="px-2.5 py-1 text-[10px] font-bold bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 rounded-lg transition cursor-pointer"
                     title="Seed default dishes to Supabase food_items table"
@@ -1775,14 +1776,15 @@ export default function AdminPanel() {
                   </p>
                   <button
                     type="button"
-                    onClick={async () => {
-                      if (!confirm('Populate Supabase public.food_items with initial curated menu dishes?')) return;
-                      const res = await seedDishesToSupabase();
-                      if (res.success) {
-                        alert(`Successfully seeded ${res.count} dishes to Supabase public.food_items!`);
-                      } else {
-                        alert(`Notice: ${res.error || 'Seed failed'}`);
-                      }
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Seed Initial Menu to Supabase',
+                        itemType: 'Menu Synchronization (వంటకాల ప్రారంభ సమన్వయం)',
+                        description: 'Populate Supabase public.food_items with initial curated menu dishes?',
+                        onConfirm: async () => {
+                          await seedDishesToSupabase();
+                        }
+                      });
                     }}
                     className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-black text-xs rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
                   >
@@ -1977,11 +1979,16 @@ export default function AdminPanel() {
                           <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-zinc-800">
                             <button
                               type="button"
-                              onClick={async () => {
-                                if (!confirm(`Are you sure you want to permanently delete "${item.name}" from Supabase?`)) return;
-                                await deleteFoodItem(item.id);
-                                setActiveReplaceId(null);
-                                alert(`Dish "${item.name}" removed from Supabase food_items.`);
+                              onClick={() => {
+                                requestAdminSaveConfirmation({
+                                  title: `Permanently Delete Dish: "${item.name}"`,
+                                  itemType: 'Dish Removal (వంటకం శాశ్వత తొలగింపు)',
+                                  description: `Are you sure you want to permanently delete "${item.name}" (ID: ${item.id}) from Supabase food_items and active menu?`,
+                                  onConfirm: async () => {
+                                    await deleteFoodItem(item.id);
+                                    setActiveReplaceId(null);
+                                  }
+                                });
                               }}
                               className="bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-[10px] px-3 py-1.5 rounded-lg uppercase tracking-wider transition cursor-pointer flex items-center gap-1"
                             >

@@ -1,6 +1,13 @@
 {
   "version": 2,
+  "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "framework": "vite",
+  "functions": {
+    "api/**/*.ts": {
+      "includeFiles": "{server.js,server.ts,api/**,dist/**,.server_*.json}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/auth/send-otp",

@@ -302,7 +302,7 @@ export default function Home() {
 
       {/* Address Selector Modal */}
       {showAddressModal && (
-        <AddressSelectorModal onClose={() => setShowAddressModal(false)} />
+        <AddressSelectorModal isOpen={showAddressModal} onClose={() => setShowAddressModal(false)} />
       )}
     </div>
   );

@@ -33,6 +33,26 @@ export default function AdminCatalogManager() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSeeding, setIsSeeding] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  const handleDeleteDish = async (dishId: string, dishName: string) => {
+    setIsDeleting(true);
+    setFeedback(null);
+    try {
+      const res = await deleteFoodItem(dishId);
+      if (res.success) {
+        setFeedback({ type: 'success', message: `Dish "${dishName}" removed successfully!` });
+        setConfirmDeleteId(null);
+      } else {
+        setFeedback({ type: 'error', message: res.error || 'Failed to remove dish' });
+      }
+    } catch (e: any) {
+      setFeedback({ type: 'error', message: e?.message || 'Error deleting dish' });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Form modal state for dishes
   const [isAddingDish, setIsAddingDish] = useState(false);
@@ -91,6 +111,8 @@ export default function AdminCatalogManager() {
       rating: 4.8,
       reviewsCount: 12,
       prepTime: 20,
+      spiceLevel: 'Medium',
+      reviews: [],
       ingredients: ["Fresh Native Produce", "Natural Unrefined Oils", "Chef Secret Spices"],
       customizations: [],
       isBestSeller: false,
@@ -393,17 +415,35 @@ export default function AdminCatalogManager() {
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
-                  <button
-                    onClick={async () => {
-                      if (window.confirm(`Delete dish "${dish.name}"?`)) {
-                        await deleteFoodItem(dish.id);
-                      }
-                    }}
-                    className="p-1.5 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-zinc-700 rounded-lg cursor-pointer"
-                    title="Delete dish"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+
+                  {confirmDeleteId === dish.id ? (
+                    <div className="flex items-center gap-1 animate-in fade-in duration-150">
+                      <button
+                        onClick={() => handleDeleteDish(dish.id, dish.name)}
+                        disabled={isDeleting}
+                        className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black rounded-lg shadow-xs cursor-pointer flex items-center gap-1"
+                      >
+                        {isDeleting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        <span>Delete</span>
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        disabled={isDeleting}
+                        className="px-1.5 py-1 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 text-[10px] font-bold rounded-lg cursor-pointer"
+                        title="Cancel"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDeleteId(dish.id)}
+                      className="p-1.5 text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-zinc-700 rounded-lg cursor-pointer transition-colors"
+                      title="Delete dish"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))
