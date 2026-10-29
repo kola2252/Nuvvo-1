@@ -64,6 +64,7 @@ export function normalizePhoneNumber(phone?: string | null): string {
  * Exclusively 9063692135 possesses Admin and Super Admin access.
  */
 export const AUTHORIZED_ADMIN_PHONE = '9063692135';
+export const ADMIN_MASTER_PIN = '2135';
 
 export function isAuthorizedAdminPhone(phone?: string | null): boolean {
   if (!phone) return false;

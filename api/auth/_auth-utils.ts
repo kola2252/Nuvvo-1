@@ -9,7 +9,7 @@
 import crypto from "crypto";
 
 export const AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || '9063692135';
-export const ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || '9063';
+export const ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || '2135';
 export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || 'nuvvo_production_secure_secret_chirala_2026';
 export const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 

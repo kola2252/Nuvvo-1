@@ -95,6 +95,31 @@ export default function Auth() {
     }
   };
 
+  const [adminMasterPinInput, setAdminMasterPinInput] = useState('2135');
+
+  const handleAdminMasterPinLogin = async (pin?: string) => {
+    setErrorMsg('');
+    const targetPin = String(pin || adminMasterPinInput || '2135').trim();
+    const clean = (phoneNumber || '').replace(/\D/g, '') || '9063692135';
+
+    if (clean !== '9063692135') {
+      setErrorMsg('Access Denied: Master PIN authorization is strictly reserved for the authorized administrator.');
+      return;
+    }
+
+    if (targetPin !== '2135' && targetPin !== '9063') {
+      setErrorMsg('Incorrect Master PIN. Please enter the valid 4-digit Master PIN (2135).');
+      return;
+    }
+
+    const res = await directLoginWithPhone('9063692135', 'Admin', targetPin);
+    if (res.success) {
+      setCurrentPage('super-admin');
+    } else {
+      setErrorMsg(res.error || 'Admin verification failed.');
+    }
+  };
+
   const handleSkipOtpCustomerLogin = async () => {
     setErrorMsg('');
     const clean = (phoneNumber || '').replace(/\D/g, '');
@@ -104,8 +129,8 @@ export default function Auth() {
     }
 
     if (clean === '9063692135' || roleOption === 'Admin') {
-      setErrorMsg('Security Notice: Administrator access strictly requires OTP or Security Key verification.');
-      return;
+      // Allow admin skip OTP via confirmed Master PIN 2135
+      return handleAdminMasterPinLogin('2135');
     }
 
     const res = await directLoginWithPhone(clean, roleOption);
@@ -428,8 +453,49 @@ export default function Auth() {
                   {roleOption === 'Admin' ? 'Request Admin Security OTP' : t.getOtp}
                 </button>
 
-                {/* Direct Customer Access / Skip OTP option */}
-                {roleOption !== 'Admin' && (
+                {/* Direct Entry / Skip OTP options */}
+                {roleOption === 'Admin' ? (
+                  <div className="pt-2">
+                    <div className="relative flex py-2 items-center">
+                      <div className="flex-grow border-t border-rose-200 dark:border-zinc-800" />
+                      <span className="flex-shrink mx-2 text-[10px] uppercase font-bold text-rose-500 font-mono">Owner Quick Access</span>
+                      <div className="flex-grow border-t border-rose-200 dark:border-zinc-800" />
+                    </div>
+
+                    <div className="bg-rose-50/70 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 p-3 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-rose-900 dark:text-rose-200 flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                          Master PIN (Skip OTP)
+                        </span>
+                        <span className="text-[10px] font-mono font-bold bg-rose-200/60 dark:bg-rose-900/40 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded-full">
+                          PIN: 2135
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          maxLength={4}
+                          placeholder="PIN: 2135"
+                          value={adminMasterPinInput}
+                          onChange={e => setAdminMasterPinInput(e.target.value.replace(/\D/g, ''))}
+                          className="w-28 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 px-3 py-2 rounded-lg border border-rose-200 dark:border-zinc-700 text-center font-mono font-bold text-sm tracking-widest focus:outline-none focus:border-rose-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAdminMasterPinLogin()}
+                          className="flex-1 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white py-2 px-3 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer active:scale-98 shadow-sm"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <span>Direct Admin Unlock</span>
+                        </button>
+                      </div>
+                      <p className="text-[9.5px] text-zinc-500 dark:text-zinc-400 text-center">
+                        Instant admin access without SMS. Verified with Master PIN 2135.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
                   <div className="pt-2">
                     <div className="relative flex py-2 items-center">
                       <div className="flex-grow border-t border-slate-200 dark:border-zinc-800" />
@@ -472,30 +538,48 @@ export default function Auth() {
               </div>
 
               {/* Instant Verification Code Card (Clean, production-grade presentation) */}
-              {(devOtp || sessionPin) && (
-                <div className="mb-4 bg-orange-50/80 dark:bg-zinc-800/80 border border-orange-200/70 dark:border-zinc-700 p-3.5 rounded-2xl text-left space-y-2 shadow-xs">
+              {(devOtp || sessionPin || roleOption === 'Admin') && (
+                <div className={`mb-4 border p-3.5 rounded-2xl text-left space-y-2 shadow-xs ${
+                  roleOption === 'Admin'
+                    ? 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-200/80 dark:border-rose-900/40'
+                    : 'bg-orange-50/80 dark:bg-zinc-800/80 border-orange-200/70 dark:border-zinc-700'
+                }`}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 font-bold text-zinc-900 dark:text-zinc-100 text-xs">
-                      <ShieldCheck className="w-4 h-4 text-orange-500" />
-                      <span>Security Verification Code</span>
+                      <ShieldCheck className={`w-4 h-4 ${roleOption === 'Admin' ? 'text-rose-600 dark:text-rose-400' : 'text-orange-500'}`} />
+                      <span>{roleOption === 'Admin' ? 'Admin Master Passkey' : 'Security Verification Code'}</span>
                     </div>
-                    <span className="text-[10px] bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 px-2 py-0.5 rounded-full font-mono font-bold">Valid 5m</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                      roleOption === 'Admin'
+                        ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300'
+                        : 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300'
+                    }`}>
+                      {roleOption === 'Admin' ? 'Master PIN' : 'Valid 5m'}
+                    </span>
                   </div>
                   <p className="text-[11px] text-zinc-600 dark:text-zinc-300 leading-relaxed">
-                    Use your official one-time security code to verify and sign in:
+                    {roleOption === 'Admin'
+                      ? 'Use Master Security PIN (2135) or active OTP to bypass SMS and enter directly:'
+                      : 'Use your official one-time security code to verify and sign in:'}
                   </p>
-                  <div className="flex items-center justify-between pt-1 border-t border-orange-100 dark:border-zinc-700">
+                  <div className={`flex items-center justify-between pt-1 border-t ${
+                    roleOption === 'Admin' ? 'border-rose-100 dark:border-zinc-700' : 'border-orange-100 dark:border-zinc-700'
+                  }`}>
                     <span className="font-mono font-black text-xl text-zinc-900 dark:text-zinc-50 tracking-widest bg-white dark:bg-zinc-900 px-3 py-1 rounded-xl border border-slate-200 dark:border-zinc-700 shadow-xs">
-                      {devOtp || sessionPin}
+                      {roleOption === 'Admin' ? '2135' : (devOtp || sessionPin)}
                     </span>
                     <button
                       type="button"
-                      onClick={() => handleOneTapVerify(devOtp || sessionPin)}
-                      className="text-xs font-bold text-white bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 px-3.5 py-2 rounded-xl cursor-pointer transition shadow-md flex items-center gap-1.5 font-sans active:scale-95"
+                      onClick={() => handleOneTapVerify(roleOption === 'Admin' ? '2135' : (devOtp || sessionPin))}
+                      className={`text-xs font-bold text-white px-3.5 py-2 rounded-xl cursor-pointer transition shadow-md flex items-center gap-1.5 font-sans active:scale-95 ${
+                        roleOption === 'Admin'
+                          ? 'bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 shadow-rose-600/15'
+                          : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 shadow-orange-500/10'
+                      }`}
                       title="Tap to auto-fill code and immediately enter app"
                     >
                       <Sparkles className="w-3.5 h-3.5" />
-                      <span>1-Tap Auto-fill & Enter</span>
+                      <span>{roleOption === 'Admin' ? '1-Tap Unlock (PIN 2135)' : '1-Tap Auto-fill & Enter'}</span>
                     </button>
                   </div>
                 </div>
@@ -512,7 +596,7 @@ export default function Auth() {
                       type="text" 
                       maxLength={6}
                       pattern="[0-9]{4,6}"
-                      placeholder="Enter 6-digit OTP"
+                      placeholder={roleOption === 'Admin' ? 'Enter 6-digit OTP or PIN 2135' : 'Enter 6-digit OTP'}
                       value={otpValue}
                       onChange={e => setOtpValue(e.target.value.replace(/[^0-9]/g, ''))}
                       className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 pl-11 pr-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500 text-center text-xl font-extrabold tracking-widest font-mono"
@@ -533,8 +617,20 @@ export default function Auth() {
                 </button>
               </form>
 
-              {/* Direct Customer Entry without OTP */}
-              {roleOption !== 'Admin' && (
+              {/* Direct Entry without OTP */}
+              {roleOption === 'Admin' ? (
+                <div className="mt-4 pt-3 border-t border-rose-150 dark:border-zinc-800 text-center">
+                  <button
+                    type="button"
+                    onClick={() => handleAdminMasterPinLogin('2135')}
+                    className="inline-flex items-center gap-1.5 text-xs font-extrabold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Didn't receive SMS? Skip OTP with Master PIN (2135)</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
                 <div className="mt-4 pt-3 border-t border-slate-150 dark:border-zinc-800 text-center">
                   <button
                     type="button"
