@@ -27,10 +27,18 @@ const FranchiseScreen = lazy(() => import('./components/FranchiseScreen'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const SuperAdminPanel = lazy(() => import('./components/SuperAdminPanel'));
 const OrderHistoryScreen = lazy(() => import('./components/OrderHistoryScreen'));
+const MapTracking = lazy(() => import('./components/MapTracking'));
 
 export default function App() {
   const { user, currentPage, selectedFoodItem, notifications, markNotificationAsRead, setCurrentPage, isOffline, cartSuccessAnimation, isAdmin, isSuperAdmin } = useApp();
   const [activeToast, setActiveToast] = useState<any>(null);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleQuota = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', handleQuota);
+    return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
+  }, []);
   
   // Fast splash screen: skip if already seen this session, else quick 650ms intro
   const [showSplash, setShowSplash] = useState(() => {
@@ -124,6 +132,8 @@ export default function App() {
         return <SuperAdminPanel />;
       case 'delivery-options':
         return <DeliveryOptionsScreen />;
+      case 'map-tracking':
+        return <MapTracking />;
       default:
         return <Home />;
     }
@@ -140,6 +150,24 @@ export default function App() {
   return (
     <div className="relative font-sans min-h-screen bg-slate-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-300">
       
+      {/* Google Maps Platform quota defense top banner */}
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-120 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
       {/* Offline network connection status persistent banner */}
       {isOffline && (
         <motion.div

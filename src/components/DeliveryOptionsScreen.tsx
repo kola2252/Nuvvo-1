@@ -16,7 +16,8 @@ export default function DeliveryOptionsScreen() {
     pageHistory,
     goBack,
     closePage,
-    user
+    user,
+    setCurrentPage
   } = useApp();
 
   const [showAddressModal, setShowAddressModal] = useState(false);
@@ -95,6 +96,16 @@ export default function DeliveryOptionsScreen() {
             <p className="text-xs text-white/90 leading-relaxed max-w-lg">
               Set your global delivery addresses, configure dispatch speed, tip courier executives, and run our real-time GPS traffic & weather simulator.
             </p>
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setCurrentPage('map-tracking')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white rounded-xl text-xs font-black uppercase tracking-wider backdrop-blur-xs transition cursor-pointer"
+              >
+                <Navigation className="w-3.5 h-3.5" />
+                <span>Open MapTracking View</span>
+              </button>
+            </div>
           </div>
         </div>
 

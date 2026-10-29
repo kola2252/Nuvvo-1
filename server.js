@@ -1847,6 +1847,28 @@ function persistSessions(map) {
 }
 var serverSessions = loadSessions();
 var DISHES_FILE = path.join(process.cwd(), ".server_dishes.json");
+var DELETED_DISHES_FILE = path.join(process.cwd(), ".server_deleted_dishes.json");
+function loadServerDeletedDishes() {
+  const set = /* @__PURE__ */ new Set();
+  try {
+    if (fs.existsSync(DELETED_DISHES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DELETED_DISHES_FILE, "utf8"));
+      if (Array.isArray(data)) {
+        data.forEach((id) => set.add(String(id)));
+      }
+    }
+  } catch {
+  }
+  return set;
+}
+function persistServerDeletedDishes(set) {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(DELETED_DISHES_FILE, JSON.stringify(Array.from(set)), "utf8");
+  } catch {
+  }
+}
+var serverDeletedDishes = loadServerDeletedDishes();
 function loadServerDishes() {
   const map = /* @__PURE__ */ new Map();
   try {
@@ -1854,7 +1876,7 @@ function loadServerDishes() {
       const data = JSON.parse(fs.readFileSync(DISHES_FILE, "utf8"));
       if (Array.isArray(data)) {
         for (const item of data) {
-          if (item && item.id) {
+          if (item && item.id && !serverDeletedDishes.has(String(item.id))) {
             map.set(String(item.id), item);
           }
         }
@@ -1865,11 +1887,13 @@ function loadServerDishes() {
   if (map.size === 0) {
     const baseDishes = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
     for (const d of baseDishes) {
-      map.set(String(d.id), {
-        ...d,
-        id: String(d.id),
-        created_at: (/* @__PURE__ */ new Date()).toISOString()
-      });
+      if (!serverDeletedDishes.has(String(d.id))) {
+        map.set(String(d.id), {
+          ...d,
+          id: String(d.id),
+          created_at: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      }
     }
     try {
       if (!process.env.VERCEL) {
@@ -2837,8 +2861,9 @@ app.get("/api/catalog/sync", async (_req, res) => {
 var sseCatalogClients = /* @__PURE__ */ new Set();
 var handleSseConnection = (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   if (typeof res.flushHeaders === "function") {
     res.flushHeaders();
   }
@@ -2846,8 +2871,32 @@ var handleSseConnection = (req, res) => {
   res.write(`data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}
 
 `);
+  let heartbeatTimer = null;
+  let endTimer = null;
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    heartbeatTimer = setInterval(() => {
+      try {
+        res.write(`: heartbeat
+
+`);
+      } catch {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+      }
+    }, 15e3);
+    endTimer = setTimeout(() => {
+      try {
+        res.write(`retry: 1000
+
+`);
+        res.end();
+      } catch {
+      }
+    }, 55e3);
+  }
   req.on("close", () => {
     sseCatalogClients.delete(res);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (endTimer) clearTimeout(endTimer);
   });
 };
 app.get("/api/catalog/events", handleSseConnection);
@@ -2881,9 +2930,14 @@ app.get("/api/dishes", async (_req, res) => {
     }
     const combinedMap = /* @__PURE__ */ new Map();
     for (const [id, dish] of serverDishes.entries()) {
-      combinedMap.set(String(id), dish);
+      if (!serverDeletedDishes.has(String(id))) {
+        combinedMap.set(String(id), dish);
+      }
     }
     for (const row of supabaseDishes) {
+      if (serverDeletedDishes.has(String(row.id))) {
+        continue;
+      }
       const mapped = {
         id: String(row.id),
         name: row.name,
@@ -2908,7 +2962,7 @@ app.get("/api/dishes", async (_req, res) => {
     return res.json(Array.from(combinedMap.values()));
   } catch (e) {
     console.error("Exception in GET /api/dishes:", e);
-    return res.json(Array.from(serverDishes.values()));
+    return res.json(Array.from(serverDishes.values()).filter((d) => !serverDeletedDishes.has(String(d.id))));
   }
 });
 app.get("/api/orders", async (req, res) => {
@@ -3616,16 +3670,20 @@ app.put("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
     message: "Dish updated successfully!"
   });
 });
-app.delete("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
-  const { id } = req.params;
+var handleDishDelete = async (id, res) => {
   try {
     const { client: adminClient } = getAdminSupabaseServerClient();
     if (adminClient) {
-      await adminClient.from("food_items").delete().eq("id", id);
+      const { error: err1 } = await adminClient.from("food_items").delete().eq("id", id);
+      if (err1 && !isNaN(Number(id))) {
+        await adminClient.from("food_items").delete().eq("id", Number(id));
+      }
     }
   } catch (err) {
     console.warn("Supabase delete exception notice:", err?.message);
   }
+  serverDeletedDishes.add(String(id));
+  persistServerDeletedDishes(serverDeletedDishes);
   serverDishes.delete(String(id));
   persistServerDishes(serverDishes);
   broadcastCatalogSSE("dish_deleted", { id });
@@ -3633,6 +3691,14 @@ app.delete("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
     success: true,
     message: `Dish ${id} removed successfully.`
   });
+};
+app.delete("/api/admin/dishes/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  await handleDishDelete(id, res);
+});
+app.delete("/api/dishes/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  await handleDishDelete(id, res);
 });
 app.post("/api/admin/dishes/seed", requireAdminAuth, async (_req, res) => {
   let addedCount = 0;

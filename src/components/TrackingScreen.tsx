@@ -1845,16 +1845,27 @@ export default function TrackingScreen() {
               </span>
             </div>
             
-            <div className="flex items-center gap-2 bg-orange-500/10 px-2.5 py-1 rounded-xl text-orange-600">
-              <Clock className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black font-mono">
-                {activeTrackingOrder.scheduledTime 
-                  ? `SCHEDULED: ${activeTrackingOrder.scheduledTime}` 
-                  : activeTrackingOrder.status === 'delivered'
-                  ? 'DELIVERED'
-                  : `ETA: ${formattedCountdown} • ${currentDistanceKm} KM`
-                }
-              </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage('map-tracking')}
+                className="flex items-center gap-1 px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition shadow-xs cursor-pointer active:scale-95"
+              >
+                <Navigation className="w-3 h-3" />
+                <span>MapTracking View</span>
+              </button>
+
+              <div className="hidden sm:flex items-center gap-1.5 bg-orange-500/10 px-2.5 py-1 rounded-xl text-orange-600">
+                <Clock className="w-3.5 h-3.5" />
+                <span className="text-[10px] font-black font-mono">
+                  {activeTrackingOrder.scheduledTime 
+                    ? `SCHEDULED: ${activeTrackingOrder.scheduledTime}` 
+                    : activeTrackingOrder.status === 'delivered'
+                    ? 'DELIVERED'
+                    : `ETA: ${formattedCountdown} • ${currentDistanceKm} KM`
+                  }
+                </span>
+              </div>
             </div>
           </div>
 

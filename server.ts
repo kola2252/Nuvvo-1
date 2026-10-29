@@ -320,18 +320,22 @@ async function callGeminiWithFallback(ai: any, params: { model?: string; content
 
 export const app = express();
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Defensive fallback: parse JSON string body if a serverless wrapper passed it unparsed
+// If running in serverless wrapper and req.body is already populated, mark _body to avoid body-parser stream hang
 app.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object') {
+    (req as any)._body = true;
+  }
   if (typeof req.body === 'string' && req.body.trim().startsWith('{')) {
     try {
       req.body = JSON.parse(req.body);
+      (req as any)._body = true;
     } catch {}
   }
   next();
 });
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Enable CORS for universal client access
 app.use((_req, res, next) => {

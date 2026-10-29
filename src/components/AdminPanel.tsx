@@ -1144,9 +1144,14 @@ export default function AdminPanel() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (window.confirm('Are you sure you want to clear all territory sales stats and order history? All metrics will reset to ₹0.')) {
-                        clearStats();
-                      }
+                      requestAdminSaveConfirmation({
+                        title: 'Clear Territory Statistics',
+                        itemType: 'Analytics Reset (గణాంకాలు రీసెట్)',
+                        description: 'Are you sure you want to clear all territory sales stats and order history? All metrics will reset to ₹0.',
+                        onConfirm: () => {
+                          clearStats();
+                        }
+                      });
                     }}
                     className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
                     title="Clear All Stats & Orders"
@@ -1286,9 +1291,14 @@ export default function AdminPanel() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (window.confirm(`Verify and confirm UPI payment of ₹${amount} received from ${or.customerName}?`)) {
-                                      updateOrderPaymentStatus(or.id, 'confirmed', 'Admin confirmed payment externally on bank app');
-                                    }
+                                    requestAdminSaveConfirmation({
+                                      title: `Verify & Confirm Payment: ₹${amount}`,
+                                      itemType: 'Payment Verification (చెల్లింపు ధృవీకరణ)',
+                                      description: `Verify and confirm UPI payment of ₹${amount} received from ${or.customerName} for Order #${or.id.slice(-6).toUpperCase()}?`,
+                                      onConfirm: () => {
+                                        updateOrderPaymentStatus(or.id, 'confirmed', 'Admin confirmed payment externally on bank app');
+                                      }
+                                    });
                                   }}
                                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[10px] uppercase tracking-wider transition cursor-pointer flex items-center gap-1 shadow-xs active:scale-95"
                                 >
@@ -1297,9 +1307,14 @@ export default function AdminPanel() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (window.confirm(`Mark payment as failed for Order #${or.id.slice(-6).toUpperCase()}?`)) {
-                                      updateOrderPaymentStatus(or.id, 'failed', 'Admin marked as payment failed');
-                                    }
+                                    requestAdminSaveConfirmation({
+                                      title: `Mark Payment Failed: #${or.id.slice(-6).toUpperCase()}`,
+                                      itemType: 'Payment Status Update (చెల్లింపు స్థితి)',
+                                      description: `Mark payment as failed for Order #${or.id.slice(-6).toUpperCase()}?`,
+                                      onConfirm: () => {
+                                        updateOrderPaymentStatus(or.id, 'failed', 'Admin marked as payment failed');
+                                      }
+                                    });
                                   }}
                                   className="px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500 hover:text-white text-rose-600 rounded-lg font-bold text-[10px] uppercase transition cursor-pointer"
                                 >
@@ -2546,9 +2561,14 @@ export default function AdminPanel() {
                         <button
                           type="button"
                           onClick={() => {
-                            if (window.confirm(`Verify payment of ₹${o.finalAmount} for Order #${o.id.slice(-6).toUpperCase()}?`)) {
-                              updateOrderPaymentStatus(o.id, 'confirmed', 'Admin confirmed via PhonePe panel');
-                            }
+                            requestAdminSaveConfirmation({
+                              title: `Verify Payment (₹${o.finalAmount})`,
+                              itemType: 'Payment Verification (చెల్లింపు ధృవీకరణ)',
+                              description: `Verify payment of ₹${o.finalAmount} for Order #${o.id.slice(-6).toUpperCase()}?`,
+                              onConfirm: () => {
+                                updateOrderPaymentStatus(o.id, 'confirmed', 'Admin confirmed via PhonePe panel');
+                              }
+                            });
                           }}
                           className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[9.5px] uppercase transition cursor-pointer shadow-xs active:scale-95"
                         >
@@ -2609,9 +2629,14 @@ export default function AdminPanel() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (window.confirm('Are you sure you want to clear all active promotional coupon codes? Users will not be able to apply promo codes until new ones are created.')) {
-                        clearAllCoupons();
-                      }
+                      requestAdminSaveConfirmation({
+                        title: 'Clear Promotional Coupons',
+                        itemType: 'Coupons Reset (కూపన్లు తొలగింపు)',
+                        description: 'Are you sure you want to clear all active promotional coupon codes? Users will not be able to apply promo codes until new ones are created.',
+                        onConfirm: () => {
+                          clearAllCoupons();
+                        }
+                      });
                     }}
                     className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
                     title="Clear All Promo Voucher Codes"
@@ -2766,9 +2791,14 @@ export default function AdminPanel() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (window.confirm('Are you sure you want to clear all promotional carousel banners? The home screen will have no banner carousel.')) {
-                          clearAllBanners();
-                        }
+                        requestAdminSaveConfirmation({
+                          title: 'Clear Promotional Banners',
+                          itemType: 'Carousel Banners Reset (బ్యానర్లు తొలగింపు)',
+                          description: 'Are you sure you want to clear all promotional carousel banners? The home screen will have no banner carousel.',
+                          onConfirm: () => {
+                            clearAllBanners();
+                          }
+                        });
                       }}
                       className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
                     >

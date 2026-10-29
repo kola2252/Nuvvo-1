@@ -507,20 +507,32 @@ Thank you for dining with Nuvvo Gourmet!`;
 
   const handleDeleteCard = (cardId: string) => {
     if (!user) return;
-    if (window.confirm('Are you sure you want to remove this saved card?')) {
-      const updated = savedCards.filter(c => c.id !== cardId);
-      setSavedCards(updated);
-      localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
-    }
+    const targetCard = savedCards.find(c => c.id === cardId);
+    requestAdminSaveConfirmation({
+      title: `Remove Card: ${targetCard?.cardNumber || '••••'}`,
+      itemType: 'Payment Method Removal (కార్డ్ తొలగింపు)',
+      description: 'Are you sure you want to remove this saved payment card from your account?',
+      onConfirm: () => {
+        const updated = savedCards.filter(c => c.id !== cardId);
+        setSavedCards(updated);
+        localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
+      }
+    });
   };
 
   const handleDeleteUPI = (upiId: string) => {
     if (!user) return;
-    if (window.confirm('Are you sure you want to remove this saved UPI address?')) {
-      const updated = savedUPIs.filter(u => u.id !== upiId);
-      setSavedUPIs(updated);
-      localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
-    }
+    const targetUpi = savedUPIs.find(u => u.id === upiId);
+    requestAdminSaveConfirmation({
+      title: `Remove UPI: ${targetUpi?.upiId || ''}`,
+      itemType: 'Payment Method Removal (యూపీఐ తొలగింపు)',
+      description: 'Are you sure you want to remove this saved UPI address from your account?',
+      onConfirm: () => {
+        const updated = savedUPIs.filter(u => u.id !== upiId);
+        setSavedUPIs(updated);
+        localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
+      }
+    });
   };
 
   // SAVED ADDRESS MANAGEMENT FUNCTIONS
@@ -552,24 +564,27 @@ Thank you for dining with Nuvvo Gourmet!`;
 
   const handleDeleteAddress = (addrId: string) => {
     if (!user) return;
-    const confirmDelete = window.confirm("Are you sure you want to delete this saved delivery address?");
-    if (!confirmDelete) return;
-
     const target = preSavedAddresses.find(a => a.id === addrId);
-    let updatedList = preSavedAddresses.filter(a => a.id !== addrId);
+    requestAdminSaveConfirmation({
+      title: `Delete Address: ${target?.type} (${target?.flatNo || ''})`,
+      itemType: 'Address Removal (చిరునామా తొలగింపు)',
+      description: `Are you sure you want to delete this saved delivery address (${target?.flatNo || ''}, ${target?.area || ''})?`,
+      onConfirm: () => {
+        let updatedList = preSavedAddresses.filter(a => a.id !== addrId);
+        if (target?.isDefault && updatedList.length > 0) {
+          updatedList[0].isDefault = true;
+          setCurrentAddress(updatedList[0]);
+        } else if (updatedList.length === 0) {
+          setCurrentAddress(null);
+        }
 
-    if (target?.isDefault && updatedList.length > 0) {
-      updatedList[0].isDefault = true;
-      setCurrentAddress(updatedList[0]);
-    } else if (updatedList.length === 0) {
-      setCurrentAddress(null);
-    }
-
-    updateUserAddresses(updatedList);
-    setAddressSuccessMsg("Delivery address deleted successfully from your book.");
-    setTimeout(() => {
-      setAddressSuccessMsg(null);
-    }, 3800);
+        updateUserAddresses(updatedList);
+        setAddressSuccessMsg("Delivery address deleted successfully from your book.");
+        setTimeout(() => {
+          setAddressSuccessMsg(null);
+        }, 3800);
+      }
+    });
   };
 
   const handleSetAddressAsDefault = (addr: Address) => {
@@ -1900,14 +1915,19 @@ Thank you for dining with Nuvvo Gourmet!`;
                 <button
                   type="button"
                   onClick={() => {
-                    if (window.confirm("WARNING: Are you sure you want to reset ALL users' referral points and credits to 0? This cannot be undone.")) {
-                      const success = resetAllReferralPoints();
-                      if (success) {
-                        setReferralCredits(0);
-                        setAdminReferralStatusMsg('All customer referral points reset to 0.');
-                        setTimeout(() => setAdminReferralStatusMsg(null), 3000);
+                    requestAdminSaveConfirmation({
+                      title: "Reset ALL Referral Points",
+                      itemType: "Referral Points System (రెఫరల్ పాయింట్స్ రీసెట్)",
+                      description: "WARNING: Are you sure you want to reset ALL users' referral points and credits to 0? This cannot be undone.",
+                      onConfirm: () => {
+                        const success = resetAllReferralPoints();
+                        if (success) {
+                          setReferralCredits(0);
+                          setAdminReferralStatusMsg('All customer referral points reset to 0.');
+                          setTimeout(() => setAdminReferralStatusMsg(null), 3000);
+                        }
                       }
-                    }
+                    });
                   }}
                   className="py-2 px-3 bg-zinc-900 dark:bg-zinc-800 hover:bg-black text-red-400 font-black text-[10px] uppercase rounded-xl transition cursor-pointer"
                 >

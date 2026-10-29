@@ -1,4 +1,4 @@
-import app from "./server-app.ts";
+import app from "./server.js";
 
 /**
  * Resolves the true request URL for Express when running in Vercel serverless environment.

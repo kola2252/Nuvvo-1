@@ -1,30 +1,21 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
   "functions": {
     "api/**/*.ts": {
-      "includeFiles": "{server.js,server.ts,api/**,dist/**,.server_*.json}"
+      "includeFiles": [
+        "server.js",
+        "server.ts",
+        "api/server.js",
+        "dist/**",
+        ".server_*.json"
+      ]
     }
   },
   "rewrites": [
-    {
-      "source": "/api/auth/send-otp",
-      "destination": "/api/auth/[...path]?path=send-otp"
-    },
-    {
-      "source": "/api/auth/verify-otp",
-      "destination": "/api/auth/[...path]?path=verify-otp"
-    },
-    {
-      "source": "/api/auth/verify-role",
-      "destination": "/api/auth/[...path]?path=verify-role"
-    },
-    {
-      "source": "/api/auth/debug-otp",
-      "destination": "/api/auth/[...path]?path=debug-otp"
-    },
     {
       "source": "/api/auth/(.*)",
       "destination": "/api/auth/[...path]?path=$1"
