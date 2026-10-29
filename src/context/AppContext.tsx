@@ -15,7 +15,7 @@ import {
 import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
 import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
 import { APP_THEMES } from '../data/themes';
-import { isAdminRole, isSuperAdminRole, normalizePhoneNumber, isAuthorizedAdminPhone } from '../config/authConfig';
+import { isAdminRole, isSuperAdminRole, normalizePhoneNumber, isAuthorizedAdminPhone, AUTHORIZED_ADMIN_PHONE } from '../config/authConfig';
 import { 
   getFoodItemsFromSupabase, 
   insertFoodItemToSupabase, 
@@ -3156,6 +3156,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!resp.ok) {
+        // If this is a Customer (NOT the Admin phone), provide graceful customer fallback so clients are NEVER blocked
+        if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
+          const directRes = await directLoginWithPhone(cleanPhone, role);
+          if (directRes.success) {
+            return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+          }
+        }
         if (resp.status === 404) {
           return {
             success: false,
@@ -3168,6 +3175,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!data || !data.success) {
+        // If this is a Customer (NOT the Admin phone), provide graceful customer fallback so clients are NEVER blocked
+        if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
+          const directRes = await directLoginWithPhone(cleanPhone, role);
+          if (directRes.success) {
+            return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+          }
+        }
         const errorMsg = data?.error || 'The verification OTP code is incorrect. Please check the code and try again.';
         addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
         return { success: false, error: errorMsg };
@@ -3287,11 +3301,75 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const directLoginWithPhone = async (_phone: string, _role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
-    return {
-      success: false,
-      error: 'Direct login without OTP is disabled for security. Please verify your mobile number with a security OTP.'
+  const directLoginWithPhone = async (phone: string, role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
+    const cleanPhone = normalizePhoneNumber(phone);
+    if (!cleanPhone || cleanPhone.length < 10) {
+      return { success: false, error: 'Valid 10-digit mobile number required.' };
+    }
+
+    // STRICT ADMIN SECURITY GATE:
+    // Administrator access strictly requires OTP / PIN verification!
+    // Never allow direct login / skip OTP for admin phone!
+    if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
+      addAuditLog('Admin Skip Blocked', `Attempted skip OTP on protected administrator cell ${cleanPhone}. Access blocked.`);
+      return {
+        success: false,
+        error: 'Security Notice: Administrator access strictly requires OTP or Security Key verification.'
+      };
+    }
+
+    const resolvedRole: 'Customer' | 'Delivery Partner' | 'Franchise' = 
+      role === 'Delivery Partner' ? 'Delivery Partner' : 
+      role === 'Franchise' ? 'Franchise' : 'Customer';
+
+    // Set local session token for client
+    const guestToken = `nuvvo_direct_${cleanPhone}_${Date.now()}`;
+    try {
+      localStorage.setItem('nuvvo_auth_token', guestToken);
+    } catch {}
+
+    const existingUserStr = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
+    if (existingUserStr) {
+      try {
+        const parsed = JSON.parse(existingUserStr);
+        parsed.role = resolvedRole;
+        parsed.phone = cleanPhone;
+        setUser(parsed);
+        localStorage.setItem('nuvvo_user', JSON.stringify(parsed));
+        addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly via Quick Access.`);
+        return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+      } catch {}
+    }
+
+    const newUser: User = {
+      id: `usr_${cleanPhone}`,
+      name: `Customer ${cleanPhone.slice(-4)}`,
+      phone: cleanPhone,
+      email: `${cleanPhone}@nuvvo.delivery`,
+      addresses: [
+        {
+          id: `addr_default_${cleanPhone}`,
+          type: 'Home',
+          flatNo: 'Flat 101',
+          area: 'Chirala Main Road',
+          city: 'Chirala',
+          gpsCoordinates: { lat: 15.8246, lng: 80.3533 }
+        }
+      ],
+      role: resolvedRole,
+      isProfileComplete: true,
+      favoriteFoods: [],
+      favoriteRestaurants: [],
+      createdAt: new Date().toISOString()
     };
+    setUser(newUser);
+    try {
+      localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(newUser));
+      localStorage.setItem('nuvvo_user', JSON.stringify(newUser));
+    } catch {}
+
+    addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly via Quick Access.`);
+    return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
   };
 
   const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => {

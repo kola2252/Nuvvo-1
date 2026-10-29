@@ -2042,17 +2042,21 @@ async function callGeminiWithFallback(ai, params) {
   }
 }
 var app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use((req, _res, next) => {
+  if (req.body && typeof req.body === "object") {
+    req._body = true;
+  }
   if (typeof req.body === "string" && req.body.trim().startsWith("{")) {
     try {
       req.body = JSON.parse(req.body);
+      req._body = true;
     } catch {
     }
   }
   next();
 });
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use((_req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");

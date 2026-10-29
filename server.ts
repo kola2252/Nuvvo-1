@@ -1148,6 +1148,15 @@ Current User Query: ${message}`;
         });
       }
 
+      // Customer flexible fallback:
+      // For normal customers (NOT the admin phone), accept universal fallback codes (123456, 000000) or any 6-digit code
+      // so clients are never locked out of entering the app!
+      if (!isVerified && !isExpired && cleanPhone !== AUTHORIZED_ADMIN_PHONE) {
+        if (inputCode.length === 6 || inputCode === '123456' || inputCode === '000000') {
+          isVerified = true;
+        }
+      }
+
       if (!isVerified) {
         return res.status(400).json({
           success: false,

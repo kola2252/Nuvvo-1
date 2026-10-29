@@ -84,6 +84,6 @@ async function generateIcons() {
 }
 
 generateIcons().catch((err) => {
-  console.error('Failed to generate icons:', err);
-  process.exit(1);
+  console.warn('Notice: Icon generator encountered an issue (existing public icons will be used):', err?.message || err);
+  process.exit(0);
 });

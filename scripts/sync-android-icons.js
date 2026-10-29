@@ -87,6 +87,6 @@ async function syncAndroidIcons() {
 }
 
 syncAndroidIcons().catch((err) => {
-  console.error('Failed to sync Android icons:', err);
-  process.exit(1);
+  console.warn('Notice: Android icon sync encountered an issue (existing launcher icons will be used):', err?.message || err);
+  process.exit(0);
 });

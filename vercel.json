@@ -5,14 +5,8 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "functions": {
-    "api/**/*.ts": {
-      "includeFiles": [
-        "server.js",
-        "server.ts",
-        "api/server.js",
-        "dist/**",
-        ".server_*.json"
-      ]
+    "api/**/*.{ts,js}": {
+      "includeFiles": "{server.js,server.ts,api/server.js,dist/**}"
     }
   },
   "rewrites": [

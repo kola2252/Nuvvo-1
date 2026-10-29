@@ -6,13 +6,13 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { motion } from 'motion/react';
-import { Phone, Lock, User, Mail, MapPin, Sparkles, Building2, Globe, ShieldCheck, ShoppingBag, Bike, Building, RotateCcw } from 'lucide-react';
+import { Phone, Lock, User, Mail, MapPin, Sparkles, Building2, Globe, ShieldCheck, ShoppingBag, Bike, Building, RotateCcw, ArrowRight } from 'lucide-react';
 import { Address } from '../types';
 import NuvvoLogo from './NuvvoLogo';
 import { translations } from '../utils/translations';
 
 export default function Auth() {
-  const { loginWithPhone, verifyOtpAndLogin, completeUserProfile, user, setCurrentPage, language, setLanguage, otpCode } = useApp();
+  const { loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, completeUserProfile, user, setCurrentPage, language, setLanguage, otpCode } = useApp();
 
   const t = translations[language] || translations.en;
 
@@ -95,6 +95,70 @@ export default function Auth() {
     }
   };
 
+  const handleSkipOtpCustomerLogin = async () => {
+    setErrorMsg('');
+    const clean = (phoneNumber || '').replace(/\D/g, '');
+    if (!clean || clean.length < 10) {
+      setErrorMsg('Please supply a valid 10-digit mobile number to enter.');
+      return;
+    }
+
+    if (clean === '9063692135' || roleOption === 'Admin') {
+      setErrorMsg('Security Notice: Administrator access strictly requires OTP or Security Key verification.');
+      return;
+    }
+
+    const res = await directLoginWithPhone(clean, roleOption);
+    if (res.success) {
+      if (roleOption === 'Delivery Partner') {
+        setCurrentPage('partner');
+      } else if (roleOption === 'Franchise') {
+        setCurrentPage('franchise');
+      } else {
+        setCurrentPage('home');
+      }
+    } else {
+      setErrorMsg(res.error || 'Failed to enter. Please try again.');
+    }
+  };
+
+  const handleOneTapVerify = async (code?: string) => {
+    const targetCode = String(code || devOtp || sessionPin || '123456').trim();
+    setOtpValue(targetCode);
+    setErrorMsg('');
+
+    const result = await verifyOtpAndLogin(phoneNumber, targetCode, roleOption);
+    if (result.success) {
+      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      const isMasterAdmin = (cleanPhone === '9063692135' && result.isAuthorizedAdmin) || result.isAuthorizedAdmin || result.role === 'super_admin' || result.role === 'admin';
+
+      if (isMasterAdmin) {
+        setCurrentPage('super-admin');
+        return;
+      }
+
+      const stored = localStorage.getItem(`nuvvo_registered_${cleanPhone}`);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed.isProfileComplete) {
+            if (roleOption === 'Delivery Partner') {
+              setCurrentPage('partner');
+            } else if (roleOption === 'Franchise') {
+              setCurrentPage('franchise');
+            } else {
+              setCurrentPage('home');
+            }
+            return;
+          }
+        } catch {}
+      }
+      setCurrentPage('home');
+    } else {
+      setErrorMsg(result.error || 'Verification failed. Please check the code.');
+    }
+  };
+
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -108,11 +172,11 @@ export default function Auth() {
     const result = await verifyOtpAndLogin(phoneNumber, codeToVerify, roleOption);
     if (result.success) {
       const cleanPhone = phoneNumber.replace(/\D/g, '');
-      const isMasterAdmin = cleanPhone === '9063692135' && result.isAuthorizedAdmin;
+      const isMasterAdmin = (cleanPhone === '9063692135' && result.isAuthorizedAdmin) || result.isAuthorizedAdmin || result.role === 'super_admin' || result.role === 'admin';
 
-      // If server verified as Admin / Super Admin (with verified OTP/PIN), open Admin Dashboard!
-      if (isMasterAdmin || result.isAuthorizedAdmin) {
-        setCurrentPage('admin');
+      // If server verified as Admin / Super Admin (with verified OTP/PIN), open Super Admin Settings immediately!
+      if (isMasterAdmin) {
+        setCurrentPage('super-admin');
         return;
       }
 
@@ -346,7 +410,7 @@ export default function Auth() {
                         Administrator Access Gateway
                       </p>
                       <p className="text-[10px] text-zinc-600 dark:text-zinc-400 mt-0.5 leading-snug">
-                        Configured for authorized administrator (<span className="font-mono font-bold text-rose-700 dark:text-rose-300">+91 9063692135</span>). Server-side single-use OTP verification required.
+                        Protected administrator gateway with multi-factor OTP and master security authorization.
                       </p>
                     </div>
                   </div>
@@ -363,6 +427,29 @@ export default function Auth() {
                   <Phone className="w-5 h-5" />
                   {roleOption === 'Admin' ? 'Request Admin Security OTP' : t.getOtp}
                 </button>
+
+                {/* Direct Customer Access / Skip OTP option */}
+                {roleOption !== 'Admin' && (
+                  <div className="pt-2">
+                    <div className="relative flex py-2 items-center">
+                      <div className="flex-grow border-t border-slate-200 dark:border-zinc-800" />
+                      <span className="flex-shrink mx-2 text-[10px] uppercase font-bold text-zinc-400 font-mono">Or Instant Entry</span>
+                      <div className="flex-grow border-t border-slate-200 dark:border-zinc-800" />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleSkipOtpCustomerLogin}
+                      className="w-full bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-750 text-zinc-800 dark:text-zinc-100 py-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 transition cursor-pointer active:scale-98 border border-slate-200 dark:border-zinc-700 shadow-xs"
+                    >
+                      <Sparkles className="w-4 h-4 text-orange-500" />
+                      <span>Direct Customer Access (Skip OTP)</span>
+                    </button>
+                    <p className="text-[10px] text-zinc-400 dark:text-zinc-500 text-center mt-1.5">
+                      Fast entry with your mobile number without waiting for SMS
+                    </p>
+                  </div>
+                )}
 
               </form>
             </motion.div>
@@ -403,11 +490,12 @@ export default function Auth() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setOtpValue(devOtp || sessionPin)}
-                      className="text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 px-3.5 py-1.5 rounded-xl cursor-pointer transition shadow-xs flex items-center gap-1 font-sans active:scale-95"
-                      title="Tap to auto-fill verification code"
+                      onClick={() => handleOneTapVerify(devOtp || sessionPin)}
+                      className="text-xs font-bold text-white bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 px-3.5 py-2 rounded-xl cursor-pointer transition shadow-md flex items-center gap-1.5 font-sans active:scale-95"
+                      title="Tap to auto-fill code and immediately enter app"
                     >
-                      Auto-fill Code
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>1-Tap Auto-fill & Enter</span>
                     </button>
                   </div>
                 </div>
@@ -441,9 +529,23 @@ export default function Auth() {
                   }`}
                 >
                   <ShieldCheck className="w-5 h-5" />
-                  {roleOption === 'Admin' ? 'Verify & Access Admin Dashboard' : 'Verify One-Time Passcode'}
+                  {roleOption === 'Admin' ? 'Verify & Access Admin Settings' : 'Verify & Enter App'}
                 </button>
               </form>
+
+              {/* Direct Customer Entry without OTP */}
+              {roleOption !== 'Admin' && (
+                <div className="mt-4 pt-3 border-t border-slate-150 dark:border-zinc-800 text-center">
+                  <button
+                    type="button"
+                    onClick={handleSkipOtpCustomerLogin}
+                    className="inline-flex items-center gap-1.5 text-xs font-extrabold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
+                  >
+                    <span>Didn't receive SMS? Skip OTP & Enter Directly</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
 
               <div className="flex items-center justify-between mt-6 text-xs text-zinc-500 dark:text-zinc-400">
                 <button 
