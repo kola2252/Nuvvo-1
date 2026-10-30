@@ -15,19 +15,65 @@ import DesktopSupportWidgets from './components/DesktopSupportWidgets';
 import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
 
+import OrderHistoryScreen from './components/OrderHistoryScreen';
+
+/**
+ * Resilient lazy loader with automatic retries for dynamic module imports.
+ * Recovers seamlessly from transient network drops or server restarts.
+ * If all attempts fail, gracefully displays a refresh card instead of crashing.
+ */
+function safeLazy<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+  retries = 3,
+  delayMs = 600
+): React.LazyExoticComponent<T> {
+  return lazy(() =>
+    new Promise<{ default: T }>((resolve) => {
+      const attempt = (remaining: number) => {
+        factory()
+          .then(resolve)
+          .catch((err) => {
+            if (remaining <= 1) {
+              console.warn('[SafeLazy] Dynamic import failed after retries:', err?.message || err);
+              const SafeFallbackComponent: React.ComponentType<any> = () => (
+                <div className="min-h-[60vh] flex flex-col items-center justify-center p-6 text-center space-y-3">
+                  <div className="w-12 h-12 bg-orange-100 dark:bg-orange-950/40 text-orange-600 rounded-full flex items-center justify-center text-xl shadow-xs">
+                    📦
+                  </div>
+                  <h4 className="text-sm font-black text-zinc-800 dark:text-zinc-200">Connection Refresh Required</h4>
+                  <p className="text-xs text-zinc-500 max-w-xs">A network interruption occurred while loading this view.</p>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 active:scale-95 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                  >
+                    Refresh Screen
+                  </button>
+                </div>
+              );
+              resolve({ default: SafeFallbackComponent as unknown as T });
+              return;
+            }
+            setTimeout(() => attempt(remaining - 1), delayMs);
+          });
+      };
+      attempt(retries);
+    })
+  );
+}
+
 // Code-split screens to optimize initial bundle and accelerate app startup
-const FavoritesScreen = lazy(() => import('./components/FavoritesScreen'));
-const CartScreen = lazy(() => import('./components/CartScreen'));
-const AccountScreen = lazy(() => import('./components/AccountScreen'));
-const DeliveryOptionsScreen = lazy(() => import('./components/DeliveryOptionsScreen'));
-const FoodDetails = lazy(() => import('./components/FoodDetails'));
-const TrackingScreen = lazy(() => import('./components/TrackingScreen'));
-const PartnerScreen = lazy(() => import('./components/PartnerScreen'));
-const FranchiseScreen = lazy(() => import('./components/FranchiseScreen'));
-const AdminPanel = lazy(() => import('./components/AdminPanel'));
-const SuperAdminPanel = lazy(() => import('./components/SuperAdminPanel'));
-const OrderHistoryScreen = lazy(() => import('./components/OrderHistoryScreen'));
-const MapTracking = lazy(() => import('./components/MapTracking'));
+const FavoritesScreen = safeLazy(() => import('./components/FavoritesScreen'));
+const CartScreen = safeLazy(() => import('./components/CartScreen'));
+const AccountScreen = safeLazy(() => import('./components/AccountScreen'));
+const DeliveryOptionsScreen = safeLazy(() => import('./components/DeliveryOptionsScreen'));
+const FoodDetails = safeLazy(() => import('./components/FoodDetails'));
+const TrackingScreen = safeLazy(() => import('./components/TrackingScreen'));
+const PartnerScreen = safeLazy(() => import('./components/PartnerScreen'));
+const FranchiseScreen = safeLazy(() => import('./components/FranchiseScreen'));
+const AdminPanel = safeLazy(() => import('./components/AdminPanel'));
+const SuperAdminPanel = safeLazy(() => import('./components/SuperAdminPanel'));
+const MapTracking = safeLazy(() => import('./components/MapTracking'));
 
 export default function App() {
   const { user, currentPage, selectedFoodItem, notifications, markNotificationAsRead, setCurrentPage, isOffline, cartSuccessAnimation, isAdmin, isSuperAdmin } = useApp();

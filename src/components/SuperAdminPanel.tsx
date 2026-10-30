@@ -484,7 +484,7 @@ export default function SuperAdminPanel() {
   };
 
   // Click-To-WhatsApp function for onboarding assistance
-  const launchWhatsAppOnboarding = (phoneStr: string = '919848022338') => {
+  const launchWhatsAppOnboarding = (phoneStr: string = '919063692135') => {
     const textMsg = encodeURIComponent("Hi Nuvvo Support, I want to complete my partner restaurant verification and onboard quickly inside Chirala Region!");
     const targetUrl = `https://wa.me/${phoneStr}?text=${textMsg}`;
     window.open(targetUrl, '_blank');
@@ -1156,7 +1156,7 @@ export default function SuperAdminPanel() {
                 <p className="text-[10px] text-zinc-500">Live chat onboarding operations route directly through our dedicated team.</p>
               </div>
               <button 
-                onClick={() => launchWhatsAppOnboarding('919848022338')}
+                onClick={() => launchWhatsAppOnboarding('919063692135')}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5 shrink-0 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer uppercase"
               >
                 <PhoneCall className="w-3.5 h-3.5" /> Chat Now

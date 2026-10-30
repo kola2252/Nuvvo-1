@@ -584,7 +584,7 @@ export default function FranchiseScreen() {
           <div className="bg-emerald-500/10 border border-emerald-500/20 p-5 rounded-3xl space-y-3.5 text-left text-emerald-800 dark:text-emerald-400">
             <div className="flex items-center gap-2">
               <Phone className="w-5 h-5 text-emerald-500" />
-              <strong className="text-xs uppercase tracking-wide">Direct WhatsApp Business Helpline: +91 98480 22338</strong>
+              <strong className="text-xs uppercase tracking-wide">Direct WhatsApp Business Helpline: +91 90636 92135</strong>
             </div>
             
             <p className="text-[10px] leading-relaxed text-zinc-650 dark:text-zinc-350">

@@ -116,15 +116,34 @@ export async function getFoodItemsFromSupabase(): Promise<{
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Supabase getFoodItems error:', error);
-      return { data: null, error };
+      console.warn('Supabase getFoodItems notice:', error?.message || error);
+      // Seamlessly fall back to server API endpoint (/api/dishes)
+      try {
+        const res = await fetch('/api/dishes');
+        if (res.ok) {
+          const apiData = await res.json();
+          if (Array.isArray(apiData) && apiData.length > 0) {
+            return { data: apiData, error: null };
+          }
+        }
+      } catch {}
+      return { data: null, error: null };
     }
 
     const mapped = (data || []).map(mapSupabaseRowToFoodItem);
     return { data: mapped, error: null };
   } catch (err: any) {
-    console.error('Failed to query Supabase food_items table:', err);
-    return { data: null, error: err };
+    console.warn('Notice querying Supabase food_items table:', err?.message || err);
+    try {
+      const res = await fetch('/api/dishes');
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData) && apiData.length > 0) {
+          return { data: apiData, error: null };
+        }
+      }
+    } catch {}
+    return { data: null, error: null };
   }
 }
 

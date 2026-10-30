@@ -11,10 +11,11 @@ import {
   Settings, Save, PieChart, BarChart2, DollarSign, Bike, Check, Flame, Upload, ShieldAlert,
   Briefcase, MapPin, Download, Send, Globe, Award, Ban, Phone, MessageSquare, FileText, X,
   Image as ImageIcon, Camera, RefreshCw, Trash2, AlertTriangle, Sparkles, Percent,
-  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone, Star
+  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone, Star,
+  RotateCcw
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { VegIndicator, FranchiseApplication } from '../types';
+import { VegIndicator, FranchiseApplication, Banner } from '../types';
 import SuperAdminGuard from './SuperAdminGuard';
 import AdminCatalogManager from './AdminCatalogManager';
 import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
@@ -25,11 +26,12 @@ export default function AdminPanel() {
   const { 
     orders, foodCatalog, couponsList, addNewCoupon: addCoupon, deleteCoupon: removeCoupon, 
     clearAllCoupons, resetDefaultCoupons, clearStats, seedSampleOrders,
-    banners, deleteBanner, clearAllBanners, resetDefaultBanners, enableBanner,
+    banners, addBanner, updateBanner, deleteBanner, clearAllBanners, resetDefaultBanners, enableBanner,
     addFoodItem, updateFoodItem, deleteFoodItem, foodLoading, foodError, supabaseConnected, seedDishesToSupabase, refetchFoodCatalog,
     franchiseApplications, deliveryPartner, deliveryPartners, user, updateFranchiseStatus,
     restaurants, registerNewRestaurantRequest, approveRestaurant, isAdmin, isSuperAdmin, setCurrentPage,
     updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings,
+    logs, clearLogs,
     requestAdminSaveConfirmation
   } = useApp();
 
@@ -51,6 +53,42 @@ export default function AdminPanel() {
   const [testQrUrl, setTestQrUrl] = useState('');
   const [isSavedSuccess, setIsSavedSuccess] = useState(false);
   const [copiedAdminUpi, setCopiedAdminUpi] = useState(false);
+
+  // Banner Editing States
+  const [editingBanner, setEditingBanner] = useState<Banner | null>(null);
+  const [isAddingBanner, setIsAddingBanner] = useState(false);
+  const [bannerForm, setBannerForm] = useState<Partial<Banner>>({});
+  const [bannerNotice, setBannerNotice] = useState<string | null>(null);
+
+  // Franchise Actions Feedback States
+  const [franchiseProcessingId, setFranchiseProcessingId] = useState<string | null>(null);
+  const [franchiseNotice, setFranchiseNotice] = useState<{ id: string; msg: string; type: 'success' | 'error' } | null>(null);
+
+  // Settings Reset Notice
+  const [settingResetNotice, setSettingResetNotice] = useState<string | null>(null);
+
+  // Application Logs Removal Notice
+  const [logNotice, setLogNotice] = useState<string | null>(null);
+
+  const handleResetSingleSetting = (
+    label: string, 
+    defaultValueText: string, 
+    applyFn: () => void
+  ) => {
+    if (window.confirm(`Reset "${label}" to its default value (${defaultValueText})?\n\nNote: This restores only this individual setting and does not reset other settings or delete records.`)) {
+      applyFn();
+      setSettingResetNotice(`"${label}" was successfully reset to its default value (${defaultValueText}).`);
+      setTimeout(() => setSettingResetNotice(null), 4500);
+    }
+  };
+
+  const handleClearApplicationLogs = () => {
+    if (window.confirm("Are you sure you want to remove all application activity audit logs?\n\n• This clears temporary in-app audit history.\n• This does NOT delete any real customer orders, receipts, payments, or catalog dishes.")) {
+      clearLogs();
+      setLogNotice("Application activity audit logs have been successfully cleared.");
+      setTimeout(() => setLogNotice(null), 4500);
+    }
+  };
 
   // WhatsApp Cloud API Diagnostic State
   const [whatsappStatus, setWhatsappStatus] = useState<any>(null);
@@ -744,6 +782,33 @@ export default function AdminPanel() {
               </div>
             </div>
 
+
+            {/* Individual Setting Reset Notification Toast */}
+            {settingResetNotice && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl text-xs font-bold text-emerald-800 dark:text-emerald-300 flex items-center justify-between shadow-xs animate-fadeIn">
+                <span className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  {settingResetNotice}
+                </span>
+                <button type="button" onClick={() => setSettingResetNotice(null)} className="text-emerald-700 dark:text-emerald-400 text-xs">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Application Log Removal Notification Toast */}
+            {logNotice && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl text-xs font-bold text-blue-800 dark:text-blue-300 flex items-center justify-between shadow-xs animate-fadeIn">
+                <span className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                  {logNotice}
+                </span>
+                <button type="button" onClick={() => setLogNotice(null)} className="text-blue-700 dark:text-blue-400 text-xs">
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* PAYMENT CONFIGURATION & CASH ON DELIVERY (COD) MANAGER IN SETTINGS */}
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
@@ -768,11 +833,11 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              {/* COD Switcher Card */}
+              {/* COD Switcher Card with Individual Reset */}
               <div className="p-4 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
                         <span>💵 Cash on Delivery (COD) Checkout Flow</span>
                       </span>
@@ -783,6 +848,15 @@ export default function AdminPanel() {
                       }`}>
                         {enableCod ? '✓ Enabled' : '✕ Disabled'}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => handleResetSingleSetting('Cash on Delivery (COD)', 'Enabled (true)', () => handleToggleCod(true))}
+                        className="px-2 py-0.5 text-[9.5px] font-bold text-zinc-600 hover:text-orange-600 bg-white hover:bg-orange-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 rounded-md border border-slate-200 dark:border-zinc-700 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                        title="Restore COD to default (Enabled)"
+                      >
+                        <RotateCcw className="w-3 h-3 text-orange-500" />
+                        <span>Reset Setting</span>
+                      </button>
                     </div>
                     <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                       {enableCod 
@@ -809,10 +883,23 @@ export default function AdminPanel() {
 
                 {/* Supplementary Quick Controls */}
                 <div className="pt-3 border-t border-slate-200/60 dark:border-zinc-700/60 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* UPI toggle */}
+                  {/* UPI toggle with individual reset */}
                   <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200/80 dark:border-zinc-700/80 flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">📱 PhonePe / UPI Payment</p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">📱 PhonePe / UPI Payment</p>
+                        <button
+                          type="button"
+                          onClick={() => handleResetSingleSetting('UPI / PhonePe Payment', 'Enabled (true)', () => {
+                            setEnableUpi(true);
+                            updateStorePaymentSettings({ enableUpi: true, enableCod, customerInstructions });
+                          })}
+                          className="px-1.5 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-purple-600 bg-slate-50 dark:bg-zinc-800 rounded border border-slate-200 dark:border-zinc-700 transition flex items-center gap-0.5 cursor-pointer"
+                          title="Reset UPI Payment to default (Enabled)"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5 text-purple-500" /> Reset
+                        </button>
+                      </div>
                       <p className="text-[9.5px] text-zinc-400">Dynamic & Static QR Checkout</p>
                     </div>
                     <button
@@ -850,12 +937,30 @@ export default function AdminPanel() {
                   </div>
                 </div>
 
-                {/* Customer Payment Instructions input */}
+                {/* Customer Payment Instructions input with individual reset */}
                 <div className="space-y-1 pt-1">
-                  <label className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300 flex items-center justify-between">
-                    <span>Customer-Facing Checkout Payment Instructions</span>
-                    <span className="text-[9px] text-zinc-400">Visible on Customer Checkout</span>
-                  </label>
+                  <div className="flex items-center justify-between flex-wrap gap-1">
+                    <label className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
+                      Customer-Facing Checkout Payment Instructions
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const defInst = 'Please complete payment using your preferred method. For UPI, scan QR code or send to our business UPI ID. For Cash on Delivery, please keep exact cash ready upon delivery.';
+                          handleResetSingleSetting('Checkout Instructions', 'Default text', () => {
+                            setCustomerInstructions(defInst);
+                            updateStorePaymentSettings({ customerInstructions: defInst, enableCod, enableUpi });
+                          });
+                        }}
+                        className="px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-orange-600 bg-white hover:bg-orange-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 rounded border border-slate-200 dark:border-zinc-700 transition flex items-center gap-1 cursor-pointer"
+                        title="Reset instructions to standard text"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5 text-orange-500" /> Reset Instructions
+                      </button>
+                      <span className="text-[9px] text-zinc-400">Visible on Customer Checkout</span>
+                    </div>
+                  </div>
                   <input
                     type="text"
                     value={customerInstructions}
@@ -887,6 +992,60 @@ export default function AdminPanel() {
                     <span>Save to Supabase (app_settings)</span>
                   </button>
                 </div>
+              </div>
+            </div>
+
+            {/* APPLICATION ACTIVITY AUDIT LOGS & REMOVE LOGS SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center font-bold">
+                    <ShieldAlert className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                      <span>Application Activity Audit Trail</span>
+                      <span className="text-[9.5px] font-mono bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 px-2 py-0.5 rounded-full">
+                        {logs.length} Operations Recorded
+                      </span>
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">
+                      In-app administrative actions, order lifecycle events, and security access audit trail
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClearApplicationLogs}
+                    className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95"
+                    title="Remove application audit logs without affecting orders, receipts, or customers"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove Logs</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Log items preview */}
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {logs.length === 0 ? (
+                  <p className="text-xs text-zinc-400 text-center py-4">No recent activity logs recorded.</p>
+                ) : (
+                  logs.slice(0, 15).map(lg => (
+                    <div key={lg.id} className="p-2 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-200/60 dark:border-zinc-700/60 flex items-start gap-2 text-[10.5px]">
+                      <span className="text-orange-500 font-bold shrink-0 mt-0.5">•</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold text-zinc-800 dark:text-zinc-200 truncate">{lg.action}</span>
+                          <span className="text-[9px] text-zinc-400 font-mono shrink-0">{new Date(lg.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">{lg.details}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
@@ -2123,9 +2282,23 @@ export default function AdminPanel() {
 
               {/* Field 1: PhonePe UPI ID */}
               <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                  PhonePe UPI ID (VPA) <span className="text-rose-500">*</span>
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    PhonePe UPI ID (VPA) <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('PhonePe UPI ID', 'arjun.gorrepati@axl', () => {
+                      setAdminPhonePeUpiId('arjun.gorrepati@axl');
+                      updateStorePaymentSettings({ upiId: 'arjun.gorrepati@axl' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset UPI ID to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
                 <div className="relative">
                   <input
                     type="text"
@@ -2161,9 +2334,23 @@ export default function AdminPanel() {
 
               {/* Field 2: Connected Bank Account Name */}
               <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                  PhonePe Connected Bank Account <span className="text-rose-500">*</span>
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    PhonePe Connected Bank Account <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('Connected Bank Name', 'Karur Vysya Bank - 4761', () => {
+                      setAdminBankName('Karur Vysya Bank - 4761');
+                      updateStorePaymentSettings({ bankName: 'Karur Vysya Bank - 4761' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset bank name to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
                 <input
                   type="text"
                   required
@@ -2179,9 +2366,23 @@ export default function AdminPanel() {
 
               {/* Field 3: Merchant / Business Name */}
               <div className="space-y-1.5">
-                <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                  Store / Business Name (Shown in UPI Scanner)
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    Store / Business Name (Shown in UPI Scanner)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('Merchant Business Name', 'Nuvvo Food & Hospitality', () => {
+                      setAdminMerchantName('Nuvvo Food & Hospitality');
+                      updateStorePaymentSettings({ merchantName: 'Nuvvo Food & Hospitality' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset merchant name to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
                 <input
                   type="text"
                   maxLength={25}
@@ -2195,9 +2396,23 @@ export default function AdminPanel() {
               {/* Field 4 & 5: Mobile & Account Holder */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                    PhonePe Mobile Number
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                      PhonePe Mobile Number
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleResetSingleSetting('PhonePe Number', '9876543210', () => {
+                        setAdminPhonePePhone('9876543210');
+                        updateStorePaymentSettings({ phonePeNumber: '9876543210' });
+                      })}
+                      className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                      title="Reset phone number to default"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                      <span>Reset</span>
+                    </button>
+                  </div>
                   <input
                     type="tel"
                     maxLength={10}
@@ -2209,9 +2424,23 @@ export default function AdminPanel() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
-                    Account Holder Name
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                      Account Holder Name
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleResetSingleSetting('Account Holder Name', 'Arjun Gorrepati (Nuvvo Foods)', () => {
+                        setAdminAccountHolder('Arjun Gorrepati (Nuvvo Foods)');
+                        updateStorePaymentSettings({ accountHolderName: 'Arjun Gorrepati (Nuvvo Foods)' });
+                      })}
+                      className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                      title="Reset account holder to default"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                      <span>Reset</span>
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={adminAccountHolder}
@@ -2773,11 +3002,32 @@ export default function AdminPanel() {
                     <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500" /> Home Screen Spotlight Promos ({banners.length})
                   </h4>
                   <p className="text-[10px] text-zinc-400 mt-0.5">
-                    Clear or toggle promotional banners displayed at the top of the Customer home screen
+                    Create, edit, toggle, or clear promotional banners displayed at the top of the Customer home screen (synced to Supabase)
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingBanner(true);
+                      setEditingBanner(null);
+                      setBannerForm({
+                        title: '',
+                        description: '',
+                        image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80',
+                        discount: '20% OFF',
+                        actionType: 'category',
+                        actionValue: 'Biryani',
+                        enabled: true
+                      });
+                    }}
+                    className="px-2.5 py-1 bg-orange-500 hover:bg-orange-600 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Add Banner</span>
+                  </button>
+
                   {banners.length === 0 ? (
                     <button
                       type="button"
@@ -2808,6 +3058,170 @@ export default function AdminPanel() {
                   )}
                 </div>
               </div>
+
+              {bannerNotice && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{bannerNotice}</span>
+                  </div>
+                  <button onClick={() => setBannerNotice(null)} className="text-emerald-600 hover:text-emerald-800">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* BANNER EDIT / ADD FORM */}
+              {(editingBanner || isAddingBanner) && (
+                <div className="p-4 bg-orange-50/70 dark:bg-zinc-800/90 border-2 border-orange-500/40 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-xs font-black uppercase text-orange-600 dark:text-orange-400 flex items-center gap-1.5">
+                      <Edit className="w-3.5 h-3.5" />
+                      {editingBanner ? `Edit Banner: "${editingBanner.title}"` : 'Create New Promotional Banner'}
+                    </h5>
+                    <button 
+                      type="button"
+                      onClick={() => { setEditingBanner(null); setIsAddingBanner(false); }}
+                      className="text-zinc-400 hover:text-zinc-600 p-1"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Banner Title *</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="e.g. Authentic Andhra Biryani Fest"
+                        value={bannerForm.title || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, title: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-semibold outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Discount Tag (Optional)</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Flat 30% OFF, ₹50 Cashback"
+                        value={bannerForm.discount || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, discount: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-mono font-bold outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Short Description</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Fragrant spiced rice delivered piping hot to your doorstep"
+                        value={bannerForm.description || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, description: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Image URL *</label>
+                      <input 
+                        type="url"
+                        required
+                        placeholder="https://images.unsplash.com/..."
+                        value={bannerForm.image || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, image: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-mono outline-none focus:border-orange-500"
+                      />
+                      {bannerForm.image && (
+                        <div className="mt-2 h-20 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800">
+                          <img src={bannerForm.image} alt="Preview" className="w-full h-full object-cover" />
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Click Action Type</label>
+                      <select 
+                        value={bannerForm.actionType || 'category'}
+                        onChange={e => setBannerForm(prev => ({ ...prev, actionType: e.target.value as any }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-bold outline-none focus:border-orange-500"
+                      >
+                        <option value="category">Open Food Category</option>
+                        <option value="restaurant">Open Specific Restaurant</option>
+                        <option value="screen">Navigate to Screen</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Action Value Target</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Biryani, South Indian, franchise"
+                        value={bannerForm.actionValue || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, actionValue: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-orange-200 dark:border-zinc-700">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      <input 
+                        type="checkbox"
+                        checked={bannerForm.enabled ?? true}
+                        onChange={e => setBannerForm(prev => ({ ...prev, enabled: e.target.checked }))}
+                        className="w-4 h-4 text-orange-500 rounded"
+                      />
+                      <span>Banner Visible in App</span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setEditingBanner(null); setIsAddingBanner(false); }}
+                        className="px-3 py-1.5 bg-slate-200 dark:bg-zinc-700 hover:bg-slate-300 text-zinc-700 dark:text-zinc-200 rounded-xl text-xs font-bold transition cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!bannerForm.title?.trim() || !bannerForm.image?.trim()) {
+                            alert('Please provide a banner title and image URL');
+                            return;
+                          }
+                          if (editingBanner) {
+                            updateBanner(editingBanner.id, {
+                              title: bannerForm.title.trim(),
+                              description: bannerForm.description?.trim() || '',
+                              image: bannerForm.image.trim(),
+                              discount: bannerForm.discount?.trim() || undefined,
+                              actionType: bannerForm.actionType || 'category',
+                              actionValue: bannerForm.actionValue?.trim() || 'Biryani',
+                              enabled: bannerForm.enabled ?? true
+                            });
+                            setBannerNotice(`Banner "${bannerForm.title}" updated and persisted in Supabase!`);
+                          } else {
+                            addBanner({
+                              title: bannerForm.title.trim(),
+                              description: bannerForm.description?.trim() || '',
+                              image: bannerForm.image.trim(),
+                              discount: bannerForm.discount?.trim() || undefined,
+                              actionType: bannerForm.actionType || 'category',
+                              actionValue: bannerForm.actionValue?.trim() || 'Biryani',
+                              enabled: bannerForm.enabled ?? true
+                            });
+                            setBannerNotice(`New banner "${bannerForm.title}" created and persisted in Supabase!`);
+                          }
+                          setEditingBanner(null);
+                          setIsAddingBanner(false);
+                          setTimeout(() => setBannerNotice(null), 4500);
+                        }}
+                        className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save Banner</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {banners.length === 0 ? (
                 <div className="py-8 text-center space-y-2 border border-dashed border-slate-200 dark:border-zinc-800 rounded-2xl p-4">
@@ -2865,6 +3279,18 @@ export default function AdminPanel() {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBanner(b);
+                            setIsAddingBanner(false);
+                            setBannerForm({ ...b });
+                          }}
+                          className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-lg transition cursor-pointer"
+                          title="Edit this promo banner"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => enableBanner(b.id, !b.enabled)}
@@ -3195,10 +3621,10 @@ export default function AdminPanel() {
                           </div>
                         )}
 
-                        {/* SUPER ADMIN STATUS CONTROLS */}
-                        <div className="border-t pt-3 flex flex-wrap gap-1.5 items-center justify-between">
-                          <div className="flex gap-1.5">
-                            <a href={`tel:${app.phone}`} className="p-2 bg-slate-100 hover:bg-slate-200 text-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl flex items-center justify-center">
+                        {/* FRANCHISE APPLICATION DECISION CONTROLS */}
+                        <div className="border-t border-slate-200 dark:border-zinc-800 pt-3 flex flex-wrap gap-2 items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <a href={`tel:${app.phone}`} className="p-2 bg-slate-100 hover:bg-slate-200 text-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl flex items-center justify-center" title="Call Candidate">
                               <Phone className="w-3.5 h-3.5" />
                             </a>
                             <button 
@@ -3207,15 +3633,14 @@ export default function AdminPanel() {
                                 setSelectedAppIdForAgreement(app.id);
                                 setShowAgreement(true);
                               }}
-                              className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-505 dark:bg-indigo-950/20 rounded-xl flex items-center justify-center"
+                              className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/20 rounded-xl flex items-center justify-center cursor-pointer"
                               title="Generate Contract Agreement File"
                             >
                               <FileText className="w-3.5 h-3.5" />
                             </button>
                           </div>
 
-                          <div className="flex gap-1">
-                            {/* ADVANCE STATUS SLIDER / SWITCHER */}
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <SuperAdminGuard 
                               fallback={
                                 <span className="text-[8.5px] bg-zinc-100 dark:bg-zinc-800 text-zinc-400 font-bold px-2 py-1 rounded">
@@ -3223,68 +3648,191 @@ export default function AdminPanel() {
                                 </span>
                               }
                             >
-                              <div className="flex items-center gap-1">
-                                {/* Next stage */}
-                                {app.status !== 'Active Franchise' && (
+                              <div className="flex items-center gap-2">
+                                {/* Dedicated Accept / Approve Button */}
+                                {app.status !== 'Approved' && app.status !== 'Active Franchise' && (
                                   <button 
-                                    onClick={() => {
-                                      const sequence: FranchiseApplication['status'][] = ['Submitted', 'Under Review', 'Verification Pending', 'Approved', 'Agreement Pending', 'Active Franchise'];
-                                      const curIdx = sequence.indexOf(app.status);
-                                      if (curIdx !== -1 && curIdx < sequence.length - 1) {
-                                        updateFranchiseStatus(app.id, sequence[curIdx + 1]);
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Approved');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" has been Approved and saved to Supabase!`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to approve application: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
                                       }
                                     }}
-                                    className="bg-orange-500 hover:bg-orange-605 text-white font-extrabold px-3 py-1 rounded-lg text-[9px] uppercase tracking-wide cursor-pointer transition"
+                                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1 shadow-xs active:scale-95"
+                                    title="Accept and approve this franchise application"
                                   >
-                                    Advance Status
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{franchiseProcessingId === app.id ? 'Processing...' : 'Accept / Approve'}</span>
                                   </button>
                                 )}
 
-                                {/* Reject Option */}
-                                {app.status !== 'Rejected' ? (
+                                {/* Dedicated Reject Button */}
+                                {app.status !== 'Rejected' && (
                                   <button 
-                                    onClick={() => updateFranchiseStatus(app.id, 'Rejected')}
-                                    className="bg-zinc-100 hover:bg-rose-50 text-rose-500 font-extrabold px-3 py-1 rounded-lg text-[9px] uppercase tracking-wide cursor-pointer transition border border-rose-100 dark:bg-zinc-800 dark:hover:bg-rose-950/20"
-                                  >
-                                    Reject Check
-                                  </button>
-                                ) : (
-                                  <button 
-                                    onClick={() => updateFranchiseStatus(app.id, 'Submitted')}
-                                    className="bg-white hover:bg-slate-50 text-zinc-700 font-extrabold px-3 py-1 rounded-lg text-[9px] uppercase tracking-wide cursor-pointer transition border"
-                                  >
-                                    Restore Check
-                                  </button>
-                                )}
-
-                                {/* SUSPEND OR ACTIVATE ACCESS */}
-                                {app.status === 'Active Franchise' ? (
-                                  <button 
-                                    onClick={() => {
-                                      updateFranchiseStatus(app.id, 'Agreement Pending');
-                                      alert(`Ecosystem alert: accounts suspends flag registered on partner ${app.fullName}. Access locked.`);
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      if (!window.confirm(`Are you sure you want to reject the franchise application from "${app.fullName}"?`)) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Rejected');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" has been marked as Rejected and saved to Supabase.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to reject application: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
                                     }}
-                                    className="bg-red-655 hover:bg-rose-700 text-white font-extrabold px-3 py-1 rounded-lg text-[8.5px] uppercase tracking-wider flex items-center gap-1 transition"
+                                    className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 disabled:opacity-50 text-rose-600 dark:text-rose-400 font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1 active:scale-95"
+                                    title="Reject this franchise application"
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                    <span>{franchiseProcessingId === app.id ? 'Processing...' : 'Reject'}</span>
+                                  </button>
+                                )}
+
+                                {/* Re-Open if previously rejected */}
+                                {app.status === 'Rejected' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Under Review');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" re-opened for Under Review.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to re-open: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    <span>Re-open Application</span>
+                                  </button>
+                                )}
+
+                                {/* Activate / Suspend if already Approved or Active */}
+                                {(app.status === 'Approved' || app.status === 'Agreement Pending') && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Active Franchise');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Franchise partner "${app.fullName}" has been set to Active Franchise!`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to activate: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold px-3 py-1.5 rounded-xl text-[9px] uppercase tracking-wider flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <Check className="w-3 h-3" /> Activate Franchise
+                                  </button>
+                                )}
+
+                                {app.status === 'Active Franchise' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Agreement Pending');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Franchise account for "${app.fullName}" suspended to Agreement Pending.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to suspend: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-amber-500 hover:bg-amber-600 text-white font-extrabold px-2.5 py-1.5 rounded-xl text-[8.5px] uppercase tracking-wider flex items-center gap-1 transition cursor-pointer"
                                   >
                                     <Ban className="w-3 h-3" /> Suspend
                                   </button>
-                                ) : (
-                                  app.status === 'Agreement Pending' && (
-                                    <button 
-                                      onClick={() => {
-                                        updateFranchiseStatus(app.id, 'Active Franchise');
-                                        alert(`Ecosystem alert: account authorized and restored to live state for ${app.fullName}.`);
-                                      }}
-                                      className="bg-emerald-505 hover:bg-emerald-600 text-white font-extrabold px-3 py-1 rounded-lg text-[8.5px] uppercase tracking-wider flex items-center gap-1 transition"
-                                    >
-                                      <Check className="w-3 h-3" /> Activate
-                                    </button>
-                                  )
                                 )}
                               </div>
                             </SuperAdminGuard>
                           </div>
                         </div>
+
+                        {/* Franchise notice display for this card */}
+                        {franchiseNotice && franchiseNotice.id === app.id && (
+                          <div className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
+                            franchiseNotice.type === 'success' 
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800' 
+                              : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                          }`}>
+                            {franchiseNotice.type === 'success' ? (
+                              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                            )}
+                            <span className="font-semibold">{franchiseNotice.msg}</span>
+                          </div>
+                        )}
 
                       </div>
                     );
@@ -3325,7 +3873,7 @@ export default function AdminPanel() {
                   onClick={() => {
                     if (!bulkMsg.trim()) { alert("Please type your warning message notice draft first."); return; }
                     const text = encodeURIComponent(bulkMsg);
-                    window.open(`https://wa.me/919848022338?text=${text}`, "_blank");
+                    window.open(`https://wa.me/919063692135?text=${text}`, "_blank");
                     setMsgLogs(prev => [`[WA - ${new Date().toLocaleTimeString()}] Sync template initialized`, ...prev]);
                     alert("Ecosystem: Initiated bulk WhatsApp API redirect pipeline check.");
                   }}

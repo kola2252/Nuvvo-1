@@ -1167,7 +1167,7 @@ Current User Query: ${message}`;
       // Strictly enforce role: ONLY verified admin phone with valid OTP/PIN gets super_admin
       // Never bypass OTP or grant admin access without verification!
       let role: 'normal_user' | 'admin' | 'super_admin' = 'normal_user';
-      if (cleanPhone === AUTHORIZED_ADMIN_PHONE && (requestedRole === 'Admin' || requestedRole === 'super_admin')) {
+      if (cleanPhone === AUTHORIZED_ADMIN_PHONE) {
         role = 'super_admin';
       } else {
         role = 'normal_user';

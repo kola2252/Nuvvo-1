@@ -227,7 +227,7 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
       .upsert([payload], { onConflict: 'id' });
 
     if (error) {
-      console.error('[Supabase Orders] Direct upsert error:', error.message);
+      console.warn('[Supabase Orders] Direct upsert notice:', error.message);
       if (error.code === 'PGRST205') {
         return { success: false, error: 'orders_table_unmigrated' };
       }
@@ -239,7 +239,7 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
 
     return { success: true };
   } catch (err: any) {
-    console.error('[Supabase Orders] saveOrderToSupabase exception:', err);
+    console.warn('[Supabase Orders] saveOrderToSupabase exception notice:', err?.message || err);
     return { success: false, error: err?.message || 'Database error' };
   }
 }

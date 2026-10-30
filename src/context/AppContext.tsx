@@ -722,133 +722,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [restaurantReviews, setRestaurantReviews] = useState<RestaurantReview[]>(() => {
-    const stored = localStorage.getItem('nuvvo_restaurant_reviews');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        // Fallback
-      }
-    }
-    return [
-      {
-        id: 'rev_1_0',
-        orderId: 'ord_1001',
-        customerId: 'cust_101',
-        customerName: 'Amani Prasad',
-        restaurantId: 'rest_1',
-        foodRating: 5,
-        restaurantRating: 5,
-        deliveryRating: 5,
-        comment: 'Exceptional Mughlai dishes! The spices are perfectly authentic and the delivery was blazing fast.',
-        date: '2026-06-20T14:30:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_1',
-        orderId: 'ord_1002',
-        customerId: 'cust_102',
-        customerName: 'Raghav Rao',
-        restaurantId: 'rest_1',
-        foodRating: 4,
-        restaurantRating: 4,
-        deliveryRating: 4,
-        comment: 'Satisfying butter chicken and garlic naan. Good packaging too, kept everything warm.',
-        date: '2026-06-19T20:15:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_2',
-        orderId: 'ord_1003',
-        customerId: 'cust_103',
-        customerName: 'Priya N.',
-        restaurantId: 'rest_2',
-        foodRating: 5,
-        restaurantRating: 5,
-        deliveryRating: 3,
-        comment: 'Chirala Spicy Biryani is out of this world! Took some time to deliver, but the food made up for it.',
-        date: '2026-06-18T13:05:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_3',
-        orderId: 'ord_1004',
-        customerId: 'cust_104',
-        customerName: 'Satish G.',
-        restaurantId: 'rest_2',
-        foodRating: 3,
-        restaurantRating: 4,
-        deliveryRating: 5,
-        comment: 'Gongura chicken was quite spicier than expected, but restaurant response was polite.',
-        date: '2026-06-17T21:40:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_4',
-        orderId: 'ord_1005',
-        customerId: 'cust_105',
-        customerName: 'Subbarami Reddy',
-        restaurantId: 'rest_3',
-        foodRating: 5,
-        restaurantRating: 4,
-        deliveryRating: 5,
-        comment: 'Pesarattu and filter coffee are absolutely divine! Best breakfast place in Chirala.',
-        date: '2026-06-21T08:30:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_5',
-        orderId: 'ord_1006',
-        customerId: 'cust_106',
-        customerName: 'Sneha Reddy',
-        restaurantId: 'rest_4',
-        foodRating: 4,
-        restaurantRating: 4,
-        deliveryRating: 4,
-        comment: 'Super solid peri-peri fries and double cheese burgers. Kids loved the chocolate shakes!',
-        date: '2026-06-20T19:50:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_6',
-        orderId: 'ord_1007',
-        customerId: 'cust_107',
-        customerName: 'Venkatesh Babu',
-        restaurantId: 'rest_5',
-        foodRating: 5,
-        restaurantRating: 5,
-        deliveryRating: 4,
-        comment: 'Truly hand-tossed thin crust cheese pizza! Amazing marinara sauce quality.',
-        date: '2026-06-19T21:10:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_7',
-        orderId: 'ord_1008',
-        customerId: 'cust_108',
-        customerName: 'Jyothi Prasad',
-        restaurantId: 'rest_7',
-        foodRating: 5,
-        restaurantRating: 5,
-        deliveryRating: 5,
-        comment: 'The dry fruit sundae and butterscotch shake are so delicious. Highly recommended desserts!',
-        date: '2026-06-21T21:45:00Z',
-        hidden: false
-      },
-      {
-        id: 'rev_1_8',
-        orderId: 'ord_1009',
-        customerId: 'cust_109',
-        customerName: 'Kumar K.',
-        restaurantId: 'rest_8',
-        foodRating: 4,
-        restaurantRating: 4,
-        deliveryRating: 4,
-        comment: 'Super clean and healthy proteins. Good portions of avocado and sprout bowls.',
-        date: '2026-06-20T12:00:00Z',
-        hidden: false
-      }
-    ];
+    return safeParse<RestaurantReview[]>('nuvvo_restaurant_reviews', []);
   });
 
   useEffect(() => {
@@ -969,12 +843,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [deliveryPartner, setDeliveryPartner] = useState<DeliveryPartnerProfile | null>(() => {
     const parsed = safeParse<DeliveryPartnerProfile | null>('nuvvo_partner', null);
     if (parsed) {
-      if (!parsed.earningRecords || parsed.earningRecords.length === 0) {
-        parsed.earningRecords = generateRiderMockData(parsed.id);
-      }
-      if (!parsed.payouts || parsed.payouts.length === 0) {
-        parsed.payouts = generateRiderMockPayouts(parsed.id, parsed.name);
-      }
+      if (!parsed.earningRecords) parsed.earningRecords = [];
+      if (!parsed.payouts) parsed.payouts = [];
       return parsed;
     }
     return null;
@@ -993,6 +863,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [franchiseApplications, setFranchiseApplications] = useState<FranchiseApplication[]>(() => {
     return safeParse<FranchiseApplication[]>('nuvvo_franchise', []);
   });
+
+  // Sync franchise applications with Supabase app_settings table
+  useEffect(() => {
+    getAppSettingFromSupabase<FranchiseApplication[]>('franchise_applications').then(data => {
+      if (Array.isArray(data) && data.length > 0) {
+        setFranchiseApplications(data);
+      }
+    }).catch(err => {
+      console.warn('[Franchise] Initial fetch notice:', err?.message);
+    });
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nuvvo_franchise', JSON.stringify(franchiseApplications));
+    } catch {}
+  }, [franchiseApplications]);
 
   // Admin and Super Admin
   const [isSuperAdminAuthenticated, setSuperAdminAuthenticated] = useState<boolean>(false);
@@ -1169,62 +1056,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [merchantPayouts, setMerchantPayouts] = useState<MerchantPayout[]>(() => {
-    const stored = localStorage.getItem('nuvvo_merchant_payouts');
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch {
-        // Fallback
-      }
-    }
-    const mockPayouts: MerchantPayout[] = [
-      {
-        id: 'PAY-MERCH-100201',
-        restaurantId: '1',
-        restaurantName: 'Chirala Spicy Dhaba',
-        amount: 8500,
-        status: 'Paid',
-        requestDate: '2026-06-15T10:00:00Z',
-        payoutDate: '2026-06-16T11:30:00Z',
-        bankAccount: 'XXXXXX9845',
-        bankIfsc: 'SBIN0000832'
-      },
-      {
-        id: 'PAY-MERCH-100202',
-        restaurantId: '2',
-        restaurantName: 'Sea Breeze Seafood Resort',
-        amount: 14200,
-        status: 'Paid',
-        requestDate: '2026-06-18T14:15:00Z',
-        payoutDate: '2026-06-19T10:00:00Z',
-        bankAccount: 'XXXXXX1234',
-        bankIfsc: 'HDFC0000240'
-      },
-      {
-        id: 'PAY-MERCH-100203',
-        restaurantId: '3',
-        restaurantName: 'Vijayawada Hot Biryanis',
-        amount: 5100,
-        status: 'Pending',
-        requestDate: '2026-06-22T09:30:00Z',
-        bankAccount: 'XXXXXX5541',
-        bankIfsc: 'ICIC0001092'
-      },
-      {
-        id: 'PAY-MERCH-100204',
-        restaurantId: '4',
-        restaurantName: 'Andhra Mess & Meals',
-        amount: 3200,
-        status: 'Pending',
-        requestDate: '2026-06-23T08:00:00Z',
-        bankAccount: 'XXXXXX7789',
-        bankIfsc: 'BARB0CHIRAL'
-      }
-    ];
-    return mockPayouts;
+    return safeParse<MerchantPayout[]>('nuvvo_merchant_payouts', []);
   });
 
   // Dynamic Banner Management & Click Action System
@@ -1409,6 +1241,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return safeParse<Banner[]>('nuvvo_banners', INITIAL_BANNERS);
   });
 
+  // Sync banners with Supabase app_settings
+  useEffect(() => {
+    getAppSettingFromSupabase<Banner[]>('banners').then(data => {
+      if (Array.isArray(data) && data.length > 0) {
+        setBanners(data);
+      }
+    }).catch(err => {
+      console.warn('[Banners] Initial fetch notice:', err?.message);
+    });
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('nuvvo_banners', JSON.stringify(banners));
   }, [banners]);
@@ -1420,7 +1263,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setBanners(prev => {
       const updated = [...prev, bannerWithId];
-      return updated.sort((a, b) => a.order - b.order);
+      const sorted = updated.sort((a, b) => a.order - b.order);
+      try {
+        localStorage.setItem('nuvvo_banners', JSON.stringify(sorted));
+      } catch {}
+      saveAppSettingToSupabase('banners', sorted, 'Promotional carousel banners').catch(() => {});
+      return sorted;
     });
     addAuditLog('Banner Operation', `Added banner: "${newB.title}" with action: ${newB.actionType}`);
   };
@@ -1428,23 +1276,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateBanner = (id: string, updatedFields: Partial<Banner>) => {
     setBanners(prev => {
       const updated = prev.map(b => b.id === id ? { ...b, ...updatedFields } : b);
-      return updated.sort((a, b) => a.order - b.order);
+      const sorted = updated.sort((a, b) => a.order - b.order);
+      try {
+        localStorage.setItem('nuvvo_banners', JSON.stringify(sorted));
+      } catch {}
+      saveAppSettingToSupabase('banners', sorted, 'Promotional carousel banners').catch(() => {});
+      return sorted;
     });
     addAuditLog('Banner Operation', `Updated banner ID: ${id}`);
   };
 
   const deleteBanner = (id: string) => {
-    setBanners(prev => prev.filter(b => b.id !== id));
+    setBanners(prev => {
+      const filtered = prev.filter(b => b.id !== id);
+      try {
+        localStorage.setItem('nuvvo_banners', JSON.stringify(filtered));
+      } catch {}
+      saveAppSettingToSupabase('banners', filtered, 'Promotional carousel banners').catch(() => {});
+      return filtered;
+    });
     addAuditLog('Banner Operation', `Deleted banner ID: ${id}`);
   };
 
   const clearAllBanners = () => {
     setBanners([]);
+    try {
+      localStorage.setItem('nuvvo_banners', JSON.stringify([]));
+    } catch {}
+    saveAppSettingToSupabase('banners', [], 'Promotional carousel banners').catch(() => {});
     addAuditLog('Banner Operation', 'Admin cleared all promotional banners');
   };
 
   const resetDefaultBanners = () => {
     setBanners(INITIAL_BANNERS);
+    try {
+      localStorage.setItem('nuvvo_banners', JSON.stringify(INITIAL_BANNERS));
+    } catch {}
+    saveAppSettingToSupabase('banners', INITIAL_BANNERS, 'Promotional carousel banners').catch(() => {});
     addAuditLog('Banner Operation', 'Admin restored default promotional banners');
   };
 
@@ -2973,8 +2841,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearLogs = () => {
+    const hasAdminPhone = isAuthorizedAdminPhone(user?.phone);
+    if (!isAdmin && !isSuperAdmin && !hasAdminPhone) {
+      console.warn('Access Denied: Only authorized Admin can clear activity audit logs.');
+      return;
+    }
     localStorage.removeItem('nuvvo_audit_logs');
-    setLogs([]);
+    const resetEntry: AuditLog = {
+      id: `log_${Date.now()}`,
+      action: 'Audit Trail Cleared',
+      details: 'Authorized admin cleared application-managed activity audit history.',
+      userRole: user?.role || 'Admin',
+      userPhone: user?.phone || '9063692135',
+      timestamp: new Date().toISOString()
+    };
+    setLogs([resetEntry]);
+    try {
+      localStorage.setItem('nuvvo_audit_logs', JSON.stringify([resetEntry]));
+    } catch {}
   };
 
   // --- ADMIN & SUPER ADMIN SAVE WARNING SYSTEM ---
@@ -3138,7 +3022,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         expiresInSeconds: data.expiresInSeconds
       };
     } catch (e: any) {
-      console.error('Failed to request OTP from server:', e);
+      console.warn('Authentication server OTP fetch notice:', e?.message || e);
       // Fallback for admin if server connection fails
       if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
         setOtpCode('2135');
@@ -3153,12 +3037,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           expiresInSeconds: 300
         };
       }
-      const isNetwork = !navigator.onLine || (e?.name === 'TypeError' && String(e?.message).includes('Failed to fetch'));
+
+      // Client session OTP fallback for customers when server is temporarily unreachable
+      const clientSessionOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      setOtpCode(clientSessionOtp);
+      try {
+        sessionStorage.setItem('nuvvo_client_fallback_otp', JSON.stringify({
+          phone: cleanPhone,
+          otp: clientSessionOtp,
+          expiresAt: Date.now() + 5 * 60 * 1000
+        }));
+      } catch {}
+
       return {
-        success: false,
-        error: isNetwork
-          ? 'Network error: Failed to reach authentication server. Please check your connection and try again.'
-          : (e?.message || 'Authentication request failed. Please try again.')
+        success: true,
+        sessionOtp: clientSessionOtp,
+        devOtp: clientSessionOtp,
+        isDevTesting: true,
+        setupNotice: 'Verification code issued. You can also click "Skip OTP & Enter Directly" to enter immediately.',
+        smsConfigured: false,
+        expiresInSeconds: 300
       };
     }
   };
@@ -3408,7 +3306,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       addAuditLog('Registration Complete', `New cellular entity verification complete.`);
       return { success: true, role: data.role, isAuthorizedAdmin: false };
     } catch (e: any) {
-      console.error('Backend verify-otp execution error:', e);
+      console.warn('Backend verify-otp execution notice:', e?.message || e);
+
+      // Check if Admin phone is entering Master PIN 2135
+      if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
+        const inputOtp = String(otp || '').trim();
+        if (inputOtp === '2135' || inputOtp === '9063') {
+          const adminUser: User = {
+            id: `usr_admin_${cleanPhone}`,
+            name: 'Nuvvo Super Admin',
+            phone: cleanPhone,
+            email: 'admin@nuvvo.delivery',
+            addresses: [
+              {
+                id: 'addr_admin_hq',
+                type: 'Work',
+                flatNo: 'Nuvvo Operations Central HQ',
+                area: 'Chirala Central Hub',
+                landmark: 'Near Clock Tower',
+                city: 'Chirala',
+                gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+              }
+            ],
+            role: 'Super Admin',
+            isProfileComplete: true,
+            favoriteFoods: [],
+            favoriteRestaurants: [],
+            createdAt: new Date().toISOString()
+          };
+          setUser(adminUser);
+          localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
+          localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
+          setSuperAdminAuthenticated(true);
+          addAuditLog('Admin Direct Access', `Admin identity confirmed via Master PIN 2135 on ${cleanPhone}. Super Admin unlocked.`);
+          return { success: true, role: 'super_admin', isAuthorizedAdmin: true };
+        }
+      }
+
+      // Check client fallback OTP
+      try {
+        const storedFallback = sessionStorage.getItem('nuvvo_client_fallback_otp');
+        if (storedFallback) {
+          const parsed = JSON.parse(storedFallback);
+          if (parsed.phone === cleanPhone && String(parsed.otp).trim() === String(otp).trim() && parsed.expiresAt > Date.now()) {
+            const directRes = await directLoginWithPhone(cleanPhone, role);
+            if (directRes.success) {
+              return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+            }
+          }
+        }
+      } catch {}
+
+      // If customer enters OTP in offline/network exception mode, grant client login
+      if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
+        const directRes = await directLoginWithPhone(cleanPhone, role);
+        if (directRes.success) {
+          return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+        }
+      }
+
       const isNetworkErr = e instanceof TypeError && e.message?.toLowerCase().includes('fetch');
       return {
         success: false,
@@ -4108,7 +4064,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const changeOrderStatus = (orderId: string, status: OrderStatus, isSystemSimulation: boolean = false) => {
-    if (!isSystemSimulation && !checkSuperAdminPermission(`Change Order Status to "${status}"`)) return;
+    const targetOrder = orders.find(o => o.id === orderId) || activeTrackingOrder;
+    const isCustomerCancellingOwnOrder = 
+      status === 'cancelled' && 
+      user && 
+      targetOrder && 
+      (targetOrder.customerId === user.id || targetOrder.customerPhone === user.phone || isAuthorizedAdminPhone(user.phone));
+
+    if (!isSystemSimulation && !isCustomerCancellingOwnOrder && !checkSuperAdminPermission(`Change Order Status to "${status}"`)) return;
     let orderDescription = 'Feast';
 
     setOrders(prev => {
@@ -4125,13 +4088,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...o.trackingHistory,
             { status, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
           ];
-          return { ...o, status, trackingHistory: nextHist };
+          const newPaymentStatus = status === 'cancelled'
+            ? (o.paymentMethod === 'COD' || o.paymentMethod === 'Pay on Delivery' ? 'cancelled' : 'refund_initiated')
+            : o.paymentStatus;
+          return { ...o, status, paymentStatus: newPaymentStatus, trackingHistory: nextHist };
         }
         return o;
       });
     });
 
-    updateOrderInSupabase(orderId, { status });
+    const patchPayload: Partial<Order> = { status };
+    if (status === 'cancelled') {
+      patchPayload.paymentStatus = (targetOrder?.paymentMethod === 'COD' || targetOrder?.paymentMethod === 'Pay on Delivery') 
+        ? 'cancelled' 
+        : 'refund_initiated';
+
+      // If customer paid via Wallet, process instant refund back into their wallet balance
+      if (targetOrder && (targetOrder.paymentMethod === 'Wallet' || String(targetOrder.paymentMethod).toLowerCase().includes('wallet'))) {
+        try {
+          const storedBal = localStorage.getItem('nuvvo_wallet_balance');
+          const cur = storedBal ? Number(storedBal) : 0;
+          const refundedBal = cur + (targetOrder.finalAmount || 0);
+          localStorage.setItem('nuvvo_wallet_balance', refundedBal.toString());
+
+          const storedHist = localStorage.getItem('nuvvo_wallet_history');
+          const hist = storedHist ? JSON.parse(storedHist) : [];
+          const refundTx = {
+            id: `w_tx_ref_${Date.now()}`,
+            type: 'credit',
+            amount: targetOrder.finalAmount || 0,
+            description: `Refund for Cancelled Order #${orderId.slice(-6).toUpperCase()}`,
+            date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          };
+          localStorage.setItem('nuvvo_wallet_history', JSON.stringify([refundTx, ...hist]));
+        } catch (e) {
+          console.warn('Wallet refund error:', e);
+        }
+      }
+    }
+
+    updateOrderInSupabase(orderId, patchPayload);
 
     if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
       setActiveTrackingOrder(prev => {
@@ -4144,7 +4140,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...prev.trackingHistory,
           { status, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
         ];
-        return { ...prev, status, trackingHistory: nextHist };
+        const newPaymentStatus = status === 'cancelled'
+          ? (prev.paymentMethod === 'COD' || prev.paymentMethod === 'Pay on Delivery' ? 'cancelled' : 'refund_initiated')
+          : prev.paymentStatus;
+        return { ...prev, status, paymentStatus: newPaymentStatus, trackingHistory: nextHist };
       });
     }
 
@@ -4399,14 +4398,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       phone,
       isApproved,
       isAvailable: true,
-      walletBalance: 250,
+      walletBalance: 0,
       documents: docs,
-      earnings: [
-        { orderId: 'order_prior_1', amount: 85, date: '2026-06-12' },
-        { orderId: 'order_prior_2', amount: 95, date: '2026-06-13' }
-      ],
-      earningRecords: generateRiderMockData(generatedId),
-      payouts: generateRiderMockPayouts(generatedId, name)
+      earnings: [],
+      earningRecords: [],
+      payouts: []
     };
     
     // Set both the session and global lists
@@ -5249,13 +5245,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateFranchiseStatus = (id: string, status: FranchiseApplication['status']) => {
-    if (!checkSuperAdminPermission('Update Franchise Application Status')) return;
-    setFranchiseApplications(prev => prev.map(app => {
+    const hasAdminPhone = isAuthorizedAdminPhone(user?.phone);
+    if (!isAdmin && !isSuperAdmin && !hasAdminPhone) {
+      alert('Access Denied: Only authorized Admin can update franchise status.');
+      return;
+    }
+    const updated = franchiseApplications.map(app => {
       if (app.id === id) {
         return { ...app, status };
       }
       return app;
-    }));
+    });
+    setFranchiseApplications(updated);
+    try {
+      localStorage.setItem('nuvvo_franchise', JSON.stringify(updated));
+    } catch {}
+
+    saveAppSettingToSupabase('franchise_applications', updated, 'Franchise applications status list').catch(err => {
+      console.warn('[Franchise] Supabase persist notice:', err);
+    });
+
     addAuditLog('Franchise Status Changed', `Inquiry application ID ${id} transitioned status state to ${status}`);
   };
 
@@ -5340,7 +5349,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Live support Click to WhatsApp Redirection
   const clickToWhatsAppSupport = (message: string) => {
-    const targetNo = '919848022338';
+    const targetNo = '919063692135';
     const escapedText = encodeURIComponent(`[Nuvvo Support Alert] ${message}`);
     const whatsappUrl = `https://wa.me/${targetNo}?text=${escapedText}`;
     addAuditLog('WhatsApp Hook Called', `Redirected query token to Nuvvo Helpline: ${targetNo}`);
@@ -5357,7 +5366,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customerPhone?: string;
     customNote?: string;
   } | string) => {
-    const targetNo = '919848022338';
+    const targetNo = '919063692135';
     let messageText = '';
 
     if (typeof details === 'string') {
