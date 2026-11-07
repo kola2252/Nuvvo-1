@@ -34,7 +34,7 @@ export interface FoodItem {
   description: string;
   vegIndicator: VegIndicator;
   rating: number;
-  reviewsCount: number;
+  reviewsCount?: number;
   prepTime: number; // in mins
   price: number;
   discountPrice?: number;
@@ -47,7 +47,7 @@ export interface FoodItem {
   customizations?: CustomizationCategory[];
   isBestSeller?: boolean;
   isTrending?: boolean;
-  reviews: Review[];
+  reviews?: Review[];
   restaurantId?: string;
   is_available?: boolean;
   isAvailable?: boolean;
@@ -66,6 +66,10 @@ export interface RestaurantReview {
   comment: string;
   date: string;
   hidden?: boolean; // Super Admin can hide/show
+  isHidden?: boolean;
+  rating?: number;
+  createdAt?: string;
+  mealRating?: number;
 }
 
 export interface Restaurant {
@@ -74,6 +78,9 @@ export interface Restaurant {
   rating: number;
   reviewsCount: number;
   cuisines: string[];
+  cuisine?: string;
+  address?: string;
+  isOpen?: boolean;
   deliveryTime: number; // mins
   costForTwo: number;
   image: string;
@@ -110,6 +117,8 @@ export interface Address {
   mobileNumber?: string;
   houseNumber?: string;
   streetName?: string;
+  street?: string;
+  fullAddress?: string;
   locality?: string; // Area / Locality
   villageTown?: string;
   district?: string;
@@ -133,6 +142,8 @@ export interface User {
   name: string;
   phone: string;
   email: string;
+  username?: string;
+  location?: string;
   avatar?: string;
   addresses: Address[];
   currentAddressId?: string;
@@ -140,6 +151,8 @@ export interface User {
   favoriteRestaurants: string[]; // restaurant ids
   role: 'Super Admin' | 'Admin' | 'Delivery Partner' | 'Franchise' | 'Customer';
   isProfileComplete: boolean;
+  isEmailVerified?: boolean;
+  emailVerifiedAt?: string;
   preferredLanguage?: AppLanguage;
   referralCredits?: number;
   referredBy?: string;
@@ -179,9 +192,12 @@ export interface Order {
   tax: number;
   tip: number;
   finalAmount: number;
+  totalAmount?: number;
+  restaurantId?: string;
   status: OrderStatus;
   address: Address;
   instructions?: string;
+  deliveryInstructions?: string;
   couponUsed?: string;
   paymentMethod: PaymentMethodType | string;
   paymentStatus: PaymentStatusType | string;
@@ -195,6 +211,7 @@ export interface Order {
     upiId?: string;
     merchantName?: string;
     customerUtr?: string;
+    notes?: string;
   };
   upiDetails?: {
     upiId: string;
@@ -202,6 +219,7 @@ export interface Order {
     amount: number;
     transactionRef: string;
     upiUri: string;
+    bankName?: string;
     customerUtr?: string;
     initiatedAt?: string;
     confirmedAt?: string;
@@ -210,6 +228,7 @@ export interface Order {
   date: string;
   eta: number; // mins remaining / total duration
   trackingHistory: { status: OrderStatus; time: string }[];
+  deliveryPartner?: DeliveryPartnerProfile;
   deliveryPartnerId?: string;
   deliveryPartnerName?: string;
   deliveryPartnerPhone?: string;
@@ -275,6 +294,20 @@ export interface RiderPayout {
   referenceId?: string;
 }
 
+export interface StaffSalaryPayment {
+  id: string;
+  staffId: string;
+  staffName: string;
+  monthYear: string; // e.g. "October 2026"
+  amount: number;
+  paymentDate: string;
+  paymentMode: 'Bank Transfer' | 'UPI' | 'Cash' | 'Cheque';
+  referenceId: string;
+  notes?: string;
+  recordedAt: string;
+  recordedBy?: string;
+}
+
 export interface DeliveryPartnerProfile {
   id: string;
   name: string;
@@ -288,7 +321,7 @@ export interface DeliveryPartnerProfile {
   avatar?: string;
   isApproved: boolean;
   isAvailable: boolean;
-  status?: 'Available' | 'Delivering Order' | 'Busy' | 'Offline' | 'Suspended' | 'Registration Pending' | 'Rejected';
+  status?: 'Available' | 'Delivering Order' | 'Busy' | 'Offline' | 'Suspended' | 'Registration Pending' | 'Rejected' | 'Pending';
   rating?: number;
   ratingsCount?: number;
   complimentsCount?: number;
@@ -300,6 +333,9 @@ export interface DeliveryPartnerProfile {
   earnings: { orderId: string; amount: number; date: string }[];
   earningRecords?: RiderEarningRecord[];
   payouts?: RiderPayout[];
+  monthlySalary?: number;
+  salaryPayments?: StaffSalaryPayment[];
+  currentBalance?: number;
 }
 
 export interface FranchiseApplication {
@@ -320,6 +356,7 @@ export interface FranchiseApplication {
   numberOfEmployees: string;
   expectedLaunchTimeline: string;
   whyJoinNuvvo: string;
+  proposedLocation?: string;
   aadhaarCardImage: string; // Base64 or placeholder URL
   panCardImage: string;     // Base64 or placeholder URL
   businessDocImage?: string;  // Base64 or placeholder URL
@@ -343,12 +380,14 @@ export interface Coupon {
   value: number;
   minOrder: number;
   description: string;
+  expiryDate?: string;
 }
 
 export interface AppNotification {
   id: string;
   title: string;
   body: string;
+  message?: string;
   read: boolean;
   timestamp: string;
   orderId?: string;
@@ -364,9 +403,11 @@ export interface ScheduledNotification {
   id: string;
   title: string;
   body: string;
-  targetAudience: 'all' | 'customers' | 'riders' | 'restaurants';
-  scheduledAt: string; // Format: "YYYY-MM-DDTHH:MM"
+  targetAudience: 'all' | 'customers' | 'riders' | 'restaurants' | 'admin';
+  scheduledAt?: string; // Format: "YYYY-MM-DDTHH:MM"
+  scheduledFor?: string;
   imageUrl?: string;
+  isPromo?: boolean;
   status: 'pending' | 'sent';
 }
 
@@ -401,6 +442,14 @@ export interface StorePaymentSettings {
   customerInstructions?: string;
 }
 
+export interface CustomerDefaultOtpConfig {
+  enabled: boolean;
+  defaultOtp: string;
+  allowSkipOtp: boolean;
+  autoFillOtp: boolean;
+  lastUpdated?: string;
+}
+
 export interface Banner {
   id: string;
   title: string;
@@ -410,7 +459,7 @@ export interface Banner {
   actionType: 'restaurant' | 'category' | 'offer' | 'coupon' | 'franchise' | 'external' | 'custom';
   actionValue: string; // e.g., restaurant ID or category name
   enabled: boolean;
-  order: number;
+  order?: number;
   startDate?: string;
   endDate?: string;
   

@@ -159,8 +159,9 @@ export function buildStructuredOrderMessage(order: any): string {
   }
 
   let instructionsText = '';
-  if (order.instructions && String(order.instructions).trim()) {
-    instructionsText = `\n\n📝 *Kitchen Instructions:*\n_${String(order.instructions).trim()}_`;
+  const deliveryNotes = order.deliveryInstructions || order.instructions;
+  if (deliveryNotes && String(deliveryNotes).trim()) {
+    instructionsText = `\n\n📝 *Delivery Instructions / Drop-off Notes:*\n_${String(deliveryNotes).trim()}_`;
   }
 
   return (

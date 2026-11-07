@@ -1,5 +1,9 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
+import './utils/apiLogger';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { tanstackQueryClient } from './utils/tanstackQuery';
+import ErrorBoundary from './components/ErrorBoundary';
 import App from './App.tsx';
 import { AppProvider } from './context/AppContext.tsx';
 import './index.css';
@@ -42,8 +46,12 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AppProvider>
-      <App />
-    </AppProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={tanstackQueryClient}>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

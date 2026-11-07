@@ -20,6 +20,58 @@
     <link rel="dns-prefetch" href="https://images.unsplash.com" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <script>
+      // Safe Storage Shim: Protects against sandboxed iframe SecurityError
+      (function() {
+        function createStorageShim() {
+          var store = {};
+          return {
+            getItem: function(k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+            setItem: function(k, v) { store[k] = String(v); },
+            removeItem: function(k) { delete store[k]; },
+            clear: function() { store = {}; },
+            key: function(i) { return Object.keys(store)[i] || null; },
+            get length() { return Object.keys(store).length; }
+          };
+        }
+        try {
+          var k = '__nuvvo_t__';
+          window.localStorage.setItem(k, '1');
+          window.localStorage.removeItem(k);
+        } catch (e) {
+          try {
+            Object.defineProperty(window, 'localStorage', { value: createStorageShim(), configurable: true, writable: true });
+          } catch (err) {}
+        }
+        try {
+          var s = '__nuvvo_s__';
+          window.sessionStorage.setItem(s, '1');
+          window.sessionStorage.removeItem(s);
+        } catch (e) {
+          try {
+            Object.defineProperty(window, 'sessionStorage', { value: createStorageShim(), configurable: true, writable: true });
+          } catch (err) {}
+        }
+        try {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              for (var i = 0; i < regs.length; i++) {
+                regs[i].unregister();
+              }
+            }).catch(function() {});
+          }
+          if ('caches' in window) {
+            caches.keys().then(function(names) {
+              for (var j = 0; j < names.length; j++) {
+                if (names[j].indexOf('workbox') !== -1 || names[j].indexOf('precache') !== -1) {
+                  caches.delete(names[j]);
+                }
+              }
+            }).catch(function() {});
+          }
+        } catch (swErr) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

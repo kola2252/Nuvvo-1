@@ -6,6 +6,8 @@
  */
 
 import { supabase } from '../utils/supabase/client';
+import { queryClient, fetchWithCache } from '../utils/apiCache';
+import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateAppSetting } from '../utils/tanstackQuery';
 
 export interface AppSettingRecord<T = any> {
   key: string;
@@ -16,39 +18,51 @@ export interface AppSettingRecord<T = any> {
 }
 
 /**
- * Fetches an application setting by key from Supabase `app_settings` table.
+ * Fetches an application setting by key from Supabase `app_settings` table
+ * with in-flight deduplication and 5-minute stale-time caching.
  * Falls back to server API endpoint `/api/settings/:key`.
  */
-export async function getAppSettingFromSupabase<T = any>(key: string, defaultValue?: T): Promise<T | null> {
-  try {
-    // 1. Direct Supabase query
-    const { data, error } = await supabase
-      .from('app_settings')
-      .select('key, value, description, updated_at')
-      .eq('key', key)
-      .maybeSingle();
+export async function getAppSettingFromSupabase<T = any>(key: string, defaultValue?: T, force: boolean = false): Promise<T | null> {
+  return tanstackQueryClient.fetchQuery<T | null>({
+    queryKey: QUERY_KEYS.APP_SETTING(key),
+    staleTime: force ? 0 : STALE_TIMES.APP_SETTINGS, // 5 minutes
+    queryFn: async () => {
+      try {
+        // 1. Direct Supabase query
+        const { data, error } = await supabase
+          .from('app_settings')
+          .select('key, value, description, updated_at')
+          .eq('key', key)
+          .maybeSingle();
 
-    if (!error && data && data.value !== undefined) {
-      return data.value as T;
-    }
+        if (!error) {
+          if (data && data.value !== undefined) {
+            return data.value as T;
+          }
+          // Row does not exist yet in app_settings — return default without firing redundant backend 404 request
+          return defaultValue !== undefined ? defaultValue : null;
+        }
 
-    // 2. Fallback to server proxy endpoint
-    const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
-    const res = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    });
+        // 2. Fallback to server proxy endpoint only when direct Supabase query encountered an error
+        const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+        const res = await fetchWithCache<{ success?: boolean; value?: T }>(
+          `/api/settings/${encodeURIComponent(key)}`,
+          {
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+          },
+          { staleTime: STALE_TIMES.APP_SETTINGS, retry: 0 }
+        );
 
-    if (res.ok) {
-      const json = await res.json();
-      if (json && json.success && json.value !== undefined) {
-        return json.value as T;
+        if (res && res.success && res.value !== undefined) {
+          return res.value as T;
+        }
+      } catch (err: any) {
+        console.warn(`[AppSettings] Notice fetching setting "${key}":`, err?.message);
       }
-    }
-  } catch (err: any) {
-    console.warn(`[AppSettings] Notice fetching setting "${key}":`, err?.message);
-  }
 
-  return defaultValue !== undefined ? defaultValue : null;
+      return defaultValue !== undefined ? defaultValue : null;
+    }
+  });
 }
 
 /**
@@ -76,6 +90,10 @@ export async function saveAppSettingToSupabase<T = any>(
       .upsert([payload], { onConflict: 'key' });
 
     if (!error) {
+      // Immediate TanStack Query cache update
+      tanstackQueryClient.setQueryData(QUERY_KEYS.APP_SETTING(key), value);
+      invalidateAppSetting(key);
+      queryClient.setQueryData(['app_setting', key], value);
       // Also notify backend server to synchronize its state
       try {
         const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
@@ -83,8 +101,7 @@ export async function saveAppSettingToSupabase<T = any>(
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-            'x-admin-phone': '9063692135'
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
           },
           body: JSON.stringify(payload)
         });
@@ -105,8 +122,7 @@ export async function saveAppSettingToSupabase<T = any>(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        'x-admin-phone': '9063692135'
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
       },
       body: JSON.stringify(payload)
     });

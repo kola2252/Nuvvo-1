@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
-import { Home as HomeIcon, Bike, ShoppingBag, Clock, User, Building } from 'lucide-react';
+import { Home as HomeIcon, ShoppingBag, Clock, User, Building } from 'lucide-react';
 import { motion } from 'motion/react';
 import { t } from '../utils/translations';
 
@@ -43,7 +43,7 @@ export default function BottomNav() {
     return enMap[key] || key;
   };
 
-  // Exactly six items in specified order: Home, Delivery, Cart, Orders, Settings, Franchise
+  // Active bottom navigation items: Home, Cart, Orders, Settings, Franchise
   const fullNavItems = [
     { 
       id: 'home', 
@@ -51,13 +51,6 @@ export default function BottomNav() {
       label: getNavLabel('home'), 
       icon: HomeIcon, 
       title: getNavLabel('home') 
-    },
-    { 
-      id: 'delivery', 
-      target: 'delivery',
-      label: getNavLabel('delivery'), 
-      icon: Bike, 
-      title: getNavLabel('delivery') 
     },
     { 
       id: 'cart', 
@@ -97,7 +90,6 @@ export default function BottomNav() {
           const Icon = item.icon;
           const isActive = 
             (item.id === 'home' && currentPage === 'home') ||
-            (item.id === 'delivery' && (currentPage === 'delivery' || currentPage === 'tracking' || currentPage === 'delivery-options')) ||
             (item.id === 'cart' && currentPage === 'cart') ||
             (item.id === 'orders' && (currentPage === 'orders' || currentPage === 'order-history')) ||
             (item.id === 'account' && (currentPage === 'account' || currentPage === 'settings')) ||

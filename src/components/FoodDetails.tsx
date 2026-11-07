@@ -8,6 +8,7 @@ import { useApp } from '../context/AppContext';
 import { motion } from 'motion/react';
 import { Star, Clock, X, Flame, ShieldAlert, BadgeInfo, CheckCircle, Sparkles, ChevronLeft } from 'lucide-react';
 import { VegIndicator } from '../types';
+import { queryClient } from '../utils/apiCache';
 
 function FoodDetails() {
   const { selectedFoodItem, setSelectedFoodItem, addToCart, cart, updateCartQuantity } = useApp();
@@ -23,27 +24,56 @@ function FoodDetails() {
   useEffect(() => {
     if (!selectedFoodItem) return;
 
+    const dishKey = String(selectedFoodItem.id || selectedFoodItem.name);
+    const persistKey = `nuvvo_ai_story_${dishKey.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+    // 1. Instant cache check for zero latency rendering
+    const cached = queryClient.getQueryData<{ story: string; visualPrep: string }>(['food_story', dishKey]);
+    if (cached && cached.story && cached.visualPrep) {
+      setAiStory(cached.story);
+      setAiPrep(cached.visualPrep);
+      setAiLoading(false);
+      return;
+    }
+
     setAiStory(null);
     setAiPrep(null);
     setAiLoading(true);
 
     let active = true;
 
-    fetch('/api/food-story', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ foodItem: selectedFoodItem })
+    // 2. Memoized query fetch with in-flight deduplication and 24-hour persistence
+    queryClient.fetchQuery<{ story: string; visualPrep: string }>({
+      queryKey: ['food_story', dishKey],
+      staleTime: 24 * 60 * 60 * 1000, // 24 hours
+      persistKey,
+      queryFn: async () => {
+        const res = await fetch('/api/food-story', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ foodItem: selectedFoodItem })
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to generate food story (${res.status})`);
+        }
+        return res.json();
+      }
     })
-      .then(res => res.json())
       .then(data => {
         if (!active) return;
-        if (data.story && data.visualPrep) {
+        if (data && data.story && data.visualPrep) {
           setAiStory(data.story);
           setAiPrep(data.visualPrep);
         }
       })
       .catch(err => {
-        console.error("Failed to load AI Food Story:", err);
+        console.warn("Notice: AI Food Story using resilient fallback:", err?.message || err);
+        if (active) {
+          const fallbackStory = `The legendary ${selectedFoodItem.name} is a celebrated culinary favorite. Prepared with authentic regional spices and hand-selected ingredients, each serving provides an exquisitely balanced flavor experience.`;
+          const fallbackPrep = `• Premium ${selectedFoodItem.ingredients ? selectedFoodItem.ingredients.slice(0, 3).join(', ') : 'fresh ingredients'} curated by expert chefs.\n• Infused gently with artisan spices at optimal temperatures.\n• Garnished fresh right before delivery for maximum sensory delight.`;
+          setAiStory(fallbackStory);
+          setAiPrep(fallbackPrep);
+        }
       })
       .finally(() => {
         if (active) setAiLoading(false);

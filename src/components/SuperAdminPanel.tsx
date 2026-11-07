@@ -29,6 +29,7 @@ export default function SuperAdminPanel() {
     logs, clearLogs, wipeAllData, clearSystemCache, restaurants, toggleRestaurantActiveStatus, 
     approveRestaurant, registerNewRestaurantRequest, addFoodItem,
     deliveryPartners, addDeliveryPartner, removeDeliveryPartner, toggleDeliveryPartnerAvailability,
+    recordStaffSalaryPayment,
     changeOrderStatus, orders, deliveryRouteProgress, activeTrackingOrder, updateOrderPaymentStatus,
     updateRiderStatus, notifications,
 
@@ -86,7 +87,15 @@ export default function SuperAdminPanel() {
   const [selectedMailToPreview, setSelectedMailToPreview] = useState<any | null>(null);
   
   // Dashboard Tabs
-  const [activeSection, setActiveSection] = useState<'command' | 'vendors' | 'onboard' | 'riders' | 'logs' | 'banners' | 'analytics' | 'operations' | 'campaigns' | 'permissions'>('command');
+  const [activeSection, setActiveSection] = useState<'command' | 'vendors' | 'onboard' | 'riders' | 'logs' | 'banners' | 'analytics' | 'operations' | 'campaigns' | 'permissions'>(() => {
+    try {
+      const target = localStorage.getItem('nuvvo_admin_target_tab');
+      if (target === 'command' || target === 'vendors' || target === 'onboard' || target === 'riders' || target === 'logs' || target === 'banners' || target === 'analytics' || target === 'operations' || target === 'campaigns' || target === 'permissions') {
+        return target as any;
+      }
+    } catch {}
+    return 'command';
+  });
 
   // Business Command Center states
   const [commandOrderTab, setCommandOrderTab] = useState<'pending' | 'preparing' | 'picked' | 'delivered' | 'cancelled'>('pending');
@@ -113,12 +122,31 @@ export default function SuperAdminPanel() {
   const [newRiderDL, setNewRiderDL] = useState('');
   const [newRiderAvatar, setNewRiderAvatar] = useState('');
   const [newRiderBalance, setNewRiderBalance] = useState('250');
+  const [newRiderSalary, setNewRiderSalary] = useState('15000');
   
   const [riderSearch, setRiderSearch] = useState('');
   const [riderFilterStatus, setRiderFilterStatus] = useState<string>('All');
   
-  // Riders Admin tab additional states
-  const [ridersSubTab, setRidersSubTab] = useState<'registry' | 'positions' | 'incentives' | 'payouts' | 'ledgers'>('registry');
+  // Riders Admin tab additional states (including Internal Staff Salary)
+  const [ridersSubTab, setRidersSubTab] = useState<'registry' | 'salary' | 'positions' | 'incentives' | 'payouts' | 'ledgers'>('registry');
+
+  // Salary Management Modal & Filter states
+  const [showSalaryPaymentModal, setShowSalaryPaymentModal] = useState(false);
+  const [selectedStaffForSalary, setSelectedStaffForSalary] = useState<any | null>(null);
+  const [salaryMonthYear, setSalaryMonthYear] = useState<string>(() => {
+    const d = new Date();
+    return `${d.toLocaleString('default', { month: 'long' })} ${d.getFullYear()}`;
+  });
+  const [salaryAmount, setSalaryAmount] = useState<string>('15000');
+  const [salaryPaymentDate, setSalaryPaymentDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [salaryPaymentMode, setSalaryPaymentMode] = useState<'Bank Transfer' | 'UPI' | 'Cash' | 'Cheque'>('Bank Transfer');
+  const [salaryReferenceId, setSalaryReferenceId] = useState<string>('');
+  const [salaryNotes, setSalaryNotes] = useState<string>('');
+  const [salaryFilterMonth, setSalaryFilterMonth] = useState<string>(() => {
+    const d = new Date();
+    return `${d.toLocaleString('default', { month: 'long' })} ${d.getFullYear()}`;
+  });
+  const [salaryErrorNotice, setSalaryErrorNotice] = useState<string>('');
   
   // Rider Live Positions Map States - strictly 0 default until Admin onboards delivery partners
   const [liveRiderPositions, setLiveRiderPositions] = useState<Record<string, { lat: number; lng: number; lastUpdate: string; battery: number; signal: 'Excellent' | 'Good' | 'Poor'; speed: number }>>(() => {
@@ -457,7 +485,7 @@ export default function SuperAdminPanel() {
         addFoodItem({
           name: dish.name,
           description: dish.description,
-          vegIndicator: dish.vegIndicator,
+          vegIndicator: dish.vegIndicator as any,
           rating: 4.5,
           reviewsCount: 1,
           prepTime: 20,
@@ -575,7 +603,7 @@ export default function SuperAdminPanel() {
   };
 
   const reportMetrics = useMemo(() => {
-    const allProcessedOrders = [...seedOrders, ...(orders || [])];
+    const allProcessedOrders: any[] = [...seedOrders, ...(orders || [])];
 
     // Daily revenue aggregation
     const last7Days = ['2026-06-15', '2026-06-16', '2026-06-17', '2026-06-18', '2026-06-19', '2026-06-20', '2026-06-21'];
@@ -1569,7 +1597,7 @@ export default function SuperAdminPanel() {
                                 <button
                                   onClick={() => {
                                     changeOrderStatus(order.id, 'preparing');
-                                    addAuditLog && addAuditLog('Order accepted by Super Admin', 'order', order.id);
+                                    addAuditLog && (addAuditLog as any)('Order accepted by Super Admin', 'order', order.id);
                                   }}
                                   className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[8px] px-2 py-1 rounded-lg uppercase cursor-pointer transition active:scale-95"
                                   title="Accept newly submitted order and start food preparation"
@@ -1579,7 +1607,7 @@ export default function SuperAdminPanel() {
                                 <button
                                   onClick={() => {
                                     changeOrderStatus(order.id, 'cancelled');
-                                    addAuditLog && addAuditLog('Order cancelled by Super Admin', 'order', order.id);
+                                    addAuditLog && (addAuditLog as any)('Order cancelled by Super Admin', 'order', order.id);
                                   }}
                                   className="bg-red-500/10 hover:bg-red-500 hover:text-white text-red-500 font-extrabold text-[8px] px-2 py-1 rounded-lg uppercase cursor-pointer transition"
                                   title="Cancel and reject order"
@@ -1592,7 +1620,7 @@ export default function SuperAdminPanel() {
                               <button
                                 onClick={() => {
                                   changeOrderStatus(order.id, 'picked');
-                                  addAuditLog && addAuditLog('Order marked as Out for Delivery', 'order', order.id);
+                                  addAuditLog && (addAuditLog as any)('Order marked as Out for Delivery', 'order', order.id);
                                 }}
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[8px] px-2.5 py-1 rounded-lg uppercase cursor-pointer transition active:scale-95"
                                 title="Dispatch delivery rider for this order"
@@ -1604,7 +1632,7 @@ export default function SuperAdminPanel() {
                               <button
                                 onClick={() => {
                                   changeOrderStatus(order.id, 'delivered');
-                                  addAuditLog && addAuditLog('Order completed and marked Delivered', 'order', order.id);
+                                  addAuditLog && (addAuditLog as any)('Order completed and marked Delivered', 'order', order.id);
                                 }}
                                 className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[8px] px-2.5 py-1 rounded-lg uppercase cursor-pointer transition active:scale-95"
                                 title="Mark order successfully completed"
@@ -1775,7 +1803,7 @@ export default function SuperAdminPanel() {
                                     onClick={() => {
                                       partner.isApproved = true;
                                       partner.status = 'Available';
-                                      addAuditLog && addAuditLog(`Approved rider recruitment: ${partner.name}`, 'rider', partner.id);
+                                      addAuditLog && (addAuditLog as any)(`Approved rider recruitment: ${partner.name}`, 'rider', partner.id);
                                       alert(`Rider ${partner.name} approved successfully!`);
                                       setActiveSection('command');
                                     }}
@@ -1788,11 +1816,11 @@ export default function SuperAdminPanel() {
                                     onClick={() => {
                                       const nextStatus = partner.status === 'Offline' ? 'Available' : 'Offline';
                                       if (updateRiderStatus) {
-                                        updateRiderStatus(partner.id, nextStatus);
+                                        (updateRiderStatus as any)(partner.id, true, nextStatus);
                                       } else if (toggleDeliveryPartnerAvailability) {
                                         toggleDeliveryPartnerAvailability(partner.id);
                                       }
-                                      addAuditLog && addAuditLog(`Toggled rider duty for ${partner.name}`, 'rider', partner.id);
+                                      addAuditLog && (addAuditLog as any)(`Toggled rider duty for ${partner.name}`, 'rider', partner.id);
                                     }}
                                     className={`font-black text-[8.5px] px-2.5 py-1.5 rounded-lg uppercase cursor-pointer ${
                                       partner.status === 'Offline'
@@ -1850,7 +1878,7 @@ export default function SuperAdminPanel() {
                                   <button
                                     onClick={() => {
                                       approveRestaurant(rest.id);
-                                      addAuditLog && addAuditLog(`Approved partner restaurant: ${rest.name}`, 'restaurant', rest.id);
+                                      addAuditLog && (addAuditLog as any)(`Approved partner restaurant: ${rest.name}`, 'restaurant', rest.id);
                                       alert(`Restaurant "${rest.name}" approved successfully!`);
                                       setActiveSection('command');
                                     }}
@@ -1862,7 +1890,7 @@ export default function SuperAdminPanel() {
                                   <button
                                     onClick={() => {
                                       toggleRestaurantActiveStatus(rest.id);
-                                      addAuditLog && addAuditLog(`Toggled operating status for ${rest.name}`, 'restaurant', rest.id);
+                                      addAuditLog && (addAuditLog as any)(`Toggled operating status for ${rest.name}`, 'restaurant', rest.id);
                                     }}
                                     className={`font-black text-[8.5px] px-2.5 py-1.5 rounded-lg uppercase cursor-pointer ${
                                       rest.isActive
@@ -2157,7 +2185,7 @@ export default function SuperAdminPanel() {
                                 onClick={() => {
                                   rider.isApproved = true;
                                   rider.status = 'Available';
-                                  addAuditLog && addAuditLog(`Approved rider recruitment: ${rider.name}`, 'rider', rider.id);
+                                  addAuditLog && (addAuditLog as any)(`Approved rider recruitment: ${rider.name}`, 'rider', rider.id);
                                   alert(`Delivery Partner ${rider.name} verified and activated successfully!`);
                                   setActiveSection('command');
                                 }}
@@ -2423,7 +2451,7 @@ export default function SuperAdminPanel() {
                     {/* DOWNLOAD OPTIONS */}
                     <button 
                       onClick={() => {
-                        const payload = filteredReportOrders.map(o => ({
+                        const payload = filteredReportOrders.map((o: any) => ({
                           OrderID: o.id,
                           Date: o.date,
                           Status: o.status,
@@ -2440,7 +2468,7 @@ export default function SuperAdminPanel() {
 
                     <button 
                       onClick={() => {
-                        const payload = filteredReportOrders.map(o => ({
+                        const payload = filteredReportOrders.map((o: any) => ({
                           OrderID: o.id,
                           Date: o.date,
                           Status: o.status,
@@ -2697,7 +2725,7 @@ export default function SuperAdminPanel() {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredReportOrders.map((o, idx) => (
+                            {filteredReportOrders.map((o: any, idx) => (
                               <tr key={idx} className="border-b dark:border-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-850">
                                 <td className="p-2 font-mono font-bold text-zinc-900 dark:text-zinc-100">{o.id}</td>
                                 <td className="p-2 text-zinc-500">{new Date(o.date).toLocaleDateString()}</td>
@@ -3834,8 +3862,9 @@ export default function SuperAdminPanel() {
                 {/* RIDERS SUB-SECTOR TABS SELECTOR */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-zinc-150 dark:border-zinc-800 scrollbar-none">
                   {[
-                    { id: 'registry', label: '🚴 Riders Registry' },
-                    { id: 'positions', label: '📍 Rider Live Positions' },
+                    { id: 'registry', label: '🚴 Delivery Staff Registry' },
+                    { id: 'salary', label: '💼 Staff Salary Management' },
+                    { id: 'positions', label: '📍 Live Positions' },
                     { id: 'incentives', label: '🎁 Incentives Settings' },
                     { id: 'payouts', label: '💳 Payout Settlements' },
                     { id: 'ledgers', label: '📊 Settlement Dashboard' }
@@ -3860,20 +3889,20 @@ export default function SuperAdminPanel() {
                     <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3">
                   <div className="border-b pb-2 mb-2">
                     <h3 className="font-extrabold text-[12px] text-zinc-900 dark:text-zinc-50 uppercase flex items-center gap-1.5 text-orange-550">
-                      <Plus className="w-4 h-4 text-orange-550" /> Onboard New Delivery Rider
+                      <Plus className="w-4 h-4 text-orange-550" /> Onboard Internal Delivery Staff
                     </h3>
-                    <p className="text-[10px] text-zinc-400">Instantly sign up and register a local delivery partner with credentials.</p>
+                    <p className="text-[10px] text-zinc-400">Register internal salary-based delivery personnel with vehicle and monthly compensation.</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-zinc-500 font-bold mb-1 text-[10px]">Rider Full Name *</label>
+                      <label className="block text-zinc-500 font-bold mb-1 text-[10px]">Staff Full Name *</label>
                       <input 
                         type="text"
-                        placeholder="e.g. Suresh G"
+                        placeholder="e.g. Suresh Kumar"
                         value={newRiderName}
                         onChange={e => setNewRiderName(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border focus:outline-none focus:border-red-500 text-xs text-zinc-900 dark:text-zinc-50"
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border focus:outline-none focus:border-orange-500 text-xs text-zinc-900 dark:text-zinc-50"
                       />
                     </div>
 
@@ -3885,20 +3914,31 @@ export default function SuperAdminPanel() {
                         maxLength={10}
                         value={newRiderPhone}
                         onChange={e => setNewRiderPhone(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border font-mono focus:outline-none focus:border-red-500 text-xs text-zinc-900 dark:text-zinc-50"
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border font-mono focus:outline-none focus:border-orange-500 text-xs text-zinc-900 dark:text-zinc-50"
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-zinc-500 font-bold mb-1 text-[10px]">Bike / Vehicle Number * (బైక్ నెంబర్)</label>
+                      <label className="block text-zinc-500 font-bold mb-1 text-[10px]">Bike / Vehicle Number *</label>
                       <input 
                         type="text"
                         placeholder="e.g. AP 39 TB 4821"
                         value={newRiderBike}
                         onChange={e => setNewRiderBike(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border font-mono uppercase focus:outline-none focus:border-red-500 text-xs text-zinc-900 dark:text-zinc-50"
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border font-mono uppercase focus:outline-none focus:border-orange-500 text-xs text-zinc-900 dark:text-zinc-50"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-zinc-500 font-bold mb-1 text-[10px]">Monthly Salary (₹) *</label>
+                      <input 
+                        type="number"
+                        placeholder="15000"
+                        value={newRiderSalary}
+                        onChange={e => setNewRiderSalary(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border font-mono text-center font-bold text-xs focus:outline-none focus:border-orange-500 text-zinc-900 dark:text-zinc-50"
                       />
                     </div>
 
@@ -3909,7 +3949,7 @@ export default function SuperAdminPanel() {
                         placeholder="250"
                         value={newRiderBalance}
                         onChange={e => setNewRiderBalance(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border text-center font-bold text-xs focus:outline-none focus:border-red-500 text-zinc-900 dark:text-zinc-50"
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border text-center font-bold text-xs focus:outline-none focus:border-orange-500 text-zinc-900 dark:text-zinc-50"
                       />
                     </div>
                   </div>
@@ -3919,23 +3959,32 @@ export default function SuperAdminPanel() {
                       type="button"
                       onClick={() => {
                         if (!newRiderName.trim() || !newRiderPhone.trim() || !newRiderBike.trim()) {
-                          alert('Please supply Rider Name, Contact Phone, and Bike/Vehicle registration details.');
+                          alert('Please supply Staff Name, Contact Phone, and Bike/Vehicle registration details.');
                           return;
                         }
                         if (newRiderPhone.length !== 10 || isNaN(Number(newRiderPhone))) {
                           alert('Please supply a valid 10-digit mobile number.');
                           return;
                         }
-                        addDeliveryPartner(newRiderName, newRiderPhone, parseFloat(newRiderBalance) || 0, newRiderBike.trim());
-                        alert(`Successfully registered delivery rider: "${newRiderName}" (${newRiderBike.toUpperCase()}) inside the Chirala network!`);
+                        const salaryVal = parseFloat(newRiderSalary) || 15000;
+                        (addDeliveryPartner as any)(
+                          newRiderName.trim(), 
+                          newRiderPhone.trim(), 
+                          parseFloat(newRiderBalance) || 0, 
+                          newRiderBike.trim(),
+                          '', '', 'Bike', '', '', '', true,
+                          salaryVal
+                        );
+                        alert(`Successfully registered internal delivery staff: "${newRiderName}" with Monthly Salary ₹${salaryVal.toLocaleString('en-IN')}!`);
                         setNewRiderName('');
                         setNewRiderPhone('');
                         setNewRiderBike('');
                         setNewRiderBalance('250');
+                        setNewRiderSalary('15000');
                       }}
                       className="bg-orange-500 hover:bg-orange-600 text-white font-extrabold p-2.5 py-3 rounded-xl uppercase tracking-wider text-[10px] shadow-sm transition active:scale-95 cursor-pointer w-full text-center"
                     >
-                      Onboard Rider Profile
+                      Onboard Internal Delivery Staff
                     </button>
                   </div>
                 </div>
@@ -4007,10 +4056,14 @@ export default function SuperAdminPanel() {
                                 <p className="text-[10px] font-mono text-zinc-400">Mobile: +91 {rider.phone}</p>
                                 
                                 {rider.bikeNumber && (
-                                  <p className="text-[9.5px] font-bold text-slate-700 dark:text-zinc-350 font-mono bg-white dark:bg-zinc-900 border px-2 py-0.5 rounded-lg inline-block mt-1">
-                                    🏍️ Bike Registration: <span className="text-orange-550 font-extrabold">{rider.bikeNumber}</span>
+                                  <p className="text-[9.5px] font-bold text-slate-700 dark:text-zinc-350 font-mono bg-white dark:bg-zinc-900 border px-2 py-0.5 rounded-lg inline-block mt-1 mr-1.5">
+                                    🏍️ Bike: <span className="text-orange-550 font-extrabold">{rider.bikeNumber}</span>
                                   </p>
                                 )}
+                                
+                                <p className="text-[9.5px] font-bold text-emerald-700 dark:text-emerald-400 font-mono bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/40 px-2 py-0.5 rounded-lg inline-block mt-1">
+                                  💼 Monthly Salary: <span className="font-extrabold">₹{(rider.monthlySalary || 15000).toLocaleString('en-IN')}</span>
+                                </p>
                                 
                                 <div className="flex items-center gap-3 mt-1.5 text-[10px]">
                                   <span className="text-zinc-500 dark:text-zinc-400">Wallet balance: <strong className="font-mono text-zinc-900 dark:text-zinc-100">₹{rider.walletBalance}</strong></span>
@@ -4222,6 +4275,267 @@ export default function SuperAdminPanel() {
                   )}
                 </div>
                 </div>
+                )}
+
+                {/* 1.2 INTERNAL STAFF SALARY MANAGEMENT TAB */}
+                {ridersSubTab === 'salary' && (
+                  <div className="space-y-4 animate-fadeIn" id="staff-salary-management-panel">
+                    {/* Header Bar & Month Filter */}
+                    <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                      <div>
+                        <h3 className="font-extrabold text-[13px] text-zinc-900 dark:text-zinc-50 uppercase flex items-center gap-2">
+                          <DollarSign className="w-5 h-5 text-emerald-500" />
+                          Internal Delivery Staff Salary Management (జీతాల నిర్వహణ)
+                        </h3>
+                        <p className="text-[10px] text-zinc-400 mt-0.5">
+                          Manage fixed monthly salaries, record bank/UPI disbursements, prevent duplicate payments, and audit payroll expenditure.
+                        </p>
+                      </div>
+
+                      {/* Month & Year Filter Selector */}
+                      <div className="flex items-center gap-2">
+                        <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider">Payroll Month:</label>
+                        <select
+                          value={salaryFilterMonth}
+                          onChange={e => setSalaryFilterMonth(e.target.value)}
+                          className="bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-100 text-xs font-bold rounded-xl px-3 py-1.5 focus:outline-none focus:border-orange-500"
+                        >
+                          {[
+                            'October 2026',
+                            'September 2026',
+                            'August 2026',
+                            'July 2026',
+                            'June 2026',
+                            'May 2026'
+                          ].map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Payroll Expenditure Overview KPI Cards */}
+                    {(() => {
+                      const totalStaff = (deliveryPartners || []).length;
+                      const paidStaff = (deliveryPartners || []).filter(r => 
+                        r.salaryPayments?.some(p => p.monthYear.trim().toLowerCase() === salaryFilterMonth.trim().toLowerCase())
+                      ).length;
+                      const pendingStaff = totalStaff - paidStaff;
+                      const totalBudget = (deliveryPartners || []).reduce((acc, r) => acc + (r.monthlySalary || 15000), 0);
+                      const totalDisbursed = (deliveryPartners || []).reduce((acc, r) => {
+                        const pay = r.salaryPayments?.find(p => p.monthYear.trim().toLowerCase() === salaryFilterMonth.trim().toLowerCase());
+                        return acc + (pay ? pay.amount : 0);
+                      }, 0);
+
+                      return (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-sm space-y-1">
+                            <span className="text-[9px] uppercase font-black tracking-wider text-zinc-400 block font-mono">
+                              Total Monthly Budget
+                            </span>
+                            <span className="text-xl font-black text-zinc-900 dark:text-zinc-50 font-mono block">
+                              ₹{totalBudget.toLocaleString('en-IN')}
+                            </span>
+                            <span className="text-[8.5px] text-zinc-400 font-medium">Fixed payroll liability</span>
+                          </div>
+
+                          <div className="bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-sm space-y-1">
+                            <span className="text-[9px] uppercase font-black tracking-wider text-emerald-600 dark:text-emerald-400 block font-mono">
+                              Disbursed ({salaryFilterMonth})
+                            </span>
+                            <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono block">
+                              ₹{totalDisbursed.toLocaleString('en-IN')}
+                            </span>
+                            <span className="text-[8.5px] text-emerald-600/80 font-medium">{paidStaff} of {totalStaff} staff paid</span>
+                          </div>
+
+                          <div className="bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-sm space-y-1">
+                            <span className="text-[9px] uppercase font-black tracking-wider text-amber-600 dark:text-amber-400 block font-mono">
+                              Pending Disbursements
+                            </span>
+                            <span className="text-xl font-black text-amber-600 dark:text-amber-400 font-mono block">
+                              {pendingStaff} Staff
+                            </span>
+                            <span className="text-[8.5px] text-amber-600/80 font-medium">Awaiting salary release</span>
+                          </div>
+
+                          <div className="bg-white dark:bg-zinc-900 border rounded-2xl p-4 shadow-sm space-y-1">
+                            <span className="text-[9px] uppercase font-black tracking-wider text-orange-600 dark:text-orange-400 block font-mono">
+                              Total Active Fleet
+                            </span>
+                            <span className="text-xl font-black text-orange-600 dark:text-orange-400 font-mono block">
+                              {totalStaff} Members
+                            </span>
+                            <span className="text-[8.5px] text-orange-600/80 font-medium">Internal salary model</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Staff List & Disbursal Action Card */}
+                    <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-4">
+                      <div className="flex justify-between items-center border-b pb-3">
+                        <div>
+                          <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-50 uppercase tracking-tight flex items-center gap-1.5">
+                            <Bike className="w-4 h-4 text-orange-500" />
+                            Staff Members & Salary Status ({salaryFilterMonth})
+                          </h4>
+                          <p className="text-[9.5px] text-zinc-400">Record salary payments and view disbursement status for the selected cycle.</p>
+                        </div>
+                      </div>
+
+                      {(deliveryPartners || []).length === 0 ? (
+                        <div className="text-center py-8 text-zinc-400 text-xs">
+                          No delivery staff currently registered. Onboard staff in the Registry tab above.
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100 dark:divide-zinc-800">
+                          {(deliveryPartners || []).map(staff => {
+                            const payment = staff.salaryPayments?.find(
+                              p => p.monthYear.trim().toLowerCase() === salaryFilterMonth.trim().toLowerCase()
+                            );
+                            const isPaid = Boolean(payment);
+
+                            return (
+                              <div key={staff.id} className="py-3.5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-xs shrink-0 border border-emerald-200 dark:border-emerald-900/40">
+                                    {staff.name.charAt(0)}
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h5 className="font-bold text-xs text-zinc-900 dark:text-zinc-100">{staff.name}</h5>
+                                      <span className="text-[9px] font-mono text-zinc-400">📞 +91 {staff.phone}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <span className="text-[9.5px] font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                                        Base Salary: ₹{(staff.monthlySalary || 15000).toLocaleString('en-IN')}/mo
+                                      </span>
+                                      {staff.bikeNumber && (
+                                        <span className="text-[9px] font-mono text-zinc-500 bg-slate-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                                          {staff.bikeNumber}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                                  {isPaid ? (
+                                    <div className="text-right">
+                                      <span className="inline-flex items-center gap-1 text-[9.5px] font-black uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40 px-2.5 py-1 rounded-lg">
+                                        <Check className="w-3 h-3" /> Paid ₹{payment?.amount.toLocaleString('en-IN')}
+                                      </span>
+                                      <span className="text-[8.5px] text-zinc-400 block font-mono mt-0.5">
+                                        Ref: {payment?.referenceId} • {payment?.paymentMode}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[9.5px] font-extrabold uppercase tracking-wider bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/40 px-2.5 py-1 rounded-lg">
+                                        Pending
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedStaffForSalary(staff);
+                                          setSalaryMonthYear(salaryFilterMonth);
+                                          setSalaryAmount(String(staff.monthlySalary || 15000));
+                                          setSalaryReferenceId(`SAL-${Date.now().toString().slice(-6)}`);
+                                          setSalaryPaymentDate(new Date().toISOString().split('T')[0]);
+                                          setSalaryErrorNotice('');
+                                          setSalaryNotes('');
+                                          setShowSalaryPaymentModal(true);
+                                        }}
+                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-xl shadow-xs transition active:scale-95 cursor-pointer flex items-center gap-1"
+                                      >
+                                        <DollarSign className="w-3.5 h-3.5" />
+                                        <span>Record Payment</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Historical Salary Disbursements Ledger */}
+                    <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-4">
+                      <div className="flex justify-between items-center border-b pb-3">
+                        <div>
+                          <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-50 uppercase tracking-tight flex items-center gap-1.5">
+                            <FileText className="w-4 h-4 text-orange-500" />
+                            Official Salary Disbursements Ledger (ఖాతా వివరాలు)
+                          </h4>
+                          <p className="text-[9.5px] text-zinc-400">Complete audit trail of all recorded delivery staff salary disbursements.</p>
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const allPayments = (deliveryPartners || []).flatMap(staff => 
+                          (staff.salaryPayments || []).map(p => ({ ...p, staffName: staff.name, staffPhone: staff.phone }))
+                        ).sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
+
+                        if (allPayments.length === 0) {
+                          return (
+                            <div className="text-center py-6 text-zinc-400 text-xs">
+                              No salary payments have been recorded yet. Click "Record Payment" on any staff member above.
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs font-mono">
+                              <thead>
+                                <tr className="border-b text-[9px] uppercase font-black text-zinc-400">
+                                  <th className="pb-2">Staff Member</th>
+                                  <th className="pb-2">Month</th>
+                                  <th className="pb-2">Amount</th>
+                                  <th className="pb-2">Payment Date</th>
+                                  <th className="pb-2">Mode</th>
+                                  <th className="pb-2">Reference ID</th>
+                                  <th className="pb-2">Authorized By</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-zinc-800 text-[10.5px]">
+                                {allPayments.map(p => (
+                                  <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-zinc-800/40">
+                                    <td className="py-2.5 font-bold font-sans text-zinc-900 dark:text-zinc-100">
+                                      {p.staffName}
+                                    </td>
+                                    <td className="py-2.5 font-semibold text-zinc-600 dark:text-zinc-300">
+                                      {p.monthYear}
+                                    </td>
+                                    <td className="py-2.5 font-black text-emerald-600 dark:text-emerald-400">
+                                      ₹{p.amount.toLocaleString('en-IN')}
+                                    </td>
+                                    <td className="py-2.5 text-zinc-500">
+                                      {p.paymentDate}
+                                    </td>
+                                    <td className="py-2.5">
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
+                                        {p.paymentMode}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 font-bold text-zinc-700 dark:text-zinc-300">
+                                      {p.referenceId}
+                                    </td>
+                                    <td className="py-2.5 text-zinc-400 text-[9.5px]">
+                                      {p.recordedBy || 'Admin'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
                 )}
 
                 {/* 1.5 LIVE RIDER POSITIONS MONITOR TAB */}
@@ -4588,16 +4902,16 @@ export default function SuperAdminPanel() {
                     <div className="grid grid-cols-2 gap-3.5">
                       <div className="bg-slate-50 dark:bg-zinc-950 p-3 rounded-2xl border border-zinc-150 dark:border-zinc-800">
                         <span className="text-[8.5px] uppercase text-zinc-400 block mb-1">Base Drop Pay</span>
-                        <span className="text-sm font-black text-zinc-800 dark:text-zinc-100 font-mono">₹{incentiveSettings?.baseDropPay || 40}</span>
+                        <span className="text-sm font-black text-zinc-800 dark:text-zinc-100 font-mono">₹{(incentiveSettings as any)?.baseDropPay || 40}</span>
                       </div>
                       <div className="bg-slate-50 dark:bg-zinc-950 p-3 rounded-2xl border border-zinc-150 dark:border-zinc-800">
                         <span className="text-[8.5px] uppercase text-zinc-400 block mb-1">Rain / Peak Surcharge</span>
-                        <span className="text-sm font-black text-zinc-800 dark:text-zinc-100 font-mono">₹{incentiveSettings?.rainSurcharge || 15}</span>
+                        <span className="text-sm font-black text-zinc-800 dark:text-zinc-100 font-mono">₹{(incentiveSettings as any)?.rainSurcharge || 15}</span>
                       </div>
                       <div className="bg-slate-50 dark:bg-zinc-950 p-3 rounded-2xl border border-zinc-150 dark:border-zinc-800 col-span-2">
                         <span className="text-[8.5px] uppercase text-zinc-400 block mb-1">Target Incentive</span>
                         <p className="text-xs text-zinc-650 dark:text-zinc-350 mt-0.5">
-                          Complete <b>{incentiveSettings?.ordersTarget || 10}</b> deliveries in a day to earn an extra bonus of <b>₹{incentiveSettings?.targetBonus || 150}</b>.
+                          Complete <b>{(incentiveSettings as any)?.ordersTarget || 10}</b> deliveries in a day to earn an extra bonus of <b>₹{(incentiveSettings as any)?.targetBonus || 150}</b>.
                         </p>
                       </div>
                     </div>
@@ -5475,7 +5789,7 @@ export default function SuperAdminPanel() {
                                 <button
                                   type="button"
                                   disabled={idx === 0}
-                                  onClick={() => reorderBanners(idx, idx - 1)}
+                                  onClick={() => (reorderBanners as any)(idx, idx - 1)}
                                   className="p-1 text-zinc-500 hover:text-zinc-850 dark:hover:text-white disabled:opacity-30 cursor-pointer"
                                   title="Reorder Campaign Move Up"
                                 >
@@ -5484,7 +5798,7 @@ export default function SuperAdminPanel() {
                                 <button
                                   type="button"
                                   disabled={idx === banners.length - 1}
-                                  onClick={() => reorderBanners(idx, idx + 1)}
+                                  onClick={() => (reorderBanners as any)(idx, idx + 1)}
                                   className="p-1 text-zinc-500 hover:text-zinc-850 dark:hover:text-white disabled:opacity-30 cursor-pointer"
                                   title="Reorder Campaign Move Down"
                                 >
@@ -5624,9 +5938,9 @@ export default function SuperAdminPanel() {
                               <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mr-1">Override:</span>
                               <button
                                 type="button"
-                                onClick={() => updateRestaurantForceStatus(restaurant.id, 'none')}
+                                onClick={() => updateRestaurantForceStatus(restaurant.id, 'auto')}
                                 className={`px-2 py-1 rounded-lg text-[9px] font-bold border transition cursor-pointer ${
-                                  !restaurant.forceStatus || restaurant.forceStatus === 'none'
+                                  !restaurant.forceStatus || restaurant.forceStatus === 'auto' || (restaurant.forceStatus as any) === 'none'
                                     ? 'bg-orange-500 text-white border-orange-600'
                                     : 'bg-slate-100 dark:bg-zinc-805 text-zinc-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-700/60'
                                 }`}
@@ -5646,9 +5960,9 @@ export default function SuperAdminPanel() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => updateRestaurantForceStatus(restaurant.id, 'force_closed')}
+                                onClick={() => updateRestaurantForceStatus(restaurant.id, 'force_close')}
                                 className={`px-2 py-1 rounded-lg text-[9px] font-bold border transition cursor-pointer ${
-                                  restaurant.forceStatus === 'force_closed'
+                                  restaurant.forceStatus === 'force_close' || (restaurant.forceStatus as any) === 'force_closed'
                                     ? 'bg-red-500 text-white border-red-650'
                                     : 'bg-slate-100 dark:bg-zinc-805 text-zinc-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-700/60'
                                 }`}
@@ -5688,7 +6002,7 @@ export default function SuperAdminPanel() {
                                 type="time"
                                 defaultValue={restaurant.openingTime || "09:00"}
                                 onBlur={(e) => {
-                                  updateRestaurantOperatingHours(restaurant.id, e.target.value, restaurant.closingTime || "23:00");
+                                  (updateRestaurantOperatingHours as any)(restaurant.id, e.target.value, restaurant.closingTime || "23:00", restaurant.weeklySchedule || []);
                                 }}
                                 className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 px-2 py-1 rounded-lg text-xs font-mono font-bold focus:outline-none focus:border-orange-500 text-zinc-900 dark:text-zinc-100"
                               />
@@ -5699,7 +6013,7 @@ export default function SuperAdminPanel() {
                                 type="time"
                                 defaultValue={restaurant.closingTime || "23:00"}
                                 onBlur={(e) => {
-                                  updateRestaurantOperatingHours(restaurant.id, restaurant.openingTime || "09:00", e.target.value);
+                                  (updateRestaurantOperatingHours as any)(restaurant.id, restaurant.openingTime || "09:00", e.target.value, restaurant.weeklySchedule || []);
                                 }}
                                 className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 px-2 py-1 rounded-lg text-xs font-mono font-bold focus:outline-none focus:border-orange-500 text-zinc-900 dark:text-zinc-100"
                               />
@@ -5896,10 +6210,10 @@ export default function SuperAdminPanel() {
                         alert(`Successfully scheduled "${fcmTitle}" for ${new Date(fcmScheduledTime).toLocaleString()}!`);
                       } else {
                         // Immediate broadcast
-                        broadcastNotification(
+                        (broadcastNotification as any)(
+                          fcmTargetAudience,
                           fcmTitle,
                           fcmBody,
-                          fcmTargetAudience,
                           fcmImageUrl || undefined,
                           fcmIsPromo
                         );
@@ -7166,6 +7480,192 @@ export default function SuperAdminPanel() {
                 Close Mail Preview
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 💼 RECORD STAFF SALARY PAYMENT MODAL */}
+      {showSalaryPaymentModal && selectedStaffForSalary && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-zinc-950/70 backdrop-blur-xs transition-opacity duration-300">
+          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl p-6 space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 flex items-center justify-center">
+                  <DollarSign className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-extrabold text-xs text-zinc-900 dark:text-zinc-50 uppercase tracking-tight">
+                    Record Staff Salary Payment
+                  </h4>
+                  <p className="text-[10px] text-zinc-400">
+                    Disbursing monthly salary to {selectedStaffForSalary.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSalaryPaymentModal(false)}
+                className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {salaryErrorNotice && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 text-xs rounded-xl font-medium">
+                {salaryErrorNotice}
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setSalaryErrorNotice('');
+                const amountNum = parseFloat(salaryAmount);
+                if (isNaN(amountNum) || amountNum <= 0) {
+                  setSalaryErrorNotice('Please enter a valid salary amount.');
+                  return;
+                }
+                const res = recordStaffSalaryPayment(selectedStaffForSalary.id, {
+                  monthYear: salaryMonthYear,
+                  amount: amountNum,
+                  paymentDate: salaryPaymentDate,
+                  paymentMode: salaryPaymentMode,
+                  referenceId: salaryReferenceId.trim() || `SAL-${Date.now().toString().slice(-6)}`,
+                  notes: salaryNotes.trim()
+                });
+
+                if (res.success) {
+                  alert(`Salary payment of ₹${amountNum.toLocaleString('en-IN')} for ${salaryMonthYear} successfully recorded for ${selectedStaffForSalary.name}!`);
+                  setShowSalaryPaymentModal(false);
+                } else {
+                  setSalaryErrorNotice(res.error || 'Failed to record salary payment.');
+                }
+              }}
+              className="space-y-3 text-xs"
+            >
+              <div>
+                <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                  Staff Member
+                </label>
+                <input
+                  type="text"
+                  disabled
+                  value={`${selectedStaffForSalary.name} (+91 ${selectedStaffForSalary.phone})`}
+                  className="w-full bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 cursor-not-allowed"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                    Payroll Month & Year *
+                  </label>
+                  <select
+                    value={salaryMonthYear}
+                    onChange={e => setSalaryMonthYear(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                  >
+                    {[
+                      'October 2026',
+                      'September 2026',
+                      'August 2026',
+                      'July 2026',
+                      'June 2026',
+                      'May 2026'
+                    ].map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                    Salary Amount (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    value={salaryAmount}
+                    onChange={e => setSalaryAmount(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-mono font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                    Payment Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={salaryPaymentDate}
+                    onChange={e => setSalaryPaymentDate(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-mono text-xs font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                    Payment Mode *
+                  </label>
+                  <select
+                    value={salaryPaymentMode}
+                    onChange={e => setSalaryPaymentMode(e.target.value as any)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                  >
+                    <option value="Bank Transfer">Bank Transfer (IMPS/NEFT)</option>
+                    <option value="UPI">UPI Payment</option>
+                    <option value="Cash">Cash Handover</option>
+                    <option value="Cheque">Bank Cheque</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                  Reference / Transaction ID
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. IMPS63920184 / UPI ref"
+                  value={salaryReferenceId}
+                  onChange={e => setSalaryReferenceId(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-mono text-xs font-bold p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-1">
+                  Notes / Voucher Remarks
+                </label>
+                <input
+                  type="text"
+                  placeholder="Optional remarks (e.g. Regular monthly compensation)"
+                  value={salaryNotes}
+                  onChange={e => setSalaryNotes(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowSalaryPaymentModal(false)}
+                  className="flex-1 py-2.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-300 font-bold rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl transition cursor-pointer shadow-md shadow-emerald-600/20 active:scale-98"
+                >
+                  Record & Disburse
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

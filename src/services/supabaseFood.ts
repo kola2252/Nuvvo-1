@@ -1,5 +1,7 @@
 import { supabase } from '../utils/supabase/client';
 import { FoodItem, VegIndicator } from '../types';
+import { queryClient, fetchWithCache } from '../utils/apiCache';
+import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateFoodCatalog } from '../utils/tanstackQuery';
 
 export interface SupabaseFoodRow {
   id: string | number;
@@ -103,48 +105,56 @@ export function mapFoodItemToSupabaseRow(item: Partial<FoodItem>): Partial<Supab
 }
 
 /**
- * Fetch all food items from Supabase public.food_items.
+ * Fetch all food items from Supabase public.food_items with TanStack Query memoization
+ * and stale-time caching (2-minute meaningful interval).
  */
-export async function getFoodItemsFromSupabase(): Promise<{
+export async function getFoodItemsFromSupabase(force: boolean = false): Promise<{
   data: FoodItem[] | null;
   error: any | null;
 }> {
-  try {
-    const { data, error } = await supabase
-      .from('food_items')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.warn('Supabase getFoodItems notice:', error?.message || error);
-      // Seamlessly fall back to server API endpoint (/api/dishes)
+  return tanstackQueryClient.fetchQuery({
+    queryKey: QUERY_KEYS.FOOD_ITEMS,
+    staleTime: force ? 0 : STALE_TIMES.FOOD_CATALOG, // 2 minutes
+    queryFn: async () => {
       try {
-        const res = await fetch('/api/dishes');
-        if (res.ok) {
-          const apiData = await res.json();
+        const { data, error } = await supabase
+          .from('food_items')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.warn('Supabase getFoodItems notice:', error?.message || error);
+          // Seamlessly fall back to server API endpoint (/api/dishes) with cache
+          try {
+            const apiData = await fetchWithCache<FoodItem[]>('/api/dishes', undefined, { staleTime: STALE_TIMES.FOOD_CATALOG });
+            if (Array.isArray(apiData) && apiData.length > 0) {
+              return { data: apiData, error: null };
+            }
+          } catch {}
+          return { data: null, error: null };
+        }
+
+        const mapped = (data || []).map(mapSupabaseRowToFoodItem);
+        return { data: mapped, error: null };
+      } catch (err: any) {
+        console.warn('Notice querying Supabase food_items table:', err?.message || err);
+        try {
+          const apiData = await fetchWithCache<FoodItem[]>('/api/dishes', undefined, { staleTime: STALE_TIMES.FOOD_CATALOG });
           if (Array.isArray(apiData) && apiData.length > 0) {
             return { data: apiData, error: null };
           }
-        }
-      } catch {}
-      return { data: null, error: null };
-    }
-
-    const mapped = (data || []).map(mapSupabaseRowToFoodItem);
-    return { data: mapped, error: null };
-  } catch (err: any) {
-    console.warn('Notice querying Supabase food_items table:', err?.message || err);
-    try {
-      const res = await fetch('/api/dishes');
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData) && apiData.length > 0) {
-          return { data: apiData, error: null };
-        }
+        } catch {}
+        return { data: null, error: null };
       }
-    } catch {}
-    return { data: null, error: null };
-  }
+    }
+  });
+}
+
+export function invalidateFoodCache() {
+  invalidateFoodCatalog();
+  queryClient.invalidateQueries(['supabase_food_items']);
+  queryClient.invalidateQueries('fetch_/api/dishes');
+  queryClient.invalidateQueries('dishes');
 }
 
 /**
@@ -154,6 +164,7 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
   data: FoodItem | null;
   error: any | null;
 }> {
+  invalidateFoodCache();
   // First attempt: Server API which manages Supabase insertion and persistent storage
   try {
     const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
@@ -169,6 +180,7 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.dish) {
+        invalidateFoodCache();
         return { data: mapSupabaseRowToFoodItem(json.dish), error: null };
       }
     }
@@ -185,6 +197,7 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
       .select();
 
     if (!error && data && data[0]) {
+      invalidateFoodCache();
       return { data: mapSupabaseRowToFoodItem(data[0]), error: null };
     }
   } catch (err: any) {
@@ -214,6 +227,7 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
     created_at: new Date().toISOString()
   };
 
+  invalidateFoodCache();
   return { data: fallbackItem, error: null };
 }
 
@@ -273,6 +287,7 @@ export async function updateFoodItemInSupabase(
       .select();
 
     if (!error && data && data[0]) {
+      invalidateFoodCache();
       return { data: mapSupabaseRowToFoodItem(data[0]), error: null };
     }
   } catch (err: any) {
@@ -289,6 +304,7 @@ export async function deleteFoodItemFromSupabase(id: string): Promise<{
   success: boolean;
   error: any | null;
 }> {
+  invalidateFoodCache();
   try {
     const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
     await fetch(`/api/admin/dishes/${id}`, {
@@ -306,6 +322,7 @@ export async function deleteFoodItemFromSupabase(id: string): Promise<{
       .eq('id', id);
   } catch {}
 
+  invalidateFoodCache();
   return { success: true, error: null };
 }
 
@@ -316,6 +333,7 @@ export async function seedFoodItemsToSupabase(items: FoodItem[]): Promise<{
   count: number;
   error: any | null;
 }> {
+  invalidateFoodCache();
   try {
     const payload = items.map((item, idx) => ({
       ...mapFoodItemToSupabaseRow(item),
@@ -331,9 +349,11 @@ export async function seedFoodItemsToSupabase(items: FoodItem[]): Promise<{
       return { count: 0, error };
     }
 
+    invalidateFoodCache();
     return { count: data?.length || 0, error: null };
   } catch (err: any) {
-    console.warn('Notice while seeding Supabase food_items:', err?.message);
+    console.warn('Supabase seedFoodItems exception:', err.message);
+    invalidateFoodCache();
     return { count: 0, error: err };
   }
 }

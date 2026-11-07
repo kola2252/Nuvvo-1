@@ -246,4 +246,88 @@ BEGIN
     END IF;
 END $$;
 
+-- 6. USER OTPS TABLE (Stores single-use OTP codes with expiration & attempt limits)
+CREATE TABLE IF NOT EXISTS public.user_otps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    identifier TEXT NOT NULL,          -- email or mobile phone
+    otp_hash TEXT NOT NULL,            -- PBKDF2 cryptographic hash
+    salt TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'login', -- 'registration', 'login', 'password_reset'
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed BOOLEAN NOT NULL DEFAULT false,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
 
+CREATE INDEX IF NOT EXISTS idx_user_otps_identifier_purpose 
+    ON public.user_otps(identifier, purpose);
+CREATE INDEX IF NOT EXISTS idx_user_otps_expires_at 
+    ON public.user_otps(expires_at);
+
+ALTER TABLE public.user_otps ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'user_otps' AND policyname = 'service_role_all_user_otps'
+    ) THEN
+        CREATE POLICY service_role_all_user_otps 
+        ON public.user_otps 
+        FOR ALL 
+        TO service_role 
+        USING (true) 
+        WITH CHECK (true);
+    END IF;
+END $$;
+
+-- 7. API LOGS TABLE (Tracks API response times, status codes, cache hits, and error rates)
+CREATE TABLE IF NOT EXISTS public.api_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    method TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    is_error BOOLEAN NOT NULL DEFAULT false,
+    error_rate NUMERIC NOT NULL DEFAULT 0,
+    cache_hit BOOLEAN NOT NULL DEFAULT false,
+    error_message TEXT,
+    client_ip TEXT,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_logs_endpoint ON public.api_logs(endpoint);
+CREATE INDEX IF NOT EXISTS idx_api_logs_created_at ON public.api_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_logs_is_error ON public.api_logs(is_error);
+
+ALTER TABLE public.api_logs ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'api_logs' AND policyname = 'public_insert_api_logs'
+    ) THEN
+        CREATE POLICY public_insert_api_logs 
+        ON public.api_logs 
+        FOR INSERT 
+        TO public 
+        WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'api_logs' AND policyname = 'service_role_all_api_logs'
+    ) THEN
+        CREATE POLICY service_role_all_api_logs 
+        ON public.api_logs 
+        FOR ALL 
+        TO service_role 
+        USING (true) 
+        WITH CHECK (true);
+    END IF;
+END $$;

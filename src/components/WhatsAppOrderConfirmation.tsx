@@ -15,6 +15,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { MessageSquare, CheckCircle2, ShieldCheck, Phone, AlertCircle, RefreshCw, Send, ArrowRight } from 'lucide-react';
 import { Order } from '../types';
 import { supabase } from '../utils/supabase/client';
+import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS } from '../utils/tanstackQuery';
 import { 
   generateWhatsAppOrderConfirmationText, 
   buildWhatsAppClickToChatUrl, 
@@ -54,6 +55,14 @@ export default function WhatsAppOrderConfirmation({
       return;
     }
 
+    // Check TanStack Query cache first
+    const cachedVerified = tanstackQueryClient.getQueryData<boolean>(QUERY_KEYS.SINGLE_ORDER(order.id));
+    if (cachedVerified) {
+      setIsVerifiedInSupabase(true);
+      setIsVerifying(false);
+      return;
+    }
+
     setIsVerifying(true);
     setVerificationError(null);
 
@@ -66,6 +75,7 @@ export default function WhatsAppOrderConfirmation({
         .maybeSingle();
 
       if (!error && data && data.id) {
+        tanstackQueryClient.setQueryData(QUERY_KEYS.SINGLE_ORDER(order.id), true);
         setIsVerifiedInSupabase(true);
         setIsVerifying(false);
         return;
@@ -76,6 +86,7 @@ export default function WhatsAppOrderConfirmation({
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.order) {
+          tanstackQueryClient.setQueryData(QUERY_KEYS.SINGLE_ORDER(order.id), true);
           setIsVerifiedInSupabase(true);
           setIsVerifying(false);
           return;

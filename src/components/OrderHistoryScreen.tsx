@@ -9,7 +9,7 @@ import {
   History, ArrowLeft, RefreshCw, Search, Calendar, MapPin, 
   ShoppingBag, CheckCircle, Clock, Truck, ChefHat, XCircle, 
   ChevronDown, ChevronUp, Download, RotateCcw, Star, ShieldCheck,
-  AlertCircle, Database, Sparkles, Filter
+  AlertCircle, Database, Sparkles, Filter, FileText
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types';
 import { fetchUserOrdersFromSupabase } from '../services/supabaseOrders';
@@ -70,7 +70,7 @@ export default function OrderHistoryScreen() {
     setFetchError(null);
 
     try {
-      const result = await fetchUserOrdersFromSupabase(user.phone);
+      const result = await fetchUserOrdersFromSupabase(user.phone, showRefreshIndicator);
       if (result.error) {
         // Log friendly notice; Supabase table might be in initial bootstrap
         console.warn('Supabase orders query notification:', result.error?.message);
@@ -149,7 +149,7 @@ export default function OrderHistoryScreen() {
   };
 
   const handleReorder = (order: Order) => {
-    reorderItems(order.items);
+    reorderItems(order);
     setCurrentPage('cart');
   };
 
@@ -591,6 +591,17 @@ export default function OrderHistoryScreen() {
                       </div>
                     )}
 
+                    {/* Delivery Instructions Drop-off Notes */}
+                    {(order.deliveryInstructions || order.instructions) && (
+                      <div className="mt-1.5 p-2 bg-orange-500/5 dark:bg-orange-950/20 rounded-xl border border-orange-500/15 flex items-start gap-1.5 text-[11px] text-orange-900 dark:text-orange-300">
+                        <FileText className="w-3.5 h-3.5 text-orange-500 shrink-0 mt-0.5" />
+                        <div className="line-clamp-2">
+                          <span className="font-bold text-orange-700 dark:text-orange-400">Drop-off note: </span>
+                          <span>{order.deliveryInstructions || order.instructions}</span>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Price and Payment Total Footer */}
                     <div className="pt-2.5 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between">
                       <div className="flex items-center gap-1.5">
@@ -766,7 +777,7 @@ export default function OrderHistoryScreen() {
                                           setPartnerRatingStates(prev => ({
                                             ...prev,
                                             [order.id]: {
-                                              ...(prev[order.id] || { rating: partnerRatingState.rating, feedback: '' }),
+                                              ...(prev[order.id] || { rating: partnerRatingState.rating, hoverRating: 0, feedback: '', tags: [] }),
                                               tags: newTags
                                             }
                                           }));
@@ -793,7 +804,7 @@ export default function OrderHistoryScreen() {
                                       setPartnerRatingStates(prev => ({
                                         ...prev,
                                         [order.id]: {
-                                          ...(prev[order.id] || { rating: partnerRatingState.rating, tags: [] }),
+                                          ...(prev[order.id] || { rating: partnerRatingState.rating, hoverRating: 0, feedback: '', tags: [] }),
                                           feedback: val
                                         }
                                       }));

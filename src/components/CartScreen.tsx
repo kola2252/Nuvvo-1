@@ -617,35 +617,49 @@ export default function CartScreen() {
           )}
         </div>
 
-        {/* DELIVERY INSTRUCTIONS */}
+        {/* DELIVERY INSTRUCTIONS & DROP-OFF NOTES */}
         <div id="delivery-instructions-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
-          <div className="flex justify-between items-center">
-            <div>
-              <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-50">Delivery Instructions</h4>
-              <p className="text-[10px] text-zinc-400">Provide specific notes for the rider to find your location easily.</p>
+          <div className="flex justify-between items-start">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-50">Delivery Instructions</h4>
+                <span className="text-[9px] font-black uppercase tracking-wider bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded-full border border-orange-500/20">
+                  Drop-off Notes
+                </span>
+              </div>
+              <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                Provide specific notes for the rider to find your location and drop off smoothly.
+              </p>
             </div>
-            <FileText className="w-5 h-5 text-orange-500" />
+            <div className="p-2 bg-orange-500/10 rounded-2xl text-orange-500 shrink-0">
+              <FileText className="w-4 h-4" />
+            </div>
           </div>
 
-          <div className="relative">
-            <textarea 
-              id="delivery-instructions-input"
-              placeholder="Provide specific notes (like 'leave at door', 'gate code: 1234', 'avoid ringing bell')..."
-              value={orderInstructions}
-              onChange={e => setOrderInstructions(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 pl-4 pr-4 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500 font-medium h-20 resize-none transition-all duration-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
-            />
-          </div>
-
-          {/* Preset Utility Chips */}
+          {/* Quick Preset Chips */}
           <div className="space-y-1.5">
-            <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider block">Quick Presets:</span>
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider block">
+                Quick Drop-off Presets:
+              </span>
+              {orderInstructions && (
+                <button
+                  type="button"
+                  onClick={() => setOrderInstructions('')}
+                  className="text-[9px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
+                >
+                  Clear Notes
+                </button>
+              )}
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {[
                 { label: '🚪 Leave at door', value: 'Leave at door' },
-                { label: '🔑 Gate code', value: 'Gate code: ' },
                 { label: '🔕 Avoid ringing bell', value: 'Avoid ringing bell' },
-                { label: '📞 Call on arrival', value: 'Call on arrival' }
+                { label: '🛡️ Leave with security', value: 'Leave with security guard' },
+                { label: '📞 Call on arrival', value: 'Call on arrival' },
+                { label: '🔑 Gate code', value: 'Gate code: ' },
+                { label: '📍 Near landmark', value: 'Near landmark: ' }
               ].map(preset => {
                 const isSelected = orderInstructions.includes(preset.value);
                 return (
@@ -653,30 +667,48 @@ export default function CartScreen() {
                     key={preset.value}
                     type="button"
                     onClick={() => {
-                      setOrderInstructions(prev => {
-                        const trimmed = prev.trim();
-                        if (trimmed.includes(preset.value)) {
-                          // Filter out the preset
-                          const regex = new RegExp(`\\s*,?\\s*${preset.value.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*,?\\s*`, 'g');
-                          let updated = trimmed.replace(regex, ' ').trim();
-                          if (updated.startsWith(',')) updated = updated.substring(1).trim();
-                          if (updated.endsWith(',')) updated = updated.substring(0, updated.length - 1).trim();
-                          return updated;
-                        } else {
-                          return trimmed ? `${trimmed}, ${preset.value}` : preset.value;
-                        }
-                      });
+                      const trimmed = (orderInstructions || '').trim();
+                      if (trimmed.includes(preset.value)) {
+                        // Filter out the preset cleanly
+                        const regex = new RegExp(`\\s*,?\\s*${preset.value.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s*,?\\s*`, 'g');
+                        let updated = trimmed.replace(regex, ' ').trim();
+                        if (updated.startsWith(',')) updated = updated.substring(1).trim();
+                        if (updated.endsWith(',')) updated = updated.substring(0, updated.length - 1).trim();
+                        setOrderInstructions(updated);
+                      } else {
+                        setOrderInstructions(trimmed ? `${trimmed}, ${preset.value}` : preset.value);
+                      }
                     }}
-                    className={`px-2.5 py-1 text-[10px] font-bold rounded-lg border transition-all duration-200 cursor-pointer ${
+                    className={`px-2.5 py-1 text-[10px] font-bold rounded-xl border transition-all duration-200 cursor-pointer ${
                       isSelected
-                        ? 'bg-orange-500/10 text-orange-650 border-orange-550/30'
-                        : 'bg-slate-50 dark:bg-zinc-800 text-zinc-650 dark:text-zinc-355 border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-750'
+                        ? 'bg-orange-500 text-white border-orange-500 shadow-sm'
+                        : 'bg-slate-50 dark:bg-zinc-800/80 text-zinc-650 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-750'
                     }`}
                   >
                     {preset.label}
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Delivery Instructions Text Area */}
+          <div className="space-y-1">
+            <div className="relative">
+              <textarea 
+                id="delivery-instructions-input"
+                name="deliveryInstructions"
+                maxLength={250}
+                rows={3}
+                placeholder="e.g., Leave order at security gate, flat #402, baby sleeping so don't ring bell, call upon arrival..."
+                value={orderInstructions}
+                onChange={e => setOrderInstructions(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 p-3 text-xs rounded-2xl border border-slate-200 dark:border-zinc-700 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 font-medium resize-none transition-all duration-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+              />
+            </div>
+            <div className="flex items-center justify-between text-[9px] text-zinc-400 px-1">
+              <span>⚡ Delivery partner receives these instructions upon dispatch.</span>
+              <span className="font-mono">{orderInstructions.length}/250</span>
             </div>
           </div>
         </div>
@@ -877,130 +909,7 @@ export default function CartScreen() {
           </div>
         </div>
 
-        {/* DELIVERY SCHEDULING CARD */}
-        <div id="delivery-scheduling-picker" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-orange-500" />
-              <div>
-                <h4 className="text-xs font-bold text-zinc-950 dark:text-zinc-50">Delivery Schedule</h4>
-                <p className="text-[10px] text-zinc-400">Specify when you would like to receive the order</p>
-              </div>
-            </div>
-          </div>
 
-          {/* Segment selection buttons */}
-          <div className="grid grid-cols-2 gap-2 p-1 bg-slate-50 dark:bg-zinc-850 rounded-2xl border">
-            <button
-              type="button"
-              onClick={() => setScheduleMode('ASAP')}
-              className={`py-2 text-[11px] font-black rounded-xl transition-all cursor-pointer ${
-                scheduleMode === 'ASAP'
-                  ? 'bg-white dark:bg-zinc-800 text-orange-500 shadow-xs border border-slate-200/50 dark:border-zinc-700'
-                  : 'text-zinc-500 hover:text-zinc-750'
-              }`}
-            >
-              🚀 ASAP (25-30 mins)
-            </button>
-            <button
-              type="button"
-              onClick={() => setScheduleMode('SCHEDULED')}
-              className={`py-2 text-[11px] font-black rounded-xl transition-all cursor-pointer ${
-                scheduleMode === 'SCHEDULED'
-                  ? 'bg-white dark:bg-zinc-800 text-orange-500 shadow-xs border border-slate-200/50 dark:border-zinc-700'
-                  : 'text-zinc-500 hover:text-zinc-755'
-              }`}
-            >
-              📅 Schedule Delivery
-            </button>
-          </div>
-
-          {/* Expanded schedule inputs */}
-          {scheduleMode === 'SCHEDULED' && (
-            <div className="space-y-4 pt-2 overflow-hidden">
-              {/* Date pills */}
-              <div className="space-y-1.5">
-                <label className="block text-[10px] font-black uppercase text-zinc-400 tracking-wide">Select delivery date</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {dayPills.map(pill => (
-                    <button
-                      type="button"
-                      key={pill.iso}
-                      onClick={() => setSelectedDate(pill.iso)}
-                      className={`p-2 rounded-xl border flex flex-col items-center justify-center transition-all cursor-pointer ${
-                        selectedDate === pill.iso
-                          ? 'bg-orange-500/10 text-orange-500 border-orange-500 shadow-xs'
-                          : 'bg-slate-50 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 hover:bg-slate-100'
-                      }`}
-                    >
-                      <span className="text-[10px] font-bold">{pill.label}</span>
-                      <span className="text-[9px] opacity-75 font-mono">{pill.dateFormatted}</span>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[9px] text-zinc-400 font-bold shrink-0">Or pick other:</span>
-                  <input
-                    type="date"
-                    min={todayISO}
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="flex-1 bg-slate-50 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 px-3 py-1.5 text-[10px] font-mono rounded-xl border border-slate-200 focus:outline-none focus:border-orange-500 focus:ring-0"
-                  />
-                </div>
-              </div>
-
-              {/* Time slot selectors */}
-              <div className="space-y-1.5">
-                <label className="block text-[10px] font-black uppercase text-zinc-400 tracking-wide">Select delivery time slot</label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {presets.map(slot => (
-                    <button
-                      type="button"
-                      key={slot}
-                      onClick={() => setSelectedTimeSlot(slot)}
-                      className={`px-2 py-2.5 rounded-xl border text-left flex items-center gap-1.5 transition-all text-[9.5px] cursor-pointer font-medium truncate ${
-                        selectedTimeSlot === slot
-                          ? 'bg-orange-500/10 text-orange-500 border-orange-500 shadow-xs font-bold'
-                          : 'bg-slate-50 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-slate-100 dark:border-zinc-750 hover:bg-slate-100'
-                      }`}
-                    >
-                      <Clock className="w-3 h-3 shrink-0" />
-                      <span className="truncate">{slot}</span>
-                    </button>
-                  ))}
-                </div>
-
-                {selectedTimeSlot === 'Specify Custom Time' && (
-                  <div className="p-3 bg-slate-50 dark:bg-zinc-850 rounded-xl border border-dashed border-slate-200 mt-2 flex items-center justify-between gap-3 animate-fadeIn">
-                    <div className="w-1/2">
-                      <label className="block text-[9px] font-bold text-zinc-500 dark:text-zinc-400 mb-1">Choose Exact Hour</label>
-                      <input
-                        type="time"
-                        value={customTime}
-                        onChange={(e) => setCustomTime(e.target.value)}
-                        className="w-full bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 px-3 py-2 text-xs rounded-lg border focus:outline-none font-bold font-mono tracking-widest text-center"
-                      />
-                    </div>
-                    <div className="text-right flex-1">
-                      <span className="text-[9px] text-zinc-400 block font-bold uppercase">Estimated delivery time</span>
-                      <span className="text-xs font-black text-orange-500 font-mono mt-0.5 block">{getScheduledTimeString()}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Informational scheduled time helper badge */}
-          {scheduleMode === 'SCHEDULED' && (
-            <div className="bg-orange-500/5 border border-orange-500/10 p-2.5 rounded-2xl flex items-center gap-2 text-[10px] text-orange-700 dark:text-orange-300 font-medium animate-fadeIn">
-              <Sparkles className="w-4 h-4 text-orange-500 animate-pulse shrink-0" />
-              <span>We'll dispatch fresh preparation units to match arrival around <strong className="font-mono underline">{getScheduledTimeString()}</strong>.</span>
-            </div>
-          )}
-        </div>
 
         {/* DELIVERY ADDRESS COORDINATES MARK */}
         {(() => {

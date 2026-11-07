@@ -15,6 +15,7 @@ import {
 import QRCode from 'qrcode';
 import { Address, SavedCard, PaymentMethodType, CartItem, PaymentStatusType } from '../types';
 import { useApp } from '../context/AppContext';
+import { fetchWithCache } from '../utils/apiCache';
 
 interface PaymentMethodScreenProps {
   amountPayable: number;
@@ -131,10 +132,13 @@ export default function PaymentMethodScreen({
   const [isInitiatingPhonePe, setIsInitiatingPhonePe] = useState<boolean>(false);
 
   useEffect(() => {
-    fetch('/api/payment/phonepe/status')
-      .then(r => r.json())
+    fetchWithCache<{ success: boolean; isConfigured?: boolean; environment?: string; missingVariables?: string[] }>(
+      '/api/payment/phonepe/status',
+      undefined,
+      { staleTime: 60_000 }
+    )
       .then(d => {
-        if (d.success) {
+        if (d && d.success) {
           setPhonePeStatus({
             isConfigured: Boolean(d.isConfigured),
             environment: d.environment,

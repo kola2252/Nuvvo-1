@@ -258,7 +258,7 @@ export default function OrderHistory() {
                     <div key={idx} className="flex justify-between items-start text-zinc-700 dark:text-zinc-200 text-[11px]">
                       <div className="max-w-[75%]">
                         <div className="flex items-center gap-1.5">
-                          <span className={`w-1.5 h-1.5 rounded-full ${cartItem.foodItem.vegIndicator === 'Veg' ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span className={`w-1.5 h-1.5 rounded-full ${String(cartItem.foodItem.vegIndicator || '').toLowerCase().includes('veg') ? 'bg-green-500' : 'bg-red-500'}`} />
                           <span className="font-semibold text-zinc-900 dark:text-zinc-50 truncate block">
                             {cartItem.foodItem.name}
                           </span>

@@ -5,6 +5,7 @@
 
 import { supabase } from '../utils/supabase/client';
 import { Order, OrderStatus } from '../types';
+import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateOrders } from '../utils/tanstackQuery';
 
 export const LIVE_ORDERS_CHANNEL = 'nuvvo_live_orders_v1';
 
@@ -28,6 +29,8 @@ export function buildSupabaseOrderPayload(order: Order): Record<string, any> {
     deliveryPartnerAvatar: (order as any).deliveryPartnerAvatar || null,
     deliveryPartnerVehicle: (order as any).deliveryPartnerVehicle || null,
     deliveryPartnerStatus: order.deliveryPartnerStatus || null,
+    deliveryInstructions: order.deliveryInstructions || order.instructions || null,
+    deliveryNotes: order.deliveryInstructions || order.instructions || null,
     eta: order.eta || 25,
     scheduledTime: (order as any).scheduledTime || null,
     pointsEarned: (order as any).pointsEarned || 0,
@@ -53,7 +56,7 @@ export function buildSupabaseOrderPayload(order: Order): Record<string, any> {
     final_amount: Number(order.finalAmount !== undefined ? order.finalAmount : 0),
     status: String(order.status || 'accepted'),
     address: addressObj,
-    instructions: String(order.instructions || ''),
+    instructions: String(order.deliveryInstructions || order.instructions || ''),
     coupon_used: String(order.couponUsed || ''),
     payment_method: String(order.paymentMethod || 'UPI'),
     payment_status: String(order.paymentStatus || 'pending'),
@@ -104,7 +107,8 @@ export function mapSupabaseRowToOrder(row: any): Order {
       area: 'Chirala Main Road',
       city: 'Chirala'
     },
-    instructions: row.instructions || '',
+    instructions: row.instructions || row.delivery_instructions || checkoutData.deliveryInstructions || checkoutData.instructions || checkoutData.deliveryNotes || '',
+    deliveryInstructions: row.delivery_instructions || row.instructions || checkoutData.deliveryInstructions || checkoutData.instructions || checkoutData.deliveryNotes || '',
     couponUsed: row.coupon_used || row.couponUsed || '',
     paymentMethod: row.payment_method || row.paymentMethod || 'UPI',
     paymentStatus: row.payment_status || row.paymentStatus || 'success',
@@ -131,9 +135,9 @@ export function mapSupabaseRowToOrder(row: any): Order {
 }
 
 /**
- * Fetches user past orders from Supabase public.orders table.
+ * Fetches user past orders from Supabase public.orders table with TanStack Query (30s staleTime).
  */
-export async function fetchUserOrdersFromSupabase(phone: string): Promise<{
+export async function fetchUserOrdersFromSupabase(phone: string, force: boolean = false): Promise<{
   data: Order[] | null;
   error: any | null;
   fromSupabase: boolean;
@@ -145,61 +149,73 @@ export async function fetchUserOrdersFromSupabase(phone: string): Promise<{
   const cleanPhone = phone.replace(/\D/g, '');
   const digits = cleanPhone.length === 12 && cleanPhone.startsWith('91') ? cleanPhone.slice(2) : cleanPhone;
 
-  try {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customer_phone.eq.91${digits}`)
-      .order('created_at', { ascending: false });
+  return tanstackQueryClient.fetchQuery({
+    queryKey: QUERY_KEYS.USER_ORDERS(digits),
+    staleTime: force ? 0 : STALE_TIMES.USER_ORDERS,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*')
+          .or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customer_phone.eq.91${digits}`)
+          .order('created_at', { ascending: false });
 
-    if (error) {
-      if (error.code === 'PGRST205') {
-        return { data: [], error: null, fromSupabase: false };
+        if (error) {
+          if (error.code === 'PGRST205') {
+            return { data: [], error: null, fromSupabase: false };
+          }
+          return { data: null, error, fromSupabase: false };
+        }
+
+        if (data && Array.isArray(data)) {
+          const mapped = data.map(mapSupabaseRowToOrder);
+          return { data: mapped, error: null, fromSupabase: true };
+        }
+
+        return { data: [], error: null, fromSupabase: true };
+      } catch (err: any) {
+        return { data: null, error: err, fromSupabase: false };
       }
-      return { data: null, error, fromSupabase: false };
     }
-
-    if (data && Array.isArray(data)) {
-      const mapped = data.map(mapSupabaseRowToOrder);
-      return { data: mapped, error: null, fromSupabase: true };
-    }
-
-    return { data: [], error: null, fromSupabase: true };
-  } catch (err: any) {
-    return { data: null, error: err, fromSupabase: false };
-  }
+  });
 }
 
 /**
- * Fetches all orders from Supabase public.orders table (for Admin & SuperAdmin panels).
+ * Fetches all orders from Supabase public.orders table with TanStack Query (20s staleTime).
  */
-export async function fetchAllOrdersFromSupabase(): Promise<{
+export async function fetchAllOrdersFromSupabase(force: boolean = false): Promise<{
   data: Order[] | null;
   error: any | null;
   fromSupabase: boolean;
 }> {
-  try {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .order('created_at', { ascending: false });
+  return tanstackQueryClient.fetchQuery({
+    queryKey: QUERY_KEYS.ALL_ORDERS,
+    staleTime: force ? 0 : STALE_TIMES.ALL_ORDERS,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-    if (error) {
-      if (error.code === 'PGRST205') {
-        return { data: [], error: null, fromSupabase: false };
+        if (error) {
+          if (error.code === 'PGRST205') {
+            return { data: [], error: null, fromSupabase: false };
+          }
+          return { data: null, error, fromSupabase: false };
+        }
+
+        if (data && Array.isArray(data)) {
+          const mapped = data.map(mapSupabaseRowToOrder);
+          return { data: mapped, error: null, fromSupabase: true };
+        }
+
+        return { data: [], error: null, fromSupabase: true };
+      } catch (err: any) {
+        return { data: null, error: err, fromSupabase: false };
       }
-      return { data: null, error, fromSupabase: false };
     }
-
-    if (data && Array.isArray(data)) {
-      const mapped = data.map(mapSupabaseRowToOrder);
-      return { data: mapped, error: null, fromSupabase: true };
-    }
-
-    return { data: [], error: null, fromSupabase: true };
-  } catch (err: any) {
-    return { data: null, error: err, fromSupabase: false };
-  }
+  });
 }
 
 /**
@@ -237,6 +253,9 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
     // 3. Broadcast mutation event over real-time channel
     broadcastOrderMutation('INSERT', order).catch(() => {});
 
+    // Invalidate TanStack Query orders cache
+    invalidateOrders();
+
     return { success: true };
   } catch (err: any) {
     console.warn('[Supabase Orders] saveOrderToSupabase exception notice:', err?.message || err);
@@ -257,7 +276,9 @@ export async function updateOrderInSupabase(
     if (updatedFields.status) payload.status = updatedFields.status;
     if (updatedFields.paymentStatus) payload.payment_status = updatedFields.paymentStatus;
     if (updatedFields.finalAmount !== undefined) payload.final_amount = updatedFields.finalAmount;
-    if (updatedFields.instructions) payload.instructions = updatedFields.instructions;
+    if (updatedFields.instructions || updatedFields.deliveryInstructions) {
+      payload.instructions = updatedFields.deliveryInstructions || updatedFields.instructions;
+    }
     if (updatedFields.items) payload.items = updatedFields.items;
     if (updatedFields.address) payload.address = updatedFields.address;
 
@@ -282,6 +303,7 @@ export async function updateOrderInSupabase(
       }
     }
 
+    invalidateOrders();
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Database error' };

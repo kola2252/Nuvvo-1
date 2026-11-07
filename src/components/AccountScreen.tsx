@@ -12,7 +12,7 @@ import {
   History, RefreshCw, ChevronDown, ChevronLeft, CheckCircle, Edit, Plus, X, Map, Check,
   Bell, Sparkles, CreditCard, Lock, Camera, Star, ShoppingBag, Search,
   Share2, Copy, Gift, Users, Wallet, Receipt, Printer, Download,
-  ChevronUp, Mail
+  ChevronUp, Mail, AlertCircle
 } from 'lucide-react';
 import { Address, SavedCard, SavedUPI } from '../types';
 import OrderHistory from './OrderHistory';
@@ -32,7 +32,8 @@ export default function AccountScreen() {
     currentTheme, setThemeId, themesList, requestNotificationPermission, notificationPermission,
     pageHistory, goBack, closePage, language, setLanguage,
     referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
-    requestAdminSaveConfirmation
+    requestAdminSaveConfirmation,
+    deleteCustomerAccount
   } = useApp();
 
   // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
@@ -56,6 +57,174 @@ export default function AccountScreen() {
   const [profileFlatNo, setProfileFlatNo] = useState('');
   const [profileArea, setProfileArea] = useState('');
   const [profileCity, setProfileCity] = useState('');
+
+  // Email Verification with user_otps state
+  const [isEmailVerifiedState, setIsEmailVerifiedState] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(`nuvvo_email_verified_${user?.email || ''}`);
+      if (stored === 'true') return true;
+    } catch {}
+    return Boolean(user?.isEmailVerified);
+  });
+  const [showEmailVerifyBox, setShowEmailVerifyBox] = useState(false);
+  const [verifyEmailOtpInput, setVerifyEmailOtpInput] = useState('');
+  const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
+  const [isVerifyingEmailOtp, setIsVerifyingEmailOtp] = useState(false);
+  const [emailOtpSentSuccess, setEmailOtpSentSuccess] = useState(false);
+  const [emailOtpFeedbackMsg, setEmailOtpFeedbackMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [emailOtpCooldown, setEmailOtpCooldown] = useState(0);
+
+  useEffect(() => {
+    if (user?.email) {
+      try {
+        const stored = localStorage.getItem(`nuvvo_email_verified_${user.email}`);
+        if (stored === 'true') {
+          setIsEmailVerifiedState(true);
+        } else if (user.isEmailVerified) {
+          setIsEmailVerifiedState(true);
+        }
+      } catch {}
+    }
+  }, [user?.email, user?.isEmailVerified]);
+
+  useEffect(() => {
+    if (emailOtpCooldown <= 0) return;
+    const timer = setInterval(() => setEmailOtpCooldown(c => c - 1), 1000);
+    return () => clearInterval(timer);
+  }, [emailOtpCooldown]);
+
+  const handleRequestEmailVerificationCode = async (targetEmailToVerify?: string) => {
+    const emailToUse = (targetEmailToVerify || profileEmail || user?.email || '').trim().toLowerCase();
+    if (!emailToUse || !emailToUse.includes('@') || !emailToUse.includes('.')) {
+      setEmailOtpFeedbackMsg({ type: 'error', text: 'Please enter a valid email address to verify.' });
+      return;
+    }
+
+    setIsSendingEmailOtp(true);
+    setEmailOtpFeedbackMsg(null);
+
+    try {
+      const res = await fetch('/api/auth/send-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailToUse,
+          fullName: user?.name || 'Valued Customer',
+          location: 'Chirala'
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setEmailOtpSentSuccess(true);
+        setShowEmailVerifyBox(true);
+        setEmailOtpCooldown(30);
+        setEmailOtpFeedbackMsg({
+          type: 'info',
+          text: data.message || `A 6-digit verification code has been dispatched and stored in user_otps for ${emailToUse}.`
+        });
+      } else {
+        setEmailOtpFeedbackMsg({
+          type: 'error',
+          text: data.error || 'Failed to dispatch verification code. Please check SMTP settings or try again.'
+        });
+      }
+    } catch {
+      setEmailOtpFeedbackMsg({
+        type: 'error',
+        text: 'Network error while contacting verification server. Please retry.'
+      });
+    } finally {
+      setIsSendingEmailOtp(false);
+    }
+  };
+
+  const handleVerifyEmailCodeSubmit = async () => {
+    const emailToUse = (profileEmail || user?.email || '').trim().toLowerCase();
+    const cleanCode = verifyEmailOtpInput.trim().replace(/\D/g, '');
+
+    if (!cleanCode || cleanCode.length !== 6) {
+      setEmailOtpFeedbackMsg({ type: 'error', text: 'Please enter the complete 6-digit verification code.' });
+      return;
+    }
+
+    setIsVerifyingEmailOtp(true);
+    setEmailOtpFeedbackMsg(null);
+
+    try {
+      const res = await fetch('/api/auth/verify-db-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: emailToUse,
+          otp: cleanCode,
+          purpose: 'email_login'
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setIsEmailVerifiedState(true);
+        try {
+          localStorage.setItem(`nuvvo_email_verified_${emailToUse}`, 'true');
+        } catch {}
+        setEmailOtpFeedbackMsg({
+          type: 'success',
+          text: '✓ Email successfully verified against user_otps table!'
+        });
+        setVerifyEmailOtpInput('');
+        setShowEmailVerifyBox(false);
+
+        // Update active profile in context
+        if (user) {
+          updateUserProfile(
+            user.name,
+            emailToUse,
+            user.avatar,
+            user.phone,
+            user.addresses,
+            user.preferredLanguage
+          );
+        }
+      } else {
+        setEmailOtpFeedbackMsg({
+          type: 'error',
+          text: data.error || 'Incorrect or expired code. Please verify against user_otps database entry.'
+        });
+      }
+    } catch {
+      setEmailOtpFeedbackMsg({
+        type: 'error',
+        text: 'Error verifying OTP code. Please try again.'
+      });
+    } finally {
+      setIsVerifyingEmailOtp(false);
+    }
+  };
+
+  // Self-Service Customer Account Deletion state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletePasswordInput, setDeletePasswordInput] = useState('');
+  const [deleteErrorMessage, setDeleteErrorMessage] = useState('');
+  const [isDeletingUserAccount, setIsDeletingUserAccount] = useState(false);
+
+  const handleConfirmAccountDeletion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeleteErrorMessage('');
+    if (!deletePasswordInput) {
+      setDeleteErrorMessage('Please enter your current password to confirm account deletion.');
+      return;
+    }
+    setIsDeletingUserAccount(true);
+    const res = await deleteCustomerAccount(deletePasswordInput);
+    setIsDeletingUserAccount(false);
+    if (res.success) {
+      setShowDeleteModal(false);
+      alert('Your customer account and profile have been permanently deleted and order records anonymized.');
+    } else {
+      setDeleteErrorMessage(res.error || 'Failed to delete account. Please verify your password.');
+    }
+  };
 
   // Synchronize state variables with active user data on mount / change
   useEffect(() => {
@@ -1210,35 +1379,123 @@ Thank you for dining with Nuvvo Gourmet!`;
                     </button>
                   </div>
 
-                  {/* EMAIL ROW WITH DIRECT EDIT/ADD BUTTON */}
-                  <div className="flex items-center justify-between text-[11px] p-2.5 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-indigo-500 shadow-2xs">
-                        <Mail className="w-3.5 h-3.5" />
-                      </span>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[9px] uppercase font-bold text-zinc-400 block">Customer Email</span>
-                          {user?.email && (
-                            <span className="text-[8px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.2 rounded font-bold">✓ Saved</span>
-                          )}
+                  {/* EMAIL ROW WITH DIRECT EDIT/ADD BUTTON & USER_OTPS VERIFICATION */}
+                  <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80 space-y-2.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-indigo-500 shadow-2xs">
+                          <Mail className="w-3.5 h-3.5" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[9px] uppercase font-bold text-zinc-400 block">Customer Email</span>
+                            {/* Dynamic Verification Status Badge */}
+                            {isEmailVerifiedState ? (
+                              <span className="text-[8px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full font-black flex items-center gap-1">
+                                <CheckCircle className="w-2.5 h-2.5" /> Verified (user_otps)
+                              </span>
+                            ) : user?.email ? (
+                              <span className="text-[8px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-black flex items-center gap-1">
+                                <AlertCircle className="w-2.5 h-2.5" /> Unverified
+                              </span>
+                            ) : null}
+                          </div>
+                          <strong className="text-zinc-850 dark:text-zinc-150 font-bold block truncate text-xs mt-0.5">
+                            {user?.email ? (
+                              user.email
+                            ) : (
+                              <span className="text-amber-600 dark:text-amber-400 font-semibold italic">Not saved yet</span>
+                            )}
+                          </strong>
                         </div>
-                        <strong className="text-zinc-850 dark:text-zinc-150 font-bold block truncate text-xs">
-                          {user?.email ? (
-                            user.email
-                          ) : (
-                            <span className="text-amber-600 dark:text-amber-400 font-semibold italic">Not saved yet</span>
-                          )}
-                        </strong>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {user?.email && !isEmailVerifiedState && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!showEmailVerifyBox) {
+                                handleRequestEmailVerificationCode(user.email);
+                              } else {
+                                setShowEmailVerifyBox(false);
+                              }
+                            }}
+                            disabled={isSendingEmailOtp}
+                            className="text-[10px] text-white font-extrabold cursor-pointer flex items-center gap-1 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 px-2.5 py-1.5 rounded-lg shadow-xs active:scale-95 transition-all"
+                          >
+                            <Shield className="w-2.5 h-2.5" /> {isSendingEmailOtp ? 'Sending Code...' : showEmailVerifyBox ? 'Close' : 'Verify Email'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingInfo(true)}
+                          className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold hover:underline cursor-pointer flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-1 rounded-lg shrink-0"
+                        >
+                          {user?.email ? <><Edit className="w-2.5 h-2.5" /> Edit</> : <><Plus className="w-2.5 h-2.5" /> Add Email</>}
+                        </button>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsEditingInfo(true)}
-                      className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold hover:underline cursor-pointer flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-1 rounded-lg shrink-0"
-                    >
-                      {user?.email ? <><Edit className="w-2.5 h-2.5" /> Change Email</> : <><Plus className="w-2.5 h-2.5" /> Save Email</>}
-                    </button>
+
+                    {/* INLINE OTP VERIFICATION FORM (AGAINST USER_OTPS TABLE) */}
+                    {showEmailVerifyBox && (
+                      <div className="pt-2 border-t border-slate-200 dark:border-zinc-700/60 space-y-2">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-bold text-zinc-600 dark:text-zinc-300">Enter 6-Digit Code (from user_otps)</span>
+                          {emailOtpCooldown > 0 ? (
+                            <span className="text-zinc-400 font-mono text-[9.5px]">Resend in {emailOtpCooldown}s</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleRequestEmailVerificationCode()}
+                              disabled={isSendingEmailOtp}
+                              className="text-orange-600 dark:text-orange-400 hover:underline font-bold cursor-pointer"
+                            >
+                              Resend OTP
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            maxLength={6}
+                            placeholder="• • • • • •"
+                            value={verifyEmailOtpInput}
+                            onChange={e => setVerifyEmailOtpInput(e.target.value.replace(/\D/g, ''))}
+                            className="flex-1 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl px-3 py-2 text-center font-mono font-black text-sm tracking-widest text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleVerifyEmailCodeSubmit}
+                            disabled={isVerifyingEmailOtp || verifyEmailOtpInput.length < 6}
+                            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-all"
+                          >
+                            {isVerifyingEmailOtp ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <CheckCircle className="w-3 h-3" />
+                            )}
+                            Verify
+                          </button>
+                        </div>
+
+                        {emailOtpFeedbackMsg && (
+                          <div className={`p-2 rounded-xl text-[10.5px] font-medium flex items-start gap-1.5 ${
+                            emailOtpFeedbackMsg.type === 'success'
+                              ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                              : emailOtpFeedbackMsg.type === 'error'
+                              ? 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                              : 'bg-orange-50 text-orange-800 dark:bg-orange-950/40 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
+                          }`}>
+                            <span className="shrink-0">
+                              {emailOtpFeedbackMsg.type === 'success' ? '✓' : emailOtpFeedbackMsg.type === 'error' ? '⚠️' : 'ℹ️'}
+                            </span>
+                            <span className="leading-snug">{emailOtpFeedbackMsg.text}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* PHONE */}
@@ -3556,6 +3813,40 @@ Thank you for dining with Nuvvo Gourmet!`;
           )}
         </div>
 
+        {/* ACCOUNT PRIVACY & DANGER ZONE (SELF-SERVICE DELETION) */}
+        {user && user.role === 'Customer' && (
+          <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/60 dark:border-rose-900/40 rounded-3xl p-5 shadow-xs space-y-3 text-left">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
+              <div>
+                <h4 className="text-xs font-black text-rose-900 dark:text-rose-200 uppercase tracking-tight">
+                  Account Privacy & Danger Zone
+                </h4>
+                <p className="text-[10px] text-rose-700 dark:text-rose-400 font-medium">
+                  Self-service customer account deletion and data anonymization
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
+              Permanently delete your Nuvvo customer account, personal credentials, and delivery addresses. For tax and accounting compliance, past financial invoices will be preserved with your customer name and identity anonymized.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDeletePasswordInput('');
+                setDeleteErrorMessage('');
+                setShowDeleteModal(true);
+              }}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-xs active:scale-98 flex items-center gap-1.5"
+            >
+              <Trash className="w-3.5 h-3.5" />
+              <span>Delete My Customer Account</span>
+            </button>
+          </div>
+        )}
+
         {/* NUVVO Brand Footer */}
         <div className="pt-6 pb-8 text-center flex flex-col items-center justify-center space-y-2 select-none opacity-80 hover:opacity-100 transition-opacity">
           <div className="w-16 h-16 rounded-full bg-black p-1 shadow-xl border border-amber-500/40 shrink-0 flex items-center justify-center overflow-hidden">
@@ -3975,6 +4266,79 @@ Thank you for dining with Nuvvo Gourmet!`;
             </div>
           );
         })()}
+
+        {/* SELF-SERVICE CUSTOMER ACCOUNT DELETION MODAL */}
+        {showDeleteModal && (
+          <div className="fixed inset-0 bg-zinc-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="w-full max-w-sm bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-100 dark:bg-rose-950/40 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200 dark:border-rose-900/50">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-zinc-900 dark:text-zinc-50">
+                    Delete Customer Account
+                  </h3>
+                  <p className="text-[10px] text-zinc-500 font-medium">
+                    This action is immediate and cannot be undone.
+                  </p>
+                </div>
+              </div>
+
+              {deleteErrorMessage && (
+                <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 text-xs rounded-xl font-medium">
+                  {deleteErrorMessage}
+                </div>
+              )}
+
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                Please enter your account password to authorize permanent deletion of your profile, login credentials, and stored addresses. Past order records will be anonymized for compliance.
+              </p>
+
+              <form onSubmit={handleConfirmAccountDeletion} className="space-y-3">
+                <div>
+                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Current Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    placeholder="Enter your current password"
+                    value={deletePasswordInput}
+                    onChange={e => setDeletePasswordInput(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDeleteModal(false);
+                      setDeletePasswordInput('');
+                      setDeleteErrorMessage('');
+                    }}
+                    className="flex-1 py-2.5 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-300 font-bold text-xs rounded-xl transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isDeletingUserAccount}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-black text-xs rounded-xl transition cursor-pointer shadow-md shadow-rose-600/20 active:scale-98"
+                  >
+                    {isDeletingUserAccount ? 'Deleting...' : 'Confirm Deletion'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
       </AnimatePresence>
     </div>
   );

@@ -34,21 +34,27 @@ export const getPrivilegedSupabaseKey = (): string => {
   return "";
 };
 
+let cachedPublicServerClient: SupabaseClient | null = null;
+let cachedPrivilegedServerClient: SupabaseClient | null = null;
+
 /**
  * Returns a privileged Supabase client for authorized server-side database writes.
- * If service role key is not configured, returns null or fallback client.
+ * If service role key is not configured, returns fallback client.
  */
 export const getPrivilegedSupabaseServerClient = (): SupabaseClient => {
-  const supabaseUrl = getSupabaseUrl();
   const secretKey = getPrivilegedSupabaseKey();
 
   if (secretKey) {
-    return createSupabaseClient(supabaseUrl, secretKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      }
-    });
+    if (!cachedPrivilegedServerClient) {
+      const supabaseUrl = getSupabaseUrl();
+      cachedPrivilegedServerClient = createSupabaseClient(supabaseUrl, secretKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        }
+      });
+    }
+    return cachedPrivilegedServerClient;
   }
 
   return getPublicSupabaseServerClient();
@@ -66,14 +72,16 @@ export const getAdminSupabaseServerClient = (): {
   try {
     const privilegedKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
     if (privilegedKey && privilegedKey.trim()) {
-      const supabaseUrl = getSupabaseUrl();
-      const client = createSupabaseClient(supabaseUrl, privilegedKey.trim(), {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        }
-      });
-      return { client, error: null, isServiceRole: true };
+      if (!cachedPrivilegedServerClient) {
+        const supabaseUrl = getSupabaseUrl();
+        cachedPrivilegedServerClient = createSupabaseClient(supabaseUrl, privilegedKey.trim(), {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+          }
+        });
+      }
+      return { client: cachedPrivilegedServerClient, error: null, isServiceRole: true };
     }
   } catch (err: any) {
     console.warn("Notice: Service role client initialization deferred:", err?.message);
@@ -92,21 +100,24 @@ export const getAdminSupabaseServerClient = (): {
  * This client MUST NEVER be used for privileged writes.
  */
 export const getPublicSupabaseServerClient = (): SupabaseClient => {
-  const supabaseUrl = getSupabaseUrl();
-  const publicKey =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+  if (!cachedPublicServerClient) {
+    const supabaseUrl = getSupabaseUrl();
+    const publicKey =
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_PUBLISHABLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
 
-  return createSupabaseClient(supabaseUrl, publicKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    }
-  });
+    cachedPublicServerClient = createSupabaseClient(supabaseUrl, publicKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      }
+    });
+  }
+  return cachedPublicServerClient;
 };
 
 /**

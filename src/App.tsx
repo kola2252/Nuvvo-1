@@ -8,14 +8,11 @@ import { useApp } from './context/AppContext';
 import { Bell, X, WifiOff, Utensils } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Splash from './components/Splash';
-import Auth from './components/Auth';
 import Home from './components/Home';
 import BottomNav from './components/BottomNav';
 import DesktopSupportWidgets from './components/DesktopSupportWidgets';
 import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
-
-import OrderHistoryScreen from './components/OrderHistoryScreen';
 
 /**
  * Resilient lazy loader with automatic retries for dynamic module imports.
@@ -63,10 +60,11 @@ function safeLazy<T extends React.ComponentType<any>>(
 }
 
 // Code-split screens to optimize initial bundle and accelerate app startup
+const Auth = safeLazy(() => import('./components/Auth'));
+const OrderHistoryScreen = safeLazy(() => import('./components/OrderHistoryScreen'));
 const FavoritesScreen = safeLazy(() => import('./components/FavoritesScreen'));
 const CartScreen = safeLazy(() => import('./components/CartScreen'));
 const AccountScreen = safeLazy(() => import('./components/AccountScreen'));
-const DeliveryOptionsScreen = safeLazy(() => import('./components/DeliveryOptionsScreen'));
 const FoodDetails = safeLazy(() => import('./components/FoodDetails'));
 const TrackingScreen = safeLazy(() => import('./components/TrackingScreen'));
 const PartnerScreen = safeLazy(() => import('./components/PartnerScreen'));
@@ -177,7 +175,7 @@ export default function App() {
         }
         return <SuperAdminPanel />;
       case 'delivery-options':
-        return <DeliveryOptionsScreen />;
+        return <Home />;
       case 'map-tracking':
         return <MapTracking />;
       default:

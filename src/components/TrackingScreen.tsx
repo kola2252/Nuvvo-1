@@ -12,7 +12,7 @@ import {
   MessageSquare, Send, X, Store, ArrowLeft, ThumbsUp, Share2,
   Star, Smile, Activity, Wifi, Battery, Cpu, Terminal, Radio, RefreshCw,
   Smartphone, IndianRupee, ChefHat, Utensils, Check, PackageCheck, Sparkles, CheckCircle2,
-  Bell, BellRing
+  Bell, BellRing, FileText
 } from 'lucide-react';
 import { OrderStatus } from '../types';
 import { APIProvider, Map, AdvancedMarker, Pin, InfoWindow, MapControl, ControlPosition, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
@@ -1772,6 +1772,21 @@ export default function TrackingScreen() {
                   <Send className="w-3.5 h-3.5" /> WhatsApp
                 </a>
               </div>
+
+              {/* Customer Checkout Drop-off Notes */}
+              {(activeTrackingOrder.deliveryInstructions || activeTrackingOrder.instructions) && (
+                <div className="mt-3 p-2.5 bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800/40 rounded-2xl flex items-start gap-2">
+                  <FileText className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
+                  <div className="text-left">
+                    <span className="text-[9.5px] font-black uppercase tracking-wider text-orange-700 dark:text-orange-400 block">
+                      Customer Drop-off Instructions:
+                    </span>
+                    <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-100 mt-0.5">
+                      "{activeTrackingOrder.deliveryInstructions || activeTrackingOrder.instructions}"
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Instant Delivery Instructions Shortcut Chips */}
               <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-zinc-800/80">

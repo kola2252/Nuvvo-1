@@ -87,6 +87,18 @@ export async function downloadOrderInvoice(order: Order) {
   doc.text('Delivery Address:', margin + 6, y + 25);
   doc.text(splitAddress, margin + 32, y + 25);
 
+  const deliveryNote = order.deliveryInstructions || order.instructions;
+  if (deliveryNote) {
+    doc.setTextColor(234, 88, 12); // Orange 600
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('Drop-off Note:', margin + 6, y + 33);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(82, 82, 91);
+    const splitNote = doc.splitTextToSize(deliveryNote, 75);
+    doc.text(splitNote, margin + 28, y + 33);
+  }
+
   // Right Column: Payment & Order Info
   doc.setTextColor(161, 161, 170); // Zinc 400
   doc.setFont('helvetica', 'bold');

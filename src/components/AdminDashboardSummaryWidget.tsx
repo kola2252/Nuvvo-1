@@ -66,7 +66,7 @@ export default function AdminDashboardSummaryWidget() {
   const fetchLiveSupabaseMetrics = async (isManualRefresh: boolean = false) => {
     if (isManualRefresh) setLoading(true);
     try {
-      const result = await fetchAllOrdersFromSupabase();
+      const result = await fetchAllOrdersFromSupabase(isManualRefresh);
       if (result.data && Array.isArray(result.data)) {
         setSupabaseOrders(result.data);
         setLastSyncedAt(new Date());

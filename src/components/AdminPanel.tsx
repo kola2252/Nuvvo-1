@@ -12,7 +12,7 @@ import {
   Briefcase, MapPin, Download, Send, Globe, Award, Ban, Phone, MessageSquare, FileText, X,
   Image as ImageIcon, Camera, RefreshCw, Trash2, AlertTriangle, Sparkles, Percent,
   QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone, Star,
-  RotateCcw
+  RotateCcw, KeyRound
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { VegIndicator, FranchiseApplication, Banner } from '../types';
@@ -21,6 +21,7 @@ import AdminCatalogManager from './AdminCatalogManager';
 import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
 import { isAdminRole } from '../config/authConfig';
 import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
+import { fetchWithCache } from '../utils/apiCache';
 
 export default function AdminPanel() {
   const { 
@@ -35,7 +36,15 @@ export default function AdminPanel() {
     requestAdminSaveConfirmation
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'settings' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>(() => {
+    try {
+      const target = localStorage.getItem('nuvvo_admin_target_tab');
+      if (target === 'settings' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
+        return target;
+      }
+    } catch {}
+    return 'settings';
+  });
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'initiated' | 'awaiting_confirmation' | 'confirmed' | 'failed'>('all');
 
@@ -104,11 +113,14 @@ export default function AdminPanel() {
   });
   const [wordExportSuccess, setWordExportSuccess] = useState<string | null>(null);
 
-  const fetchPhonePeStatus = async () => {
+  const fetchPhonePeStatus = async (force: boolean = false) => {
     setPhonepeStatusLoading(true);
     try {
-      const res = await fetch('/api/payment/phonepe/status');
-      const data = await res.json();
+      const data = await fetchWithCache(
+        '/api/payment/phonepe/status',
+        undefined,
+        { staleTime: 30_000, force }
+      );
       setPhonepeStatus(data);
     } catch (err: any) {
       setPhonepeStatus({ isConfigured: false, error: err?.message || 'Failed to fetch status' });
@@ -117,17 +129,20 @@ export default function AdminPanel() {
     }
   };
 
-  const fetchWhatsappStatus = async () => {
+  const fetchWhatsappStatus = async (force: boolean = false) => {
     setWhatsappStatusLoading(true);
     try {
       const token = localStorage.getItem('nuvvo_auth_token') || '';
-      const res = await fetch('/api/admin/whatsapp/status', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'x-admin-phone': '9063692135'
-        }
-      });
-      const data = await res.json();
+      const data = await fetchWithCache(
+        '/api/admin/whatsapp/status',
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'x-admin-phone': '9063692135'
+          }
+        },
+        { staleTime: 30_000, force }
+      );
       setWhatsappStatus(data);
     } catch (err: any) {
       setWhatsappStatus({ isConfigured: false, error: err?.message || 'Failed to fetch status' });
@@ -172,6 +187,59 @@ export default function AdminPanel() {
       .then(url => setTestQrUrl(url))
       .catch(err => console.error(err));
   }, [adminPhonePeUpiId, adminMerchantName, testAmount]);
+
+  // Admin Master PIN Change States
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+  const [pinChangeLoading, setPinChangeLoading] = useState(false);
+  const [pinChangeMsg, setPinChangeMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const handleUpdateAdminPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinChangeMsg(null);
+    if (!currentPinInput.trim() || !newPinInput.trim() || !confirmPinInput.trim()) {
+      setPinChangeMsg({ text: 'All PIN fields are required.', type: 'error' });
+      return;
+    }
+    if (newPinInput.trim() !== confirmPinInput.trim()) {
+      setPinChangeMsg({ text: 'New PIN and Confirm PIN do not match.', type: 'error' });
+      return;
+    }
+    if (newPinInput.trim().length < 4 || newPinInput.trim().length > 6) {
+      setPinChangeMsg({ text: 'New PIN must be 4 to 6 digits in length.', type: 'error' });
+      return;
+    }
+
+    setPinChangeLoading(true);
+    try {
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const resp = await fetch('/api/auth/admin-update-pin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          currentPin: currentPinInput.trim(),
+          newPin: newPinInput.trim()
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        setPinChangeMsg({ text: data?.error || 'Failed to update PIN. Verify current PIN.', type: 'error' });
+      } else {
+        setPinChangeMsg({ text: 'Master Security PIN updated successfully! Stored strictly as a PBKDF2 hash on the server.', type: 'success' });
+        setCurrentPinInput('');
+        setNewPinInput('');
+        setConfirmPinInput('');
+      }
+    } catch (err: any) {
+      setPinChangeMsg({ text: err?.message || 'Network error updating PIN.', type: 'error' });
+    } finally {
+      setPinChangeLoading(false);
+    }
+  };
 
   const handleSavePhonePeSettings = (e: React.FormEvent) => {
     e.preventDefault();
@@ -614,6 +682,97 @@ export default function AdminPanel() {
 
             {/* Live Supabase Revenue & Orders Dashboard Widget with D3 Bar Chart */}
             <AdminDashboardSummaryWidget />
+
+            {/* Master Security PIN Management */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-5 h-5 text-rose-600" />
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100">
+                      Master Security PIN Management
+                    </h4>
+                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                      Update the 4-6 digit administrative Master PIN. Stored as a PBKDF2 hash on the server.
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[9px] font-mono font-bold bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 px-2 py-0.5 rounded-full uppercase">
+                  PBKDF2 Secured
+                </span>
+              </div>
+
+              {pinChangeMsg && (
+                <div className={`p-3 rounded-2xl text-xs font-semibold flex items-center gap-2 ${
+                  pinChangeMsg.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 border border-emerald-200'
+                    : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200 border border-rose-200'
+                }`}>
+                  <span>{pinChangeMsg.type === 'success' ? '✅' : '⚠️'}</span>
+                  <span>{pinChangeMsg.text}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleUpdateAdminPin} className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Current Master PIN
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={6}
+                      required
+                      placeholder="••••"
+                      value={currentPinInput}
+                      onChange={e => setCurrentPinInput(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      New PIN (4-6 Digits)
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={6}
+                      required
+                      placeholder="••••"
+                      value={newPinInput}
+                      onChange={e => setNewPinInput(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Confirm New PIN
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={6}
+                      required
+                      placeholder="••••"
+                      value={confirmPinInput}
+                      onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    disabled={pinChangeLoading}
+                    className="px-5 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition active:scale-95 cursor-pointer flex items-center gap-2"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>{pinChangeLoading ? 'Updating...' : 'Update Master PIN'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
 
             {/* Server Supabase & Service Role Key Diagnostics */}
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
@@ -1498,6 +1657,12 @@ export default function AdminPanel() {
                             <p className="text-zinc-700 dark:text-zinc-300 font-medium">
                               {or.address?.customerName} ({or.address?.mobileNumber}) • {or.address?.houseNumber || or.address?.flatNo || ''} {or.address?.streetName || or.address?.locality || or.address?.area || ''}, {or.address?.city}
                             </p>
+                            {(or.deliveryInstructions || or.instructions) && (
+                              <div className="mt-1 pt-1 border-t border-slate-200/60 dark:border-zinc-800 text-[10px] text-amber-700 dark:text-amber-400 font-semibold flex items-start gap-1">
+                                <span>📝 Drop Instructions:</span>
+                                <span className="font-medium text-zinc-800 dark:text-zinc-200">{or.deliveryInstructions || or.instructions}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -2605,7 +2770,7 @@ export default function AdminPanel() {
 
                 <button
                   type="button"
-                  onClick={fetchWhatsappStatus}
+                  onClick={() => fetchWhatsappStatus()}
                   disabled={whatsappStatusLoading}
                   className="px-2.5 py-1 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 rounded-lg transition flex items-center gap-1 cursor-pointer"
                 >

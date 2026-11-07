@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { 
   User, FoodItem, Restaurant, CartItem, Order, OrderStatus, 
   DeliveryPartnerProfile, FranchiseApplication, Address, Coupon, AuditLog,
   AppNotification, Banner, PointsTransaction, RestaurantReview, ScheduledNotification,
   RiderEarningRecord, RiderPayout, SimulatedEmail, MerchantPayout, AppTheme,
   DesignatedAdmin, AdminPermissions, PaymentMethodType, VegIndicator, AppLanguage, ReferralSettings,
-  PaymentStatusType, StorePaymentSettings
+  PaymentStatusType, StorePaymentSettings, StaffSalaryPayment
 } from '../types';
 import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
 import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
@@ -40,6 +40,7 @@ import {
   mapSupabaseRowToOrder 
 } from '../services/supabaseOrders';
 import { getAppSettingFromSupabase, saveAppSettingToSupabase } from '../services/supabaseSettings';
+import { fetchWithCache, queryClient } from '../utils/apiCache';
 
 function safeParse<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -108,6 +109,15 @@ interface AppContextProps {
   loginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; error?: string; sessionOtp?: string; devOtp?: string; isDevTesting?: boolean; setupNotice?: string; smsConfigured?: boolean; expiresInSeconds?: number }>;
   verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
   directLoginWithPhone: (phone: string, role?: string, masterPin?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
+  sendCustomerEmailOtp: (email: string, fullName: string, location: string) => Promise<{ success: boolean; message?: string; challengeToken?: string; isSimulatedDelivery?: boolean; defaultOtp?: string; error?: string }>;
+  verifyCustomerEmailOtp: (email: string, otp: string, challengeToken?: string) => Promise<{ success: boolean; token?: string; error?: string }>;
+  setupCustomerProfile: (data: { username: string; password: string; mobile: string; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }) => Promise<{ success: boolean; user?: any; error?: string }>;
+  loginCustomerWithPassword: (identifier: string, password: string) => Promise<{ success: boolean; user?: any; role?: string; token?: string; error?: string }>;
+  resetCustomerPassword: (email: string, otp: string, newPassword: string) => Promise<{ success: boolean; error?: string; message?: string }>;
+  deleteCustomerAccount: (password: string) => Promise<{ success: boolean; error?: string; message?: string }>;
+  recordStaffSalaryPayment: (staffId: string, payment: { monthYear: string; amount: number; paymentDate: string; paymentMode: 'Bank Transfer' | 'UPI' | 'Cash' | 'Cheque'; referenceId: string; notes?: string }) => { success: boolean; error?: string };
+  adminCheckPhone: (phone: string) => Promise<{ success: boolean; promptForPin: boolean; maskedPhone?: string; error?: string }>;
+  adminVerifyPin: (phone: string, pin: string) => Promise<{ success: boolean; role?: string; token?: string; error?: string }>;
   completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => void;
   updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => void;
   logoutUser: () => void;
@@ -965,20 +975,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isSuperAdmin = isSuperAdminRole(user?.role) && isAuthorizedPhone;
   const isAdmin = (isAdminRole(user?.role) && isAuthorizedPhone) || isSuperAdmin;
 
-  // Verify server session role on startup and page refresh
+  // Verify server session role on startup and page refresh with query memoization
   useEffect(() => {
     const token = localStorage.getItem('nuvvo_auth_token');
     if (!token) return;
 
-    fetch('/api/auth/verify-role', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ token })
+    queryClient.fetchQuery<{ isAuthorizedAdmin?: boolean; role?: string; phone?: string }>({
+      queryKey: ['verify_role', token],
+      staleTime: 300_000, // 5 minutes
+      queryFn: async () => {
+        const res = await fetch('/api/auth/verify-role', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ token })
+        });
+        if (!res.ok) throw new Error('Role verification failed');
+        return res.json();
+      }
     })
-      .then(res => res.json())
       .then(data => {
         if (data && data.isAuthorizedAdmin) {
           const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
@@ -1637,60 +1654,85 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [foodCatalogList]);
 
-  // Fetch food items directly from Supabase public.food_items table and backend dishes
+  const catalogFetchInFlightRef = useRef<Promise<void> | null>(null);
+  const lastCatalogFetchAtRef = useRef<number>(0);
+
+  // Fetch food items with in-flight deduplication and 2-minute stale-time caching
   const fetchSupabaseCatalog = async (silent: boolean = false) => {
+    if (catalogFetchInFlightRef.current) {
+      return catalogFetchInFlightRef.current;
+    }
+
+    // Throttle background silent refreshes to at least 60 seconds apart
+    const now = Date.now();
+    if (silent && now - lastCatalogFetchAtRef.current < 60_000) {
+      return;
+    }
+
     if (!silent) setFoodLoading(true);
-    try {
-      // 1. Fetch from backend /api/dishes (which merges Supabase rows + persistent server dishes + defaults)
-      let dishesFromEndpoint: FoodItem[] = [];
+
+    const task = (async () => {
       try {
-        const serverRes = await fetch('/api/dishes');
-        if (serverRes.ok) {
-          const serverData = await serverRes.json();
-          if (Array.isArray(serverData) && serverData.length > 0) {
-            dishesFromEndpoint = serverData;
+        // 1. Primary: Query via TanStack Query memoized getFoodItemsFromSupabase (2m staleTime, falls back to /api/dishes automatically)
+        let dishesFromSupabase: FoodItem[] = [];
+        let dishesFromEndpoint: FoodItem[] = [];
+
+        try {
+          const { data, error } = await getFoodItemsFromSupabase(false);
+          if (!error && Array.isArray(data) && data.length > 0) {
+            dishesFromSupabase = data;
+          }
+        } catch (err) {
+          console.warn('Direct Supabase fetch:', err);
+        }
+
+        // 2. Only hit /api/dishes if direct Supabase returned empty or we need server-stored dishes
+        if (dishesFromSupabase.length === 0) {
+          try {
+            const serverData = await fetchWithCache<FoodItem[]>('/api/dishes', undefined, {
+              staleTime: 120_000,
+              force: false
+            });
+            if (Array.isArray(serverData) && serverData.length > 0) {
+              dishesFromEndpoint = serverData;
+            }
+          } catch (err) {
+            console.warn('Could not fetch /api/dishes:', err);
           }
         }
-      } catch (err) {
-        console.warn('Could not fetch /api/dishes:', err);
-      }
 
-      // 2. Fetch directly from Supabase public.food_items to catch any live client writes
-      let dishesFromSupabase: FoodItem[] = [];
-      try {
-        const { data, error } = await getFoodItemsFromSupabase();
-        if (!error && Array.isArray(data) && data.length > 0) {
-          dishesFromSupabase = data;
+        // 3. Merge baseline dishes + endpoint dishes + Supabase dishes without losing menu items
+        const baseDishes = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
+        const dishMap = new Map<string, FoodItem>();
+
+        baseDishes.forEach(d => dishMap.set(String(d.id), d));
+        dishesFromEndpoint.forEach(d => dishMap.set(String(d.id), d));
+        dishesFromSupabase.forEach(d => dishMap.set(String(d.id), d));
+
+        const storedDeleted = new Set<string>(safeParse<string[]>('nuvvo_deleted_dish_ids', []));
+        const mergedList = Array.from(dishMap.values()).filter(d => !storedDeleted.has(String(d.id)));
+        lastCatalogFetchAtRef.current = Date.now();
+
+        if (mergedList.length > 0) {
+          setFoodCatalogList(mergedList);
+          setSupabaseConnected(true);
+          setFoodError(null);
+          try {
+            localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(mergedList));
+          } catch {}
+        } else {
+          setSupabaseConnected(true);
         }
-      } catch (err) {
-        console.warn('Direct Supabase fetch:', err);
+      } catch (err: any) {
+        console.warn('Supabase catalog fetch exception:', err);
+      } finally {
+        catalogFetchInFlightRef.current = null;
+        if (!silent) setFoodLoading(false);
       }
+    })();
 
-      // 3. Merge baseline dishes + endpoint dishes + Supabase dishes without losing menu items
-      const baseDishes = [...CHIRALA_TOP13_FOOD_ITEMS, ...FOOD_CATALOG.slice(0, 15)];
-      const dishMap = new Map<string, FoodItem>();
-
-      baseDishes.forEach(d => dishMap.set(String(d.id), d));
-      dishesFromEndpoint.forEach(d => dishMap.set(String(d.id), d));
-      dishesFromSupabase.forEach(d => dishMap.set(String(d.id), d));
-
-      const storedDeleted = new Set<string>(safeParse<string[]>('nuvvo_deleted_dish_ids', []));
-      const mergedList = Array.from(dishMap.values()).filter(d => !storedDeleted.has(String(d.id)));
-      if (mergedList.length > 0) {
-        setFoodCatalogList(mergedList);
-        setSupabaseConnected(true);
-        setFoodError(null);
-        try {
-          localStorage.setItem('nuvo_cached_food_catalog', JSON.stringify(mergedList));
-        } catch {}
-      } else {
-        setSupabaseConnected(true);
-      }
-    } catch (err: any) {
-      console.warn('Supabase catalog fetch exception:', err);
-    } finally {
-      if (!silent) setFoodLoading(false);
-    }
+    catalogFetchInFlightRef.current = task;
+    return task;
   };
 
   // Initial load, Realtime Postgres Changes & Broadcast Fallback listener
@@ -1882,86 +1924,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
       .subscribe();
 
-    // Realtime Server-Sent Events (SSE) listener as triple redundancy alongside Supabase CDC and Broadcast
-    let sseSource: EventSource | null = null;
-    try {
-      if (typeof window !== 'undefined' && 'EventSource' in window) {
-        sseSource = new EventSource('/api/catalog/stream');
-        sseSource.onmessage = (event) => {
-          try {
-            if (!event.data) return;
-            const msg = JSON.parse(event.data);
-            if (msg.event === 'dish_created' && msg.payload) {
-              const d = msg.payload;
-              setFoodCatalogList(prev => {
-                if (prev.some(item => String(item.id) === String(d.id))) {
-                  return prev.map(item => String(item.id) === String(d.id) ? { ...item, ...d } : item);
-                }
-                return [d, ...prev];
-              });
-            } else if (msg.event === 'dish_updated' && msg.payload) {
-              const d = msg.payload;
-              setFoodCatalogList(prev => prev.map(item => String(item.id) === String(d.id) ? { ...item, ...d } : item));
-            } else if (msg.event === 'dish_deleted' && msg.payload?.id) {
-              const delId = String(msg.payload.id);
-              setFoodCatalogList(prev => prev.filter(item => String(item.id) !== delId));
-            } else if (msg.event === 'restaurant_created' && msg.payload) {
-              const r = msg.payload;
-              setRestaurantsList(prev => {
-                if (prev.some(item => String(item.id) === String(r.id))) {
-                  return prev.map(item => String(item.id) === String(r.id) ? { ...item, ...r } : item);
-                }
-                return [r, ...prev];
-              });
-            } else if (msg.event === 'restaurant_updated' && msg.payload) {
-              const r = msg.payload;
-              setRestaurantsList(prev => prev.map(item => String(item.id) === String(r.id) ? { ...item, ...r } : item));
-            } else if (msg.event === 'restaurant_deleted' && msg.payload?.id) {
-              const delId = String(msg.payload.id);
-              setRestaurantsList(prev => prev.filter(item => String(item.id) !== delId));
-            } else if (msg.event === 'catalog_seeded') {
-              fetchSupabaseCatalog(true);
-            }
-          } catch {}
-        };
-        let sseErrorCount = 0;
-        sseSource.onerror = () => {
-          sseErrorCount += 1;
-          if (sseErrorCount > 2) {
-            try { sseSource?.close(); } catch {}
-          }
-        };
-      }
-    } catch {}
-
-    // App Resume / Network Reconnect Listeners for Play Store / Mobile reliability
+    // App Resume / Network Reconnect Listeners with 2-minute focus throttling (prevents rate limits)
     const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && queryClient.shouldRefetchOnFocus('app_catalog_focus', 120_000)) {
         fetchSupabaseCatalog(true);
       }
     };
     const handleOnline = () => {
-      fetchSupabaseCatalog(true);
+      if (queryClient.shouldRefetchOnFocus('app_catalog_online', 60_000)) {
+        fetchSupabaseCatalog(true);
+      }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-    window.addEventListener('focus', handleVisibilityOrFocus);
     window.addEventListener('online', handleOnline);
 
-    // Silent periodic background poll every 45 seconds (safety fallback in case mobile OS pauses WebSockets)
+    // Silent periodic background poll every 5 minutes (safety fallback in case mobile OS pauses WebSockets)
     const pollTimer = setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchSupabaseCatalog(true);
       }
-    }, 45000);
+    }, 300_000);
 
     return () => {
-      if (sseSource) {
-        sseSource.close();
-      }
       supabase.removeChannel(channel);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
       window.removeEventListener('online', handleOnline);
       clearInterval(pollTimer);
     };
@@ -3384,44 +3371,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const isAdminTarget = cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin';
 
     if (isAdminTarget) {
-      const pin = String(masterPin || '').trim();
-      // Confirm that ONLY the authorized administrator who knows Master PIN (2135) can use Skip OTP!
-      if (pin === '2135' || pin === '9063') {
-        const adminUser: User = {
-          id: `usr_admin_${cleanPhone}`,
-          name: 'Nuvvo Super Admin',
-          phone: cleanPhone,
-          email: 'admin@nuvvo.delivery',
-          addresses: [
-            {
-              id: 'addr_admin_hq',
-              type: 'Work',
-              flatNo: 'Nuvvo Operations Central HQ',
-              area: 'Chirala Central Hub',
-              landmark: 'Near Clock Tower',
-              city: 'Chirala',
-              gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
-            }
-          ],
-          role: 'Super Admin',
-          isProfileComplete: true,
-          favoriteFoods: [],
-          favoriteRestaurants: [],
-          createdAt: new Date().toISOString()
+      if (!masterPin) {
+        return {
+          success: false,
+          error: 'Administrator PIN authorization required.'
         };
-        setUser(adminUser);
-        localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
-        localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
-        setSuperAdminAuthenticated(true);
-        addAuditLog('Admin Direct Access', `Admin identity confirmed via Master PIN 2135 on ${cleanPhone}. Super Admin unlocked.`);
-        return { success: true, role: 'super_admin', isAuthorizedAdmin: true };
       }
-
-      // If no valid pin was provided for the admin number:
-      return {
-        success: false,
-        error: 'Admin Confirmation Required: Enter Master PIN (2135) to confirm owner identity.'
-      };
+      return await adminVerifyPin(cleanPhone, masterPin);
     }
 
     const resolvedRole: 'Customer' | 'Delivery Partner' | 'Franchise' = 
@@ -3442,7 +3398,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         parsed.phone = cleanPhone;
         setUser(parsed);
         localStorage.setItem('nuvvo_user', JSON.stringify(parsed));
-        addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly via Quick Access.`);
+        addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly.`);
         return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
       } catch {}
     }
@@ -3474,8 +3430,325 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('nuvvo_user', JSON.stringify(newUser));
     } catch {}
 
-    addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly via Quick Access.`);
+    addAuditLog('Direct Customer Login', `Customer ${cleanPhone} entered app directly.`);
     return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
+  };
+
+  // --- COMPLETE EMAIL OTP & PASSWORD CUSTOMER AUTH ---
+  const sendCustomerEmailOtp = async (email: string, fullName: string, location: string): Promise<{ success: boolean; message?: string; challengeToken?: string; isSimulatedDelivery?: boolean; defaultOtp?: string; error?: string }> => {
+    try {
+      const resp = await fetch('/api/auth/send-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), fullName: fullName.trim(), location: location.trim() })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Failed to dispatch email verification code. Please check your email address and try again.'
+        };
+      }
+      if (data.challengeToken) {
+        try {
+          sessionStorage.setItem('nuvvo_email_challenge', data.challengeToken);
+        } catch {}
+      }
+      return {
+        success: true,
+        message: data.message,
+        challengeToken: data.challengeToken
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error occurred while contacting email OTP service. Please retry.'
+      };
+    }
+  };
+
+  const verifyCustomerEmailOtp = async (email: string, otp: string, challengeToken?: string): Promise<{ success: boolean; token?: string; error?: string }> => {
+    try {
+      const effectiveChallenge = challengeToken || sessionStorage.getItem('nuvvo_email_challenge') || undefined;
+      const resp = await fetch('/api/auth/verify-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), otp: String(otp).trim(), challengeToken: effectiveChallenge })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Invalid or expired email OTP. Please check the 6-digit code or request a new code.'
+        };
+      }
+      if (data.token) {
+        localStorage.setItem('nuvvo_auth_token', data.token);
+      }
+      return { success: true, token: data.token };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Verification network error. Please try again.'
+      };
+    }
+  };
+
+  const setupCustomerProfile = async (data: { username: string; password: string; mobile: string; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }): Promise<{ success: boolean; user?: any; error?: string }> => {
+    try {
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const resp = await fetch('/api/auth/setup-profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(data)
+      });
+      const resData = await resp.json().catch(() => null);
+      if (!resp.ok || !resData?.success) {
+        return {
+          success: false,
+          error: resData?.error || 'Failed to complete profile registration.'
+        };
+      }
+
+      if (resData.user) {
+        const u = resData.user;
+        const mappedUser: User = {
+          id: u.id,
+          name: u.name,
+          phone: u.phone,
+          email: u.email,
+          username: u.username,
+          location: u.location,
+          addresses: u.addresses || [],
+          role: 'Customer',
+          isProfileComplete: true,
+          favoriteFoods: [],
+          favoriteRestaurants: [],
+          createdAt: u.createdAt || new Date().toISOString()
+        };
+        setUser(mappedUser);
+        localStorage.setItem(`nuvvo_registered_${u.phone}`, JSON.stringify(mappedUser));
+        localStorage.setItem('nuvvo_user', JSON.stringify(mappedUser));
+        addAuditLog('Profile Created', `Customer @${u.username} (${u.email}) completed profile setup.`);
+      }
+
+      return { success: true, user: resData.user };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error occurred while saving profile details.'
+      };
+    }
+  };
+
+  const loginCustomerWithPassword = async (identifier: string, password: string): Promise<{ success: boolean; user?: any; role?: string; token?: string; error?: string }> => {
+    try {
+      const resp = await fetch('/api/auth/customer-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: identifier.trim(), password })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Invalid credentials. Please verify your username/email and password.'
+        };
+      }
+
+      if (data.token) {
+        localStorage.setItem('nuvvo_auth_token', data.token);
+      }
+
+      if (data.user) {
+        const u = data.user;
+        const mappedUser: User = {
+          id: u.id,
+          name: u.name,
+          phone: u.phone,
+          email: u.email,
+          username: u.username,
+          location: u.location,
+          addresses: u.addresses || [],
+          role: 'Customer',
+          isProfileComplete: true,
+          favoriteFoods: [],
+          favoriteRestaurants: [],
+          createdAt: u.createdAt || new Date().toISOString()
+        };
+        setUser(mappedUser);
+        localStorage.setItem(`nuvvo_registered_${u.phone}`, JSON.stringify(mappedUser));
+        localStorage.setItem('nuvvo_user', JSON.stringify(mappedUser));
+        addAuditLog('Customer Login', `Customer @${u.username || u.email} logged in with custom password.`);
+      }
+
+      return { success: true, user: data.user, role: data.role, token: data.token };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Failed to authenticate with server. Please try again.'
+      };
+    }
+  };
+
+  const resetCustomerPassword = async (email: string, otp: string, newPassword: string): Promise<{ success: boolean; error?: string; message?: string }> => {
+    try {
+      const resp = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), otp: String(otp).trim(), newPassword })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Failed to reset password. Please check the code or try again.'
+        };
+      }
+      return { success: true, message: data.message || 'Password updated successfully!' };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error occurred while resetting password.'
+      };
+    }
+  };
+
+  const deleteCustomerAccount = async (password: string): Promise<{ success: boolean; error?: string; message?: string }> => {
+    try {
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const email = user?.email || '';
+      const phone = user?.phone || '';
+      const resp = await fetch('/api/auth/delete-account', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ password, email, phone })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Failed to delete account. Please verify your current password.'
+        };
+      }
+      logoutUser();
+      return { success: true, message: data.message || 'Account successfully deleted and anonymized.' };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error occurred during account deletion.'
+      };
+    }
+  };
+
+  // --- SECURE SERVER ADMIN PHONE & PIN AUTHENTICATION ---
+  const adminCheckPhone = async (phone: string): Promise<{ success: boolean; promptForPin: boolean; maskedPhone?: string; error?: string }> => {
+    try {
+      let resp = await fetch('/api/admin/check-phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone })
+      });
+
+      if (!resp.ok && resp.status === 404) {
+        resp = await fetch('/api/auth/admin-check-phone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone })
+        });
+      }
+
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success || !data?.promptForPin || !data?.isAuthorizedAdmin) {
+        return {
+          success: false,
+          promptForPin: false,
+          error: data?.error || 'Access Denied: This mobile number is not associated with an authorized Admin or Super Admin account.'
+        };
+      }
+      return {
+        success: true,
+        promptForPin: true,
+        maskedPhone: data.maskedPhone
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        promptForPin: false,
+        error: err?.message || 'Network error verifying administrator cellular identity.'
+      };
+    }
+  };
+
+  const adminVerifyPin = async (phone: string, pin: string): Promise<{ success: boolean; role?: string; token?: string; error?: string }> => {
+    try {
+      let resp = await fetch('/api/admin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, pin })
+      });
+
+      if (!resp.ok && resp.status === 404) {
+        resp = await fetch('/api/auth/admin-verify-pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, pin })
+        });
+      }
+
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'PIN verification failed. Please enter the correct PIN.'
+        };
+      }
+
+      if (data.token) {
+        localStorage.setItem('nuvvo_auth_token', data.token);
+      }
+
+      const cleanPhone = normalizePhoneNumber(phone);
+      const adminUser: User = {
+        id: `usr_admin_${cleanPhone}`,
+        name: 'Nuvvo Super Admin',
+        phone: cleanPhone,
+        email: 'admin@nuvvo.delivery',
+        addresses: [
+          {
+            id: 'addr_admin_hq',
+            type: 'Work',
+            flatNo: 'Nuvvo Operations Central HQ',
+            area: 'Chirala Central Hub',
+            landmark: 'Near Clock Tower',
+            city: 'Chirala',
+            gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+          }
+        ],
+        role: 'Super Admin',
+        isProfileComplete: true,
+        favoriteFoods: [],
+        favoriteRestaurants: [],
+        createdAt: new Date().toISOString()
+      };
+      setUser(adminUser);
+      localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
+      localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
+      setSuperAdminAuthenticated(true);
+      addAuditLog('Admin Direct Access', `Admin identity confirmed strictly by server on ${cleanPhone}. Super Admin unlocked.`);
+      return { success: true, role: data.role, token: data.token };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error during PIN authorization.'
+      };
+    }
   };
 
   const completeUserProfile = (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => {
@@ -3795,6 +4068,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'accepted',
       address: currentAddress,
       instructions: orderInstructions,
+      deliveryInstructions: orderInstructions,
       couponUsed: appliedCoupon?.code,
       paymentMethod,
       paymentStatus: initialPaymentStatus,
@@ -4988,7 +5262,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     aadhaar: string = '',
     drivingLicense: string = '',
     avatar: string = '',
-    isApproved: boolean = true
+    isApproved: boolean = true,
+    monthlySalary: number = 15000
   ) => {
     if (!isAdmin && !isSuperAdmin) {
       alert('Access Denied: Only authorized Admin or Super Admin can manage delivery partners.');
@@ -5015,30 +5290,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       completedOrdersCount: 0,
       currentLocation: { lat: 15.8246 + (Math.random() - 0.5) * 0.015, lng: 80.3533 + (Math.random() - 0.5) * 0.015 },
       walletBalance: initialBalance,
-      earnings: []
+      earnings: [],
+      monthlySalary: monthlySalary || 15000,
+      salaryPayments: []
     };
     
     setDeliveryPartners(prev => [...prev, newPartner]);
-    addAuditLog('Rider Onboarded', `Administrator manual onboarding completed: ${name} (+91 ${phone})`);
+    addAuditLog('Staff Onboarded', `Administrator internal delivery staff onboarding completed: ${name} (+91 ${phone}) with monthly salary ₹${monthlySalary || 15000}`);
     
     // Auto-generate notifications
     const newNotis = [
       {
         id: `noti_rider_reg_${Date.now()}`,
-        title: 'New Rider Registered',
-        message: `Rider ${name} registered successfully for vehicle type ${vehicleType}.`,
+        title: 'New Staff Registered',
+        body: `Delivery staff ${name} registered with monthly salary ₹${monthlySalary || 15000}.`,
         timestamp: new Date().toISOString(),
         read: false
       },
       ...(!isApproved ? [{
         id: `noti_rider_doc_${Date.now()}`,
         title: 'Document Approval Pending',
-        message: `Verify documents (Aadhaar & DL) submitted by ${name}.`,
+        body: `Verify documents (Aadhaar & DL) submitted by ${name}.`,
         timestamp: new Date().toISOString(),
         read: false
       }] : [])
     ];
     setNotifications(prev => [...newNotis, ...prev]);
+  };
+
+  const recordStaffSalaryPayment = (staffId: string, payment: { monthYear: string; amount: number; paymentDate: string; paymentMode: 'Bank Transfer' | 'UPI' | 'Cash' | 'Cheque'; referenceId: string; notes?: string }): { success: boolean; error?: string } => {
+    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+      return { success: false, error: 'Access Denied: Only Admin or Super Admin can disburse staff salaries.' };
+    }
+
+    const partner = deliveryPartners.find(p => p.id === staffId);
+    if (!partner) {
+      return { success: false, error: 'Staff member not found.' };
+    }
+
+    const existingPayments = partner.salaryPayments || [];
+    // Prevent duplicate salary payments for the same staff member and month!
+    const duplicate = existingPayments.find(p => p.monthYear.trim().toLowerCase() === payment.monthYear.trim().toLowerCase());
+    if (duplicate) {
+      return {
+        success: false,
+        error: `Duplicate payment blocked: Salary for ${payment.monthYear} has already been recorded for ${partner.name} (Ref #${duplicate.referenceId} on ${duplicate.paymentDate}).`
+      };
+    }
+
+    const newPayment: StaffSalaryPayment = {
+      id: `sal_${staffId}_${Date.now()}`,
+      staffId,
+      staffName: partner.name,
+      monthYear: payment.monthYear.trim(),
+      amount: Number(payment.amount),
+      paymentDate: payment.paymentDate,
+      paymentMode: payment.paymentMode,
+      referenceId: payment.referenceId || `SAL-${Date.now().toString().slice(-6)}`,
+      notes: payment.notes || '',
+      recordedAt: new Date().toISOString(),
+      recordedBy: user?.name || user?.phone || 'Chirala Central Operations'
+    };
+
+    const updated = [newPayment, ...existingPayments];
+    setDeliveryPartners(prev => prev.map(p => p.id === staffId ? { ...p, salaryPayments: updated } : p));
+    addAuditLog('Salary Payment Recorded', `Disbursed ₹${payment.amount} salary for ${partner.name} (${payment.monthYear}) via ${payment.paymentMode}. Ref: ${newPayment.referenceId}`);
+    return { success: true };
   };
 
   const updateRiderStatus = (id: string, isApproved: boolean, status: DeliveryPartnerProfile['status']) => {
@@ -5653,7 +5970,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentTheme, setThemeId, themesList,
       cartSuccessAnimation, setCartSuccessAnimation,
       isOffline,
-      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
+      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, 
+      sendCustomerEmailOtp, verifyCustomerEmailOtp, setupCustomerProfile, loginCustomerWithPassword, 
+      resetCustomerPassword, deleteCustomerAccount, recordStaffSalaryPayment,
+      adminCheckPhone, adminVerifyPin,
+      completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
       referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
       storePaymentSettings, updateStorePaymentSettings,
       currentAddress, setCurrentAddress,

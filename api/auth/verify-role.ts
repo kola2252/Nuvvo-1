@@ -2,7 +2,7 @@ import {
   parseRequestBody,
   sendJsonResponse,
   verifySignedSessionJwt
-} from "./_auth-utils.ts";
+} from "../../lib/auth-utils";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight OPTIONS request
