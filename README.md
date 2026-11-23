@@ -58,9 +58,23 @@ npm run cap:open
 
 **Prerequisites:**  Node.js
 
-
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Supabase Auth Email OTP Template Configuration
+
+For customer registration and login with 6-digit OTP codes via Supabase Auth `signInWithOtp()` and `verifyOtp()`:
+
+1. Open your **Supabase Dashboard** -> **Authentication** -> **Email Templates** -> **Magic Link**.
+2. **Subject:** `Your Nuvvo Verification Code: {{ .Token }}`
+3. **Body:**
+   ```html
+   <h2>Your Nuvvo Verification Code</h2>
+   <p>Your 6-digit verification code is: <strong>{{ .Token }}</strong></p>
+   <p>This code is valid for 5 minutes. Enter this code on the verification screen to complete your login.</p>
+   ```
+4. **Important:** The template **MUST use `{{ .Token }}` instead of `{{ .ConfirmationURL }}`**. Using `{{ .ConfirmationURL }}` attempts to generate a clickable magic link instead of rendering the numeric OTP required by `supabase.auth.verifyOtp({ email, token, type: 'email' })`.
+

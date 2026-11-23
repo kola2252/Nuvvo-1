@@ -30,17 +30,32 @@ import {
   broadcastHotelMutation,
   CLIENT_SESSION_ID
 } from '../services/supabaseFood';
-import { supabase } from '../utils/supabase/client';
-import { 
-  saveOrderToSupabase, 
-  updateOrderInSupabase, 
-  fetchUserOrdersFromSupabase, 
-  fetchAllOrdersFromSupabase, 
-  LIVE_ORDERS_CHANNEL, 
-  mapSupabaseRowToOrder 
+import {
+  supabase,
+  getInitialAuthRedirectState,
+  setAuthPersistencePreference,
+  getAuthPersistencePreference,
+  clearAllSupabaseAuthStorage,
+  getActiveAuthToken
+} from '../utils/supabase/client';
+import {
+  saveOrderToSupabase,
+  updateOrderInSupabase,
+  fetchUserOrdersFromSupabase,
+  fetchAllOrdersFromSupabase,
+  LIVE_ORDERS_CHANNEL,
+  mapSupabaseRowToOrder
 } from '../services/supabaseOrders';
 import { getAppSettingFromSupabase, saveAppSettingToSupabase } from '../services/supabaseSettings';
 import { fetchWithCache, queryClient } from '../utils/apiCache';
+import { tanstackQueryClient } from '../utils/tanstackQuery';
+import {
+  getUserScopedItem,
+  setUserScopedItem,
+  clearCustomerScopedCache,
+  clearUnscopedLegacyCustomerCache
+} from '../utils/userScopedStorage';
+import { logEmailOtpAttempt } from '../services/supabaseEmailLogs';
 
 function safeParse<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -106,20 +121,29 @@ interface AppContextProps {
   setLanguage: (lang: AppLanguage) => void;
   otpCode: string;
   setOtpCode: (code: string) => void;
+  isPasswordRecoveryMode: boolean;
+  authRecoveryError: string | null;
+  clearAuthRecoveryError: () => void;
+  cancelPasswordRecoveryMode: () => void;
   loginWithPhone: (phone: string, role?: string) => Promise<{ success: boolean; error?: string; sessionOtp?: string; devOtp?: string; isDevTesting?: boolean; setupNotice?: string; smsConfigured?: boolean; expiresInSeconds?: number }>;
   verifyOtpAndLogin: (phone: string, otp: string, role?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
   directLoginWithPhone: (phone: string, role?: string, masterPin?: string) => Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }>;
-  sendCustomerEmailOtp: (email: string, fullName: string, location: string) => Promise<{ success: boolean; message?: string; challengeToken?: string; isSimulatedDelivery?: boolean; defaultOtp?: string; error?: string }>;
+  sendCustomerEmailOtp: (email: string, fullName: string, location: string, retryCount?: number) => Promise<{ success: boolean; message?: string; challengeToken?: string; retry_count?: number; error?: string }>;
   verifyCustomerEmailOtp: (email: string, otp: string, challengeToken?: string) => Promise<{ success: boolean; token?: string; error?: string }>;
-  setupCustomerProfile: (data: { username: string; password: string; mobile: string; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }) => Promise<{ success: boolean; user?: any; error?: string }>;
-  loginCustomerWithPassword: (identifier: string, password: string) => Promise<{ success: boolean; user?: any; role?: string; token?: string; error?: string }>;
+  setupCustomerProfile: (data: { username: string; password: string; mobile: string; whatsappNumber?: string; whatsappOptIn?: boolean; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }) => Promise<{ success: boolean; user?: any; error?: string }>;
+  registerCustomerWithPassword: (data: { fullName: string; username: string; email: string; mobile: string; location: string; deliveryAddress: string; password: string; confirmPassword: string; landmark?: string; city?: string; whatsappNumber?: string; whatsappOptIn?: boolean; rememberMe?: boolean }) => Promise<{ success: boolean; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }>;
+  loginCustomerWithPassword: (identifier: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }>;
+  resendCustomerVerificationEmail: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  requestCustomerPasswordReset: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  completeCustomerPasswordRecovery: (newPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  changeCustomerPassword: (currentPassword: string, newPassword: string, confirmPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   resetCustomerPassword: (email: string, otp: string, newPassword: string) => Promise<{ success: boolean; error?: string; message?: string }>;
   deleteCustomerAccount: (password: string) => Promise<{ success: boolean; error?: string; message?: string }>;
   recordStaffSalaryPayment: (staffId: string, payment: { monthYear: string; amount: number; paymentDate: string; paymentMode: 'Bank Transfer' | 'UPI' | 'Cash' | 'Cheque'; referenceId: string; notes?: string }) => { success: boolean; error?: string };
   adminCheckPhone: (phone: string) => Promise<{ success: boolean; promptForPin: boolean; maskedPhone?: string; error?: string }>;
   adminVerifyPin: (phone: string, pin: string) => Promise<{ success: boolean; role?: string; token?: string; error?: string }>;
   completeUserProfile: (name: string, email: string, address: Address, preferredLanguage?: AppLanguage, phone?: string) => void;
-  updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => void;
+  updateUserProfile: (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage, whatsappPrefs?: { whatsappNumber?: string; whatsappOptIn?: boolean; whatsappOptInAt?: string; whatsappOptInSource?: 'registration' | 'checkout' | 'profile' }, extraProfile?: { location?: string; deliveryAddress?: string }) => Promise<{ success: boolean; error?: string }>;
   logoutUser: () => void;
   updateUserAddresses: (addresses: Address[]) => void;
   currentAddress: Address | null;
@@ -175,9 +199,17 @@ interface AppContextProps {
 
   // Orders
   orders: Order[];
-  createNewOrder: (paymentMethod?: PaymentMethodType | string, phonePeNoOrDetails?: any, scheduledTime?: string) => Order | null;
+  createNewOrder: (
+    paymentMethod?: PaymentMethodType | string,
+    phonePeNoOrDetails?: any,
+    scheduledTime?: string,
+    checkoutWhatsapp?: { customerWhatsappNumber?: string; whatsappOptIn?: boolean; customerEmail?: string }
+  ) => Order | null;
   reorderItems: (order: Order) => void;
   changeOrderStatus: (orderId: string, status: OrderStatus, isSystemSimulation?: boolean) => void;
+  cancelOrder: (orderId: string, clearFromHistory?: boolean) => Promise<{ success: boolean; cleared?: boolean; error?: string }>;
+  removeOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
+  clearOrderHistory: (phone?: string) => Promise<{ success: boolean; count?: number; error?: string }>;
   submitOrderRating: (orderId: string, rating: number, feedback?: string) => void;
   submitDeliveryPartnerRating: (orderId: string, rating: number, feedback?: string, tags?: string[]) => void;
   updateOrderPaymentStatus: (orderId: string, paymentStatus: PaymentStatusType | string, notes?: string) => void;
@@ -473,12 +505,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Authentication
   const [user, setUser] = useState<User | null>(() => {
-    const existing = safeParse<User | null>('nuvvo_user', null);
-    // If user exists and is not the outdated dummy placeholder, return it
-    if (existing && existing.phone && existing.phone !== '9999911111') {
-      return existing;
+    let existing = safeParse<User | null>('nuvvo_user', null);
+    if (!existing && typeof window !== 'undefined') {
+      try {
+        const sRaw = window.sessionStorage.getItem('nuvvo_user');
+        if (sRaw) existing = JSON.parse(sRaw);
+      } catch {}
     }
-    // Purge fake dummy user from localStorage so only the actual login phone number is visible
+    if (existing && existing.phone !== '9999911111') {
+      // Preserve verified Admin/Franchise UI cache synchronously while Customer sessions
+      // are strictly verified against Supabase Auth on mount below.
+      if (existing.role && existing.role !== 'Customer') {
+        return existing;
+      }
+      const hasToken = Boolean(
+        localStorage.getItem('nuvvo_auth_token') ||
+        (typeof window !== 'undefined' && window.sessionStorage.getItem('nuvvo_auth_token'))
+      );
+      if (hasToken) {
+        return existing;
+      }
+    }
     try {
       if (existing?.phone === '9999911111') {
         localStorage.removeItem('nuvvo_user');
@@ -487,6 +534,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return null;
   });
   const [otpCode, setOtpCode] = useState<string>(''); // Clean OTP state
+  const initialAuthRedirect = React.useMemo(() => getInitialAuthRedirectState(), []);
+  const [isPasswordRecoveryMode, setIsPasswordRecoveryMode] = useState<boolean>(() => initialAuthRedirect.isRecoveryRedirect);
+  const [authRecoveryError, setAuthRecoveryError] = useState<string | null>(() => initialAuthRedirect.authErrorDescription);
+  const clearAuthRecoveryError = () => setAuthRecoveryError(null);
+  const passwordRecoveryRef = React.useRef(isPasswordRecoveryMode);
+  useEffect(() => {
+    passwordRecoveryRef.current = isPasswordRecoveryMode;
+  }, [isPasswordRecoveryMode]);
+
+  const cancelPasswordRecoveryMode = () => {
+    setIsPasswordRecoveryMode(false);
+    setAuthRecoveryError(null);
+    try {
+      if (typeof window !== 'undefined' && (window.location.hash.includes('type=recovery') || window.location.hash.includes('error='))) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    } catch {}
+    supabase.auth.signOut().catch(() => {});
+  };
 
   const checkSuperAdminPermission = (actionName: string): boolean => {
     if (!isSuperAdminRole(user?.role)) {
@@ -614,7 +680,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
     try {
-      localStorage.setItem('nuvvo_referral_credits', '0');
+      if (user?.id) {
+        setUserScopedItem(user.id, 'referral_credits', 0);
+      }
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && key.startsWith('nuvvo_registered_')) {
@@ -648,8 +716,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         u.referralCredits = 0;
         localStorage.setItem(`nuvvo_registered_${userPhone}`, JSON.stringify(u));
       }
-      if (user?.phone === userPhone) {
-        localStorage.setItem('nuvvo_referral_credits', '0');
+      if (user?.phone === userPhone && user?.id) {
+        setUserScopedItem(user.id, 'referral_credits', 0);
         setUser(prev => prev ? { ...prev, referralCredits: 0 } : null);
       }
       addAuditLog('User Referral Points Reset', `Super Admin reset referral credits for user ${userPhone}`);
@@ -671,8 +739,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         u.referralCredits = newPointsAmount;
         localStorage.setItem(`nuvvo_registered_${userPhone}`, JSON.stringify(u));
       }
-      if (user?.phone === userPhone) {
-        localStorage.setItem('nuvvo_referral_credits', newPointsAmount.toString());
+      if (user?.phone === userPhone && user?.id) {
+        setUserScopedItem(user.id, 'referral_credits', newPointsAmount);
         setUser(prev => prev ? { ...prev, referralCredits: newPointsAmount } : null);
       }
       addAuditLog('User Referral Points Adjusted', `Super Admin adjusted referral points to ${newPointsAmount} for ${userPhone}`);
@@ -683,52 +751,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Address
+  // Address (strictly scoped per authenticated customer)
   const [currentAddress, setCurrentAddress] = useState<Address | null>(() => {
-    return safeParse<Address | null>('nuvvo_address', {
-      id: 'addr_1',
-      type: 'Home',
-      flatNo: 'Nuvvo Towers, Penthouse B',
-      area: 'Madhapur High-Tech Zone',
-      landmark: 'Near Cyber Towers',
-      city: 'Hyderabad',
-      gpsCoordinates: { lat: 17.4483, lng: 78.3741 }
-    });
+    return getUserScopedItem<Address | null>(user?.id, 'address', null);
   });
 
-  // Favorites
+  // Favorites (strictly scoped per authenticated customer)
   const [favoriteFoods, setFavoriteFoods] = useState<string[]>(() => {
-    return safeParse<string[]>('nuvvo_fav_foods', []);
+    return getUserScopedItem<string[]>(user?.id, 'fav_foods', []);
   });
   const [favoriteRestaurants, setFavoriteRestaurants] = useState<string[]>(() => {
-    return safeParse<string[]>('nuvvo_fav_rests', []);
+    return getUserScopedItem<string[]>(user?.id, 'fav_rests', []);
   });
 
-  // Cart
-  const [cart, setCart] = useState<CartItem[]>([]);
-  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  // Cart (strictly scoped per authenticated customer)
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    return getUserScopedItem<CartItem[]>(user?.id, 'cart', []);
+  });
+  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(() => {
+    return getUserScopedItem<Coupon | null>(user?.id, 'applied_coupon', null);
+  });
   const [deliveryPartnerTip, setDeliveryPartnerTip] = useState<number>(0);
   const [orderInstructions, setOrderInstructions] = useState<string>('');
 
-  // Orders
+  // Orders (strictly scoped per authenticated customer; never pre-seeded across users)
   const [orders, setOrders] = useState<Order[]>(() => {
-    return safeParse<Order[]>('nuvvo_orders', []);
+    return getUserScopedItem<Order[]>(user?.id, 'orders', []);
   });
 
-  // Nuvvo Points Loyalty Rewards program states (Loyalty Passport starts at 0 for new accounts)
+  // Nuvvo Points Loyalty Rewards program states (strictly scoped per customer)
   const [nuvvoPoints, setNuvvoPoints] = useState<number>(() => {
-    const stored = localStorage.getItem('nuvvo_points');
-    if (stored !== null) {
-      const parsed = Number(stored);
-      return isNaN(parsed) ? 0 : parsed;
-    }
-    return 0; // Loyalty Passport starts strictly at 0
+    return getUserScopedItem<number>(user?.id, 'points', 0);
   });
 
   const [pointsToRedeem, setPointsToRedeem] = useState<number>(0);
 
   const [pointsHistory, setPointsHistory] = useState<PointsTransaction[]>(() => {
-    return safeParse<PointsTransaction[]>('nuvvo_points_history', []);
+    return getUserScopedItem<PointsTransaction[]>(user?.id, 'points_history', []);
   });
 
   const [restaurantReviews, setRestaurantReviews] = useState<RestaurantReview[]>(() => {
@@ -975,62 +1034,259 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isSuperAdmin = isSuperAdminRole(user?.role) && isAuthorizedPhone;
   const isAdmin = (isAdminRole(user?.role) && isAuthorizedPhone) || isSuperAdmin;
 
-  // Verify server session role on startup and page refresh with query memoization
+  // Verify server session role on startup and hydrate Customer session from Supabase Auth
   useEffect(() => {
     const token = localStorage.getItem('nuvvo_auth_token');
-    if (!token) return;
-
-    queryClient.fetchQuery<{ isAuthorizedAdmin?: boolean; role?: string; phone?: string }>({
-      queryKey: ['verify_role', token],
-      staleTime: 300_000, // 5 minutes
-      queryFn: async () => {
-        const res = await fetch('/api/auth/verify-role', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ token })
-        });
-        if (!res.ok) throw new Error('Role verification failed');
-        return res.json();
-      }
-    })
-      .then(data => {
-        if (data && data.isAuthorizedAdmin) {
-          const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
-          setUser(prev => {
-            if (!prev) {
-              return {
-                id: `usr_admin_${data.phone || '9063692135'}`,
-                name: 'Nuvvo Super Admin',
-                phone: data.phone || '9063692135',
-                email: 'admin@nuvvo.delivery',
-                addresses: [],
-                favoriteFoods: [],
-                favoriteRestaurants: [],
-                role: mappedRole,
-                isProfileComplete: true,
-                createdAt: new Date().toISOString()
-              };
-            }
-            return {
-              ...prev,
-              role: mappedRole,
-              phone: data.phone || prev.phone
-            };
+    if (token && token.startsWith('nuvvo_jwt_')) {
+      queryClient.fetchQuery<{ isAuthorizedAdmin?: boolean; role?: string; phone?: string }>({
+        queryKey: ['verify_role', token],
+        staleTime: 300_000, // 5 minutes
+        queryFn: async () => {
+          const res = await fetch('/api/auth/verify-role', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ token })
           });
-          setSuperAdminAuthenticated(true);
-        } else if (data && !data.isAuthorizedAdmin) {
-          if (isAdminRole(user?.role)) {
-            setUser(prev => prev ? { ...prev, role: 'Customer' } : null);
-            setSuperAdminAuthenticated(false);
-          }
+          if (!res.ok) throw new Error('Role verification failed');
+          return res.json();
         }
       })
-      .catch(err => {
-        console.warn('Session verification notice:', err);
-      });
+        .then(data => {
+          if (data && data.isAuthorizedAdmin) {
+            const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
+            setUser(prev => {
+              if (!prev) {
+                return {
+                  id: `usr_admin_${data.phone || '9063692135'}`,
+                  name: 'Nuvvo Super Admin',
+                  phone: data.phone || '9063692135',
+                  email: 'admin@nuvvo.delivery',
+                  addresses: [],
+                  favoriteFoods: [],
+                  favoriteRestaurants: [],
+                  role: mappedRole,
+                  isProfileComplete: true,
+                  createdAt: new Date().toISOString()
+                };
+              }
+              return {
+                ...prev,
+                role: mappedRole,
+                phone: data.phone || prev.phone
+              };
+            });
+            setSuperAdminAuthenticated(true);
+          } else if (data && !data.isAuthorizedAdmin) {
+            if (isAdminRole(user?.role)) {
+              setUser(prev => prev ? { ...prev, role: 'Customer' } : null);
+              setSuperAdminAuthenticated(false);
+            }
+          }
+        })
+        .catch(err => {
+          console.warn('Session verification notice:', err);
+        });
+    }
+
+    const resetInMemoryCustomerState = () => {
+      setOrders([]);
+      setCart([]);
+      setAppliedCoupon(null);
+      setDeliveryPartnerTip(0);
+      setOrderInstructions('');
+      setActiveTrackingOrder(null);
+      setFavoriteFoods([]);
+      setFavoriteRestaurants([]);
+      setNuvvoPoints(0);
+      setPointsToRedeem(0);
+      setPointsHistory([]);
+      setCurrentAddress(null);
+    };
+
+    const persistSessionUserCache = (uObj: User, tokenValue: string) => {
+      try {
+        const useLocal = uObj.role !== 'Customer' || getAuthPersistencePreference();
+        const primary = useLocal ? window.localStorage : window.sessionStorage;
+        const secondary = useLocal ? window.sessionStorage : window.localStorage;
+        primary.setItem('nuvvo_auth_token', tokenValue);
+        primary.setItem('nuvvo_user', JSON.stringify(uObj));
+        secondary.removeItem('nuvvo_auth_token');
+        secondary.removeItem('nuvvo_user');
+      } catch {}
+    };
+
+    const hydrateCustomerFromSession = async (accessToken: string) => {
+      try {
+        const res = await fetch('/api/auth/customer-profile', {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.success && data?.user) {
+          const u = data.user;
+          const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
+          const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
+          const mappedCustomer: User = {
+            id: u.id,
+            name: u.name,
+            username: u.username,
+            phone: u.phone || '',
+            email: u.email,
+            location: u.location || '',
+            addresses: Array.isArray(u.addresses) ? u.addresses : [],
+            avatar: u.avatar,
+            preferredLanguage: u.preferredLanguage || 'te',
+            role: 'Customer', // Customer auth never grants Admin or Franchise
+            isProfileComplete: true,
+            isEmailVerified: Boolean(u.isEmailVerified),
+            emailVerifiedAt: u.emailVerifiedAt,
+            whatsappNumber: u.whatsappNumber,
+            whatsappOptIn: Boolean(u.whatsappOptIn),
+            whatsappOptInAt: u.whatsappOptInAt,
+            whatsappOptInSource: u.whatsappOptInSource,
+            favoriteFoods: scopedFavFoods,
+            favoriteRestaurants: scopedFavRests,
+            createdAt: u.createdAt || new Date().toISOString()
+          };
+
+          let switchedCustomer = false;
+          setUser(prev => {
+            if (prev && prev.role && prev.role !== 'Customer') {
+              return prev;
+            }
+            if (!prev || prev.id !== mappedCustomer.id) {
+              switchedCustomer = true;
+            }
+            return mappedCustomer;
+          });
+
+          if (switchedCustomer) {
+            // Hydrate strictly from the new customer's scoped storage; never leak prior user's state
+            setOrders(getUserScopedItem<Order[]>(mappedCustomer.id, 'orders', []));
+            setCart(getUserScopedItem<CartItem[]>(mappedCustomer.id, 'cart', []));
+            setAppliedCoupon(getUserScopedItem<Coupon | null>(mappedCustomer.id, 'applied_coupon', null));
+            setFavoriteFoods(scopedFavFoods);
+            setFavoriteRestaurants(scopedFavRests);
+            setNuvvoPoints(getUserScopedItem<number>(mappedCustomer.id, 'points', 0));
+            setPointsHistory(getUserScopedItem<PointsTransaction[]>(mappedCustomer.id, 'points_history', []));
+            setActiveTrackingOrder(null);
+            setDeliveryPartnerTip(0);
+            setOrderInstructions('');
+            setPointsToRedeem(0);
+          }
+
+          persistSessionUserCache(mappedCustomer, accessToken);
+
+          const savedScopedAddr = getUserScopedItem<Address | null>(mappedCustomer.id, 'address', null);
+          if (savedScopedAddr) {
+            setCurrentAddress(savedScopedAddr);
+          } else if (mappedCustomer.addresses.length > 0) {
+            const defAddr = mappedCustomer.addresses.find(a => a.isDefault) || mappedCustomer.addresses[0];
+            setCurrentAddress(defAddr);
+          } else {
+            setCurrentAddress(null);
+          }
+        }
+      } catch (err) {
+        console.warn('Customer session hydration notice:', err);
+      }
+    };
+
+    // Hydrate existing Supabase Auth session on page refresh / app restart
+    (async () => {
+      try {
+        const redirectState = getInitialAuthRedirectState();
+        if (redirectState.authErrorDescription) {
+          setAuthRecoveryError(redirectState.authErrorDescription);
+          setCurrentPage('auth');
+          try {
+            if (typeof window !== 'undefined') {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('error');
+              url.searchParams.delete('error_code');
+              url.searchParams.delete('error_description');
+              window.history.replaceState(null, '', url.pathname + url.search);
+            }
+          } catch {}
+        }
+        if (redirectState.isRecoveryRedirect) {
+          setIsPasswordRecoveryMode(true);
+          passwordRecoveryRef.current = true;
+        }
+
+        if (typeof window !== 'undefined' && window.location.search.includes('code=')) {
+          const { error: exchErr } = await supabase.auth.exchangeCodeForSession(window.location.href);
+          if (exchErr && !redirectState.authErrorDescription) {
+            setAuthRecoveryError(exchErr.message || 'Your verification or password reset link is invalid or has expired.');
+            setCurrentPage('auth');
+          }
+        }
+        const { data: { session } } = await supabase.auth.getSession();
+        if (passwordRecoveryRef.current || getInitialAuthRedirectState().isRecoveryRedirect) {
+          setIsPasswordRecoveryMode(true);
+          setCurrentPage('auth');
+          return;
+        }
+        if (session?.access_token) {
+          await hydrateCustomerFromSession(session.access_token);
+        } else {
+          // If no Supabase Auth session and no valid signed server JWT, clear stale localStorage-only Customer user
+          const cached = safeParse<User | null>('nuvvo_user', null);
+          const storedTok =
+            localStorage.getItem('nuvvo_auth_token') ||
+            (typeof window !== 'undefined' ? window.sessionStorage.getItem('nuvvo_auth_token') : '') ||
+            '';
+          if ((!cached || !cached.role || cached.role === 'Customer') && !storedTok.startsWith('nuvvo_jwt_')) {
+            localStorage.removeItem('nuvvo_user');
+            localStorage.removeItem('nuvvo_auth_token');
+            try {
+              window.sessionStorage.removeItem('nuvvo_user');
+              window.sessionStorage.removeItem('nuvvo_auth_token');
+            } catch {}
+            setUser(null);
+            resetInMemoryCustomerState();
+          }
+        }
+      } catch {}
+    })();
+
+    const { data: authSubscription } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        passwordRecoveryRef.current = true;
+        setIsPasswordRecoveryMode(true);
+        setAuthRecoveryError(null);
+        setCurrentPage('auth');
+        return;
+      }
+
+      if (event === 'SIGNED_OUT') {
+        setUser(prev => {
+          if (prev && prev.role && prev.role !== 'Customer') return prev;
+          try {
+            localStorage.removeItem('nuvvo_user');
+            localStorage.removeItem('nuvvo_auth_token');
+            window.sessionStorage.removeItem('nuvvo_user');
+            window.sessionStorage.removeItem('nuvvo_auth_token');
+          } catch {}
+          resetInMemoryCustomerState();
+          return null;
+        });
+        return;
+      }
+
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session?.access_token) {
+        if (!passwordRecoveryRef.current) {
+          hydrateCustomerFromSession(session.access_token);
+        }
+      }
+    });
+
+    return () => {
+      authSubscription?.subscription?.unsubscribe();
+    };
   }, []);
 
   // Security Route Guard: Direct URL or state navigation to admin/super-admin
@@ -1954,41 +2210,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // --- Real-time Orders Synchronization with Supabase Database ---
+  // --- Real-time Orders Synchronization with Supabase Database (Strictly Customer-Isolated) ---
   useEffect(() => {
     let isMounted = true;
+    const activeUserId = user?.id || '';
+    const activeUserPhone = user?.phone || '';
+
+    const isVisibleToCurrentUser = (ord: Order) => {
+      if (isAdmin || isSuperAdmin) return true;
+      if (!activeUserId) return false;
+      if (ord.customerId) return ord.customerId === activeUserId;
+      return Boolean(activeUserPhone && ord.customerPhone === activeUserPhone);
+    };
 
     const loadOrdersFromSupabase = async () => {
       try {
-        let result: { data: Order[] | null; error: any; fromSupabase: boolean };
-        if (isAdmin || isSuperAdmin) {
-          result = await fetchAllOrdersFromSupabase();
-        } else if (user?.phone) {
-          result = await fetchUserOrdersFromSupabase(user.phone);
-        } else {
+        if (!activeUserId && !activeUserPhone && !isAdmin && !isSuperAdmin) {
+          if (isMounted) setOrders([]);
           return;
         }
 
-        if (!isMounted || !result.data || result.data.length === 0) return;
+        let result: { data: Order[] | null; error: any; fromSupabase: boolean };
+        if (isAdmin || isSuperAdmin) {
+          result = await fetchAllOrdersFromSupabase(true);
+        } else {
+          result = await fetchUserOrdersFromSupabase(activeUserPhone, true, activeUserId);
+        }
+
+        if (!isMounted || !result.data) return;
 
         setOrders(prev => {
           const map = new Map<string, Order>();
-          // Add Supabase orders first
+          // Add authoritative server/Supabase orders first
           for (const ord of result.data!) {
-            map.set(String(ord.id), ord);
+            if (isVisibleToCurrentUser(ord)) {
+              map.set(String(ord.id), ord);
+            }
           }
-          // Preserve any local uncommitted orders
+          // Preserve ONLY uncommitted local orders belonging strictly to the current user
           for (const ord of prev) {
-            if (!map.has(String(ord.id))) {
+            if (!map.has(String(ord.id)) && isVisibleToCurrentUser(ord)) {
               map.set(String(ord.id), ord);
             }
           }
           const merged = Array.from(map.values()).sort(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           );
-          try {
-            localStorage.setItem('nuvvo_orders', JSON.stringify(merged));
-          } catch {}
+          if (activeUserId) {
+            setUserScopedItem(activeUserId, 'orders', merged);
+          }
           return merged;
         });
       } catch (err) {
@@ -2000,7 +2270,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Listen for Realtime Postgres Changes on orders table
     const ordersChannel = supabase
-      .channel('nuvvo_orders_db_feed')
+      .channel(`nuvvo_orders_db_feed_${activeUserId || 'anon'}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'orders' },
@@ -2008,23 +2278,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!isMounted) return;
           if (payload.eventType === 'INSERT' && payload.new) {
             const newOrd = mapSupabaseRowToOrder(payload.new);
+            if (!isVisibleToCurrentUser(newOrd)) return;
             setOrders(prev => {
-              if (prev.some(o => String(o.id) === String(newOrd.id))) {
-                return prev.map(o => String(o.id) === String(newOrd.id) ? { ...o, ...newOrd } : o);
-              }
-              const next = [newOrd, ...prev];
-              try {
-                localStorage.setItem('nuvvo_orders', JSON.stringify(next));
-              } catch {}
+              const next = prev.some(o => String(o.id) === String(newOrd.id))
+                ? prev.map(o => String(o.id) === String(newOrd.id) ? { ...o, ...newOrd } : o)
+                : [newOrd, ...prev];
+              if (activeUserId) setUserScopedItem(activeUserId, 'orders', next);
               return next;
             });
           } else if (payload.eventType === 'UPDATE' && payload.new) {
             const updatedOrd = mapSupabaseRowToOrder(payload.new);
+            if (!isVisibleToCurrentUser(updatedOrd)) return;
             setOrders(prev => {
               const next = prev.map(o => String(o.id) === String(updatedOrd.id) ? { ...o, ...updatedOrd } : o);
-              try {
-                localStorage.setItem('nuvvo_orders', JSON.stringify(next));
-              } catch {}
+              if (activeUserId) setUserScopedItem(activeUserId, 'orders', next);
               return next;
             });
           }
@@ -2036,6 +2303,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ({ payload }) => {
           if (!isMounted || !payload?.order) return;
           const { eventType, order: mutOrder } = payload;
+          if (!isVisibleToCurrentUser(mutOrder)) return;
           setOrders(prev => {
             let next: Order[];
             if (eventType === 'INSERT') {
@@ -2049,9 +2317,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             } else {
               next = prev.filter(o => String(o.id) !== String(mutOrder.id));
             }
-            try {
-              localStorage.setItem('nuvvo_orders', JSON.stringify(next));
-            } catch {}
+            if (activeUserId) setUserScopedItem(activeUserId, 'orders', next);
             return next;
           });
         }
@@ -2062,7 +2328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isMounted = false;
       supabase.removeChannel(ordersChannel);
     };
-  }, [user?.phone, isAdmin, isSuperAdmin]);
+  }, [user?.id, user?.phone, isAdmin, isSuperAdmin]);
 
   // Add Food Item: Persist to Supabase public.food_items with strict Admin/SuperAdmin guard
   const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
@@ -2746,27 +3012,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (user) {
-      localStorage.setItem('nuvvo_user', JSON.stringify(user));
+      const useLocal = user.role !== 'Customer' || getAuthPersistencePreference();
+      try {
+        if (useLocal) {
+          localStorage.setItem('nuvvo_user', JSON.stringify(user));
+          sessionStorage.removeItem('nuvvo_user');
+        } else {
+          sessionStorage.setItem('nuvvo_user', JSON.stringify(user));
+          localStorage.removeItem('nuvvo_user');
+        }
+      } catch {}
     } else {
       localStorage.removeItem('nuvvo_user');
+      try {
+        sessionStorage.removeItem('nuvvo_user');
+      } catch {}
     }
   }, [user]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_fav_foods', JSON.stringify(favoriteFoods));
-  }, [favoriteFoods]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'fav_foods', favoriteFoods);
+    }
+  }, [favoriteFoods, user?.id]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_fav_rests', JSON.stringify(favoriteRestaurants));
-  }, [favoriteRestaurants]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'fav_rests', favoriteRestaurants);
+    }
+  }, [favoriteRestaurants, user?.id]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_orders', JSON.stringify(orders));
-  }, [orders]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'cart', cart);
+    }
+  }, [cart, user?.id]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_address', JSON.stringify(currentAddress));
-  }, [currentAddress]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'applied_coupon', appliedCoupon);
+    }
+  }, [appliedCoupon, user?.id]);
+
+  useEffect(() => {
+    if (user?.id) {
+      setUserScopedItem(user.id, 'orders', orders);
+    }
+  }, [orders, user?.id]);
+
+  useEffect(() => {
+    if (user?.id) {
+      setUserScopedItem(user.id, 'address', currentAddress);
+    }
+  }, [currentAddress, user?.id]);
 
   useEffect(() => {
     if (deliveryPartner) {
@@ -2801,12 +3099,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [designatedAdmins]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_points', String(nuvvoPoints));
-  }, [nuvvoPoints]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'points', nuvvoPoints);
+    }
+  }, [nuvvoPoints, user?.id]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_points_history', JSON.stringify(pointsHistory));
-  }, [pointsHistory]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'points_history', pointsHistory);
+    }
+  }, [pointsHistory, user?.id]);
 
   // Toggle Dark Mode
   const toggleDarkMode = () => setDarkMode(!darkMode);
@@ -3435,66 +3737,293 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // --- COMPLETE EMAIL OTP & PASSWORD CUSTOMER AUTH ---
-  const sendCustomerEmailOtp = async (email: string, fullName: string, location: string): Promise<{ success: boolean; message?: string; challengeToken?: string; isSimulatedDelivery?: boolean; defaultOtp?: string; error?: string }> => {
+  const sendCustomerEmailOtp = async (email: string, fullName: string, location: string, retryCount?: number): Promise<{ success: boolean; message?: string; challengeToken?: string; retry_count?: number; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    const effectiveRetry = typeof retryCount === 'number' ? retryCount : 0;
+
+    // Track initiated attempt
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: 'signInWithOtp',
+      status: 'initiated',
+      provider: 'supabase_auth',
+      metadata: { fullName: fullName.trim(), location: location.trim(), retry_count: effectiveRetry }
+    });
+
     try {
-      const resp = await fetch('/api/auth/send-email-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), fullName: fullName.trim(), location: location.trim() })
+      // 1. Send real 6-digit OTP email via Supabase Auth signInWithOtp()
+      let { error: sbError } = await supabase.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: true,
+          data: {
+            fullName: fullName.trim(),
+            location: location.trim()
+          }
+        }
       });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok || !data?.success) {
+
+      if (!sbError) {
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'signInWithOtp',
+          status: 'sent',
+          provider: 'supabase_auth',
+          metadata: { retry_count: effectiveRetry }
+        });
+
         return {
-          success: false,
-          error: data?.error || 'Failed to dispatch email verification code. Please check your email address and try again.'
+          success: true,
+          message: `A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your email inbox and enter the code below (valid for 5 minutes).`,
+          retry_count: retryCount
         };
       }
-      if (data.challengeToken) {
-        try {
-          sessionStorage.setItem('nuvvo_email_challenge', data.challengeToken);
-        } catch {}
+
+      console.warn('[Supabase Auth signInWithOtp notice]:', sbError.message, sbError.status);
+
+      // GoTrue signInWithOtp may fail on projects where Magic Link template is unconfigured.
+      // Automatically fallback to Supabase Auth's active confirmation pipeline (signUp / resend signup).
+      const tempPassword = `NuvvoAuth#${Math.random().toString(36).slice(2)}!`;
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: tempPassword,
+        options: {
+          data: {
+            fullName: fullName.trim(),
+            location: location.trim()
+          }
+        }
+      });
+
+      // Check if this was a new registration (identities array is populated)
+      const isNewUserRegistration = Boolean(!signUpError && signUpData?.user?.identities && signUpData.user.identities.length > 0);
+      if (isNewUserRegistration) {
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'signInWithOtp',
+          status: 'sent',
+          provider: 'supabase_auth',
+          metadata: { method: 'signUp', retry_count: effectiveRetry }
+        });
+
+        return {
+          success: true,
+          message: `A 6-digit verification code has been dispatched to ${cleanEmail}. Please check your email inbox and enter the code below (valid for 5 minutes).`,
+          retry_count: retryCount
+        };
       }
-      return {
-        success: true,
-        message: data.message,
-        challengeToken: data.challengeToken
-      };
-    } catch (err: any) {
+
+      // If user already exists in auth.users, dispatch a fresh confirmation code via resend()
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email: cleanEmail
+      });
+
+      if (!resendError) {
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'signInWithOtp',
+          status: 'sent',
+          provider: 'supabase_auth',
+          metadata: { method: 'resend_signup', retry_count: effectiveRetry }
+        });
+
+        return {
+          success: true,
+          message: `A fresh 6-digit verification code has been dispatched to ${cleanEmail}. Please check your email inbox and enter the code below.`,
+          retry_count: retryCount
+        };
+      }
+
+      // 2. Also attempt server-side dispatch (which uses server Supabase client or configured SMTP)
+      try {
+        const resp = await fetch('/api/auth/send-email-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            email: cleanEmail, 
+            fullName: fullName.trim(), 
+            location: location.trim(),
+            retry_count: effectiveRetry
+          })
+        });
+        const serverData = await resp.json().catch(() => null);
+        if (resp.ok && serverData?.success) {
+          if (serverData.challengeToken) {
+            try {
+              sessionStorage.setItem('nuvvo_email_challenge', serverData.challengeToken);
+            } catch {}
+          }
+
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: 'signInWithOtp',
+            status: 'sent',
+            provider: 'supabase_auth',
+            metadata: { retry_count: serverData.retry_count }
+          });
+
+          return {
+            success: true,
+            message: serverData.message || `A verification code has been sent to ${cleanEmail}.`,
+            challengeToken: serverData.challengeToken,
+            retry_count: serverData.retry_count
+          };
+        } else if (serverData?.error) {
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: 'signInWithOtp',
+            status: 'failed',
+            provider: 'server',
+            error_details: serverData.error,
+            metadata: { retry_count: effectiveRetry }
+          });
+
+          return {
+            success: false,
+            error: serverData.error
+          };
+        }
+      } catch {}
+
+      // Clean delivery failure message (strictly avoids template configuration prompt)
+      const failError = resendError?.message || signUpError?.message || sbError.message || 'Failed to dispatch email verification code. Please check your email and try again.';
+
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'signInWithOtp',
+        status: 'failed',
+        error_details: failError,
+        metadata: { retry_count: effectiveRetry }
+      });
+
       return {
         success: false,
-        error: err?.message || 'Network error occurred while contacting email OTP service. Please retry.'
+        error: `Supabase Auth Error: ${failError}`
+      };
+    } catch (err: any) {
+      const netErr = err?.message || 'Network error occurred while contacting email OTP service. Please retry.';
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'signInWithOtp',
+        status: 'failed',
+        error_details: netErr,
+        metadata: { retry_count: effectiveRetry }
+      });
+
+      return {
+        success: false,
+        error: netErr
       };
     }
   };
 
   const verifyCustomerEmailOtp = async (email: string, otp: string, challengeToken?: string): Promise<{ success: boolean; token?: string; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanCode = String(otp || '').trim();
+
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: 'verifyOtp',
+      status: 'initiated',
+      metadata: { codeLength: cleanCode.length }
+    });
+
     try {
+      // 1. Verify entered code using supabase.auth.verifyOtp (both signup and email token types)
+      let { data: sbData, error: sbError } = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: cleanCode,
+        type: 'signup'
+      });
+
+      // Also attempt type: 'email' if token was issued via magiclink/email OTP
+      if (sbError || !sbData?.user) {
+        const emailAttempt = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: cleanCode,
+          type: 'email'
+        });
+        if (!emailAttempt.error && emailAttempt.data?.user) {
+          sbData = emailAttempt.data;
+          sbError = null;
+        }
+      }
+
+      if (!sbError && sbData?.user) {
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'verifyOtp',
+          status: 'verified',
+          provider: 'supabase_auth',
+          metadata: { userId: sbData.user.id }
+        });
+
+        const token = sbData.session?.access_token || `jwt_${cleanEmail}_${Date.now()}`;
+        try {
+          localStorage.setItem('nuvvo_auth_token', token);
+        } catch {}
+        return { success: true, token };
+      }
+
+      if (sbError) {
+        console.warn('[Supabase Auth verifyOtp notice]:', sbError.message);
+      }
+
+      // 2. Also check server endpoint /api/auth/verify-email-otp (for SMTP challenge or database)
       const effectiveChallenge = challengeToken || sessionStorage.getItem('nuvvo_email_challenge') || undefined;
       const resp = await fetch('/api/auth/verify-email-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), otp: String(otp).trim(), challengeToken: effectiveChallenge })
+        body: JSON.stringify({ email: cleanEmail, otp: cleanCode, challengeToken: effectiveChallenge })
       });
       const data = await resp.json().catch(() => null);
-      if (!resp.ok || !data?.success) {
-        return {
-          success: false,
-          error: data?.error || 'Invalid or expired email OTP. Please check the 6-digit code or request a new code.'
-        };
+      if (resp.ok && data?.success) {
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'verifyOtp',
+          status: 'verified',
+          provider: 'server',
+          metadata: { tokenIssued: Boolean(data.token) }
+        });
+
+        if (data.token) {
+          try {
+            localStorage.setItem('nuvvo_auth_token', data.token);
+          } catch {}
+        }
+        return { success: true, token: data.token };
       }
-      if (data.token) {
-        localStorage.setItem('nuvvo_auth_token', data.token);
-      }
-      return { success: true, token: data.token };
-    } catch (err: any) {
+
+      const verifyError = sbError?.message || data?.error || 'Invalid or expired email OTP. Please check the 6-digit code or request a new code.';
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'verifyOtp',
+        status: 'failed',
+        error_details: verifyError
+      });
+
       return {
         success: false,
-        error: err?.message || 'Verification network error. Please try again.'
+        error: verifyError
+      };
+    } catch (err: any) {
+      const netErr = err?.message || 'Verification network error. Please try again.';
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'verifyOtp',
+        status: 'failed',
+        error_details: netErr
+      });
+
+      return {
+        success: false,
+        error: netErr
       };
     }
   };
 
-  const setupCustomerProfile = async (data: { username: string; password: string; mobile: string; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }): Promise<{ success: boolean; user?: any; error?: string }> => {
+  const setupCustomerProfile = async (data: { username: string; password: string; mobile: string; whatsappNumber?: string; whatsappOptIn?: boolean; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }): Promise<{ success: boolean; user?: any; error?: string }> => {
     try {
       const token = localStorage.getItem('nuvvo_auth_token') || '';
       const resp = await fetch('/api/auth/setup-profile', {
@@ -3525,6 +4054,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           addresses: u.addresses || [],
           role: 'Customer',
           isProfileComplete: true,
+          whatsappNumber: u.whatsappNumber || undefined,
+          whatsappOptIn: Boolean(u.whatsappOptIn),
+          whatsappOptInAt: u.whatsappOptInAt || undefined,
+          whatsappOptInSource: u.whatsappOptInSource || undefined,
           favoriteFoods: [],
           favoriteRestaurants: [],
           createdAt: u.createdAt || new Date().toISOString()
@@ -3544,8 +4077,122 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const loginCustomerWithPassword = async (identifier: string, password: string): Promise<{ success: boolean; user?: any; role?: string; token?: string; error?: string }> => {
+  const registerCustomerWithPassword = async (data: {
+    fullName: string;
+    username: string;
+    email: string;
+    mobile: string;
+    location: string;
+    deliveryAddress: string;
+    password: string;
+    confirmPassword: string;
+    landmark?: string;
+    city?: string;
+    whatsappNumber?: string;
+    whatsappOptIn?: boolean;
+    rememberMe?: boolean;
+  }): Promise<{ success: boolean; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }> => {
     try {
+      const { rememberMe = true, ...payload } = data;
+      setAuthPersistencePreference(rememberMe !== false);
+
+      const resp = await fetch('/api/auth/customer-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...payload,
+          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+        })
+      });
+      const resData = await resp.json().catch(() => null);
+      if (!resp.ok || !resData?.success) {
+        return {
+          success: false,
+          error: resData?.error || 'Failed to create customer account. Please check your details and try again.'
+        };
+      }
+
+      if (resData.session?.access_token && resData.session?.refresh_token) {
+        // Clear any previous customer's in-memory/query cache before switching session
+        tanstackQueryClient.clear();
+        queryClient.clear();
+        setOrders([]);
+        setCart([]);
+        setAppliedCoupon(null);
+        setDeliveryPartnerTip(0);
+        setOrderInstructions('');
+        setActiveTrackingOrder(null);
+        setFavoriteFoods([]);
+        setFavoriteRestaurants([]);
+        setNuvvoPoints(0);
+        setPointsToRedeem(0);
+        setPointsHistory([]);
+
+        await supabase.auth.setSession({
+          access_token: resData.session.access_token,
+          refresh_token: resData.session.refresh_token
+        }).catch(() => {});
+
+        try {
+          const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
+          storage.setItem('nuvvo_auth_token', resData.session.access_token);
+        } catch {}
+
+        if (resData.user) {
+          const u = resData.user;
+          const mappedUser: User = {
+            id: u.id,
+            name: u.name,
+            phone: u.phone || '',
+            email: u.email,
+            username: u.username,
+            location: u.location || '',
+            addresses: u.addresses || [],
+            role: 'Customer',
+            isProfileComplete: true,
+            isEmailVerified: Boolean(u.isEmailVerified),
+            emailVerifiedAt: u.emailVerifiedAt,
+            whatsappNumber: u.whatsappNumber || undefined,
+            whatsappOptIn: Boolean(u.whatsappOptIn),
+            whatsappOptInAt: u.whatsappOptInAt || undefined,
+            whatsappOptInSource: u.whatsappOptInSource || undefined,
+            favoriteFoods: [],
+            favoriteRestaurants: [],
+            createdAt: u.createdAt || new Date().toISOString()
+          };
+          setUser(mappedUser);
+          if (mappedUser.addresses.length > 0) {
+            setCurrentAddress(mappedUser.addresses[0]);
+          } else {
+            setCurrentAddress(null);
+          }
+          addAuditLog('Customer Registered', `Customer @${u.username} created account via Supabase Auth.`);
+        }
+      }
+
+      return {
+        success: true,
+        requiresEmailVerification: Boolean(resData.requiresEmailVerification),
+        emailVerified: Boolean(resData.emailVerified),
+        user: resData.user,
+        message: resData.message
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Network error occurred during registration. Please try again.'
+      };
+    }
+  };
+
+  const loginCustomerWithPassword = async (
+    identifier: string,
+    password: string,
+    rememberMe: boolean = true
+  ): Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }> => {
+    try {
+      setAuthPersistencePreference(rememberMe !== false);
+
       const resp = await fetch('/api/auth/customer-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3555,42 +4202,219 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!resp.ok || !data?.success) {
         return {
           success: false,
+          requiresEmailVerification: Boolean(data?.requiresEmailVerification || data?.code === 'EMAIL_NOT_CONFIRMED'),
+          email: data?.email,
           error: data?.error || 'Invalid credentials. Please verify your username/email and password.'
         };
       }
 
-      if (data.token) {
-        localStorage.setItem('nuvvo_auth_token', data.token);
+      // Wipe previous customer's in-memory states and caches BEFORE applying newly authenticated user
+      tanstackQueryClient.clear();
+      queryClient.clear();
+      clearUnscopedLegacyCustomerCache();
+      setOrders([]);
+      setCart([]);
+      setAppliedCoupon(null);
+      setDeliveryPartnerTip(0);
+      setOrderInstructions('');
+      setActiveTrackingOrder(null);
+      setFavoriteFoods([]);
+      setFavoriteRestaurants([]);
+      setNuvvoPoints(0);
+      setPointsToRedeem(0);
+      setPointsHistory([]);
+      setCurrentAddress(null);
+
+      if (data.session?.access_token && data.session?.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token
+        }).catch(() => {});
+        try {
+          const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
+          const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
+          storage.setItem('nuvvo_auth_token', data.session.access_token);
+          other.removeItem('nuvvo_auth_token');
+        } catch {}
+      } else if (data.token) {
+        try {
+          const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
+          storage.setItem('nuvvo_auth_token', data.token);
+        } catch {}
       }
 
       if (data.user) {
         const u = data.user;
+        const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
+        const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
         const mappedUser: User = {
           id: u.id,
           name: u.name,
-          phone: u.phone,
+          phone: u.phone || '',
           email: u.email,
           username: u.username,
-          location: u.location,
+          location: u.location || '',
           addresses: u.addresses || [],
+          avatar: u.avatar,
+          preferredLanguage: u.preferredLanguage,
           role: 'Customer',
           isProfileComplete: true,
-          favoriteFoods: [],
-          favoriteRestaurants: [],
+          isEmailVerified: Boolean(data.emailVerified ?? u.isEmailVerified),
+          emailVerifiedAt: data.emailVerifiedAt || u.emailVerifiedAt,
+          whatsappNumber: u.whatsappNumber || undefined,
+          whatsappOptIn: Boolean(u.whatsappOptIn),
+          whatsappOptInAt: u.whatsappOptInAt || undefined,
+          whatsappOptInSource: u.whatsappOptInSource || undefined,
+          favoriteFoods: scopedFavFoods,
+          favoriteRestaurants: scopedFavRests,
           createdAt: u.createdAt || new Date().toISOString()
         };
+
+        // Hydrate scoped states for this newly authenticated customer
+        setOrders(getUserScopedItem<Order[]>(mappedUser.id, 'orders', []));
+        setCart(getUserScopedItem<CartItem[]>(mappedUser.id, 'cart', []));
+        setAppliedCoupon(getUserScopedItem<Coupon | null>(mappedUser.id, 'applied_coupon', null));
+        setFavoriteFoods(scopedFavFoods);
+        setFavoriteRestaurants(scopedFavRests);
+        setNuvvoPoints(getUserScopedItem<number>(mappedUser.id, 'points', 0));
+        setPointsHistory(getUserScopedItem<PointsTransaction[]>(mappedUser.id, 'points_history', []));
+
+        const scopedAddr = getUserScopedItem<Address | null>(mappedUser.id, 'address', null);
+        if (scopedAddr) {
+          setCurrentAddress(scopedAddr);
+        } else if (mappedUser.addresses.length > 0) {
+          const defAddr = mappedUser.addresses.find(a => a.isDefault) || mappedUser.addresses[0];
+          setCurrentAddress(defAddr);
+        }
+
         setUser(mappedUser);
-        localStorage.setItem(`nuvvo_registered_${u.phone}`, JSON.stringify(mappedUser));
-        localStorage.setItem('nuvvo_user', JSON.stringify(mappedUser));
-        addAuditLog('Customer Login', `Customer @${u.username || u.email} logged in with custom password.`);
+        addAuditLog('Customer Login', `Customer @${u.username || u.email} signed in securely.`);
       }
 
-      return { success: true, user: data.user, role: data.role, token: data.token };
+      return {
+        success: true,
+        user: data.user,
+        role: 'Customer',
+        token: data.session?.access_token || data.token
+      };
     } catch (err: any) {
       return {
         success: false,
         error: err?.message || 'Failed to authenticate with server. Please try again.'
       };
+    }
+  };
+
+  const resendCustomerVerificationEmail = async (identifierOrEmail: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      const resp = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: identifierOrEmail.trim(),
+          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return { success: false, error: data?.error || 'Could not resend verification email.' };
+      }
+      return { success: true, message: data.message };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error while resending verification email.' };
+    }
+  };
+
+  const requestCustomerPasswordReset = async (identifierOrEmail: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      const resp = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: identifierOrEmail.trim(),
+          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return { success: false, error: data?.error || 'Failed to initiate password reset.' };
+      }
+      return { success: true, message: data.message };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error occurred while requesting password reset.' };
+    }
+  };
+
+  const changeCustomerPassword = async (
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string
+  ): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      const token = await getActiveAuthToken();
+      if (!token) {
+        return { success: false, error: 'You must be signed in to change your password.' };
+      }
+
+      const resp = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        return { success: false, error: data?.error || 'Failed to change password.' };
+      }
+
+      if (data.session?.access_token && data.session?.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token
+        }).catch(() => {});
+      }
+
+      addAuditLog('Password Changed', `Customer updated account password securely.`);
+      return { success: true, message: data.message || 'Password updated successfully.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error occurred while changing password.' };
+    }
+  };
+
+  const completeCustomerPasswordRecovery = async (newPassword: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return {
+          success: false,
+          error: 'Your password reset session is missing or has expired. Please request a fresh password reset link.'
+        };
+      }
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) {
+        return { success: false, error: error.message || 'Unable to update password. Please request a fresh recovery link.' };
+      }
+      setIsPasswordRecoveryMode(false);
+      setAuthRecoveryError(null);
+      try {
+        if (typeof window !== 'undefined' && (window.location.hash.includes('type=recovery') || window.location.search.includes('code='))) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      } catch {}
+      await supabase.auth.signOut().catch(() => {});
+      clearAllSupabaseAuthStorage();
+      localStorage.removeItem('nuvvo_auth_token');
+      localStorage.removeItem('nuvvo_user');
+      try {
+        sessionStorage.removeItem('nuvvo_auth_token');
+        sessionStorage.removeItem('nuvvo_user');
+      } catch {}
+      setUser(null);
+      return { success: true, message: 'Password updated successfully! Please sign in with your new password.' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to update password.' };
     }
   };
 
@@ -3619,7 +4443,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteCustomerAccount = async (password: string): Promise<{ success: boolean; error?: string; message?: string }> => {
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      const token = session?.access_token || localStorage.getItem('nuvvo_auth_token') || '';
       const email = user?.email || '';
       const phone = user?.phone || '';
       const resp = await fetch('/api/auth/delete-account', {
@@ -3800,7 +4625,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('Profile Created', `User registration profile submitted under credentials name ${name} (Phone: ${cleanPhone})`);
   };
 
-  const updateUserProfile = (name: string, email: string, avatar?: string, phone?: string, addresses?: Address[], preferredLanguage?: AppLanguage) => {
+  const updateUserProfile = async (
+    name: string,
+    email: string,
+    avatar?: string,
+    phone?: string,
+    addresses?: Address[],
+    preferredLanguage?: AppLanguage,
+    whatsappPrefs?: {
+      whatsappNumber?: string;
+      whatsappOptIn?: boolean;
+      whatsappOptInAt?: string;
+      whatsappOptInSource?: 'registration' | 'checkout' | 'profile';
+    },
+    extraProfile?: {
+      location?: string;
+      deliveryAddress?: string;
+    }
+  ): Promise<{ success: boolean; error?: string }> => {
+    let nextSnapshot: User | null = null;
     setUser(prevUser => {
       const targetPhone = phone ? normalizePhoneNumber(phone) : (prevUser?.phone ? normalizePhoneNumber(prevUser.phone) : '');
       const base = prevUser || {
@@ -3808,48 +4651,120 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         name,
         email,
         phone: targetPhone,
-        role: 'Customer',
+        role: 'Customer' as const,
         addresses: addresses || [],
         favoriteFoods: [],
         favoriteRestaurants: [],
         isProfileComplete: true,
         createdAt: new Date().toISOString()
       };
-      // Security: Privileges are determined strictly from authenticated server identity
-      const authedPhone = normalizePhoneNumber(base.phone);
+      const authedPhone = targetPhone || normalizePhoneNumber(base.phone);
+      const nextWaNumber = whatsappPrefs?.whatsappNumber !== undefined ? whatsappPrefs.whatsappNumber : base.whatsappNumber;
+      const nextWaOptIn = whatsappPrefs?.whatsappOptIn !== undefined ? Boolean(whatsappPrefs.whatsappOptIn) : Boolean(base.whatsappOptIn);
+      const nextWaOptInAt = whatsappPrefs?.whatsappOptIn !== undefined
+        ? (whatsappPrefs.whatsappOptIn ? (whatsappPrefs.whatsappOptInAt || new Date().toISOString()) : undefined)
+        : base.whatsappOptInAt;
+      const nextWaSource = whatsappPrefs?.whatsappOptInSource || base.whatsappOptInSource;
+
       const updatedUser: User = {
         ...base,
         name: name.trim(),
         email: email.trim(),
         phone: authedPhone,
+        location: extraProfile?.location !== undefined ? extraProfile.location.trim() : base.location,
         role: base.role, // Preserved server role
         avatar: avatar !== undefined ? avatar : base.avatar,
         addresses: addresses !== undefined ? addresses : base.addresses,
-        preferredLanguage: preferredLanguage || base.preferredLanguage || language
+        preferredLanguage: preferredLanguage || base.preferredLanguage || language,
+        whatsappNumber: nextWaNumber,
+        whatsappOptIn: nextWaOptIn,
+        whatsappOptInAt: nextWaOptInAt,
+        whatsappOptInSource: nextWaSource
       };
+      nextSnapshot = updatedUser;
       if (preferredLanguage) {
         setLanguageState(preferredLanguage);
         localStorage.setItem('nuvvo_app_language', preferredLanguage);
       }
       try {
-        localStorage.setItem(`nuvvo_registered_${authedPhone}`, JSON.stringify(updatedUser));
+        if (authedPhone) {
+          localStorage.setItem(`nuvvo_registered_${authedPhone}`, JSON.stringify(updatedUser));
+        }
         localStorage.setItem('nuvvo_user', JSON.stringify(updatedUser));
       } catch (err) {
         console.error('Failed to write user to localStorage:', err);
       }
       return updatedUser;
     });
+
+    // Persist permanently to Supabase customer_profiles if signed in with Supabase Auth
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token && (!user?.role || user.role === 'Customer')) {
+        const resp = await fetch('/api/auth/customer-profile', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            name: name.trim(),
+            phone: phone ? normalizePhoneNumber(phone) : user?.phone,
+            location: extraProfile?.location ?? user?.location,
+            deliveryAddress: extraProfile?.deliveryAddress,
+            addresses: addresses ?? nextSnapshot?.addresses ?? user?.addresses,
+            preferredLanguage: preferredLanguage || user?.preferredLanguage || language,
+            avatar: avatar !== undefined ? avatar : user?.avatar,
+            whatsappNumber: whatsappPrefs?.whatsappNumber,
+            whatsappOptIn: whatsappPrefs?.whatsappOptIn,
+            whatsappOptInAt: whatsappPrefs?.whatsappOptInAt,
+            whatsappOptInSource: whatsappPrefs?.whatsappOptInSource
+          })
+        });
+        const resData = await resp.json().catch(() => null);
+        if (!resp.ok || !resData?.success) {
+          return { success: false, error: resData?.error || 'Failed to save profile changes to Supabase.' };
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Update Profile Persistence Notice]:', err?.message);
+    }
+
     addAuditLog('Profile Updated', `User profile updated (Name: ${name}, Email: ${email})`);
+    return { success: true };
   };
 
   const logoutUser = () => {
-    addAuditLog('User Logout', `Cellular token invalidated for current session`);
+    const leavingUserId = user?.id;
+    addAuditLog('User Logout', `Session terminated for current account`);
+    supabase.auth.signOut().catch(() => {});
+    clearAllSupabaseAuthStorage();
+    clearCustomerScopedCache(leavingUserId);
+    clearUnscopedLegacyCustomerCache();
+    tanstackQueryClient.clear();
+    queryClient.clear();
+    try {
+      localStorage.removeItem('nuvvo_user');
+      localStorage.removeItem('nuvvo_auth_token');
+      sessionStorage.removeItem('nuvvo_user');
+      sessionStorage.removeItem('nuvvo_auth_token');
+    } catch {}
+    setIsPasswordRecoveryMode(false);
     setUser(null);
-    setCurrentPage('auth');
+    setOrders([]);
     setCart([]);
     setAppliedCoupon(null);
+    setDeliveryPartnerTip(0);
+    setOrderInstructions('');
+    setFavoriteFoods([]);
+    setFavoriteRestaurants([]);
+    setNuvvoPoints(0);
+    setPointsToRedeem(0);
+    setPointsHistory([]);
+    setCurrentAddress(null);
     setActiveTrackingOrder(null);
     setSuperAdminAuthenticated(false);
+    setCurrentPage('auth');
   };
 
   const updateUserAddresses = (addresses: Address[]) => {
@@ -3987,7 +4902,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const createNewOrder = (
     paymentMethod: PaymentMethodType | string = 'UPI', 
     phonePeNoOrDetails?: any, 
-    scheduledTime?: string
+    scheduledTime?: string,
+    checkoutWhatsapp?: { customerWhatsappNumber?: string; whatsappOptIn?: boolean; customerEmail?: string }
   ): Order | null => {
     if (!user || cart.length === 0 || !currentAddress) return null;
 
@@ -4028,8 +4944,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const earnedPoints = Math.round(subtotal / 10); // Earning 1 loyalty point per 10 rupees spent
 
     // Zero-default delivery partner assignment:
-    // If delivery partners count is zero, do not assign a fake rider.
-    // Order stays in 'Awaiting Delivery Partner Assignment' until an administrator assigns one.
     const availableRiders = deliveryPartners.filter(p => p.isApproved && p.isAvailable && p.status === 'Available');
     const assignedRider = availableRiders.length > 0 ? availableRiders[0] : null;
 
@@ -4051,12 +4965,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const resolvedOrderId = paymentDetailsObj?.orderId || orderId;
+    const firstRestId = cart[0]?.foodItem?.restaurantId;
+    const resolvedRestaurantName = restaurantsList.find(r => r.id === firstRestId)?.name || 'Nuvvo Kitchen Partner';
+    const resolvedCustomerEmail = checkoutWhatsapp?.customerEmail || user.email || (user as any).customerEmail || '';
+    const resolvedCustomerWhatsapp = (checkoutWhatsapp?.customerWhatsappNumber || user.whatsappNumber || '').trim();
+    const resolvedWhatsappOptIn = checkoutWhatsapp?.whatsappOptIn !== undefined
+      ? Boolean(checkoutWhatsapp.whatsappOptIn)
+      : Boolean(user.whatsappOptIn);
 
     const newOrder: Order = {
       id: resolvedOrderId,
       customerId: user.id,
       customerPhone: user.phone,
       customerName: user.name,
+      customerEmail: resolvedCustomerEmail || undefined,
+      customerWhatsappNumber: resolvedCustomerWhatsapp && !resolvedCustomerWhatsapp.includes('@') ? resolvedCustomerWhatsapp : undefined,
+      whatsappOptIn: resolvedWhatsappOptIn,
+      whatsappOptInAt: resolvedWhatsappOptIn ? (user.whatsappOptInAt || new Date().toISOString()) : undefined,
+      restaurantId: firstRestId,
+      restaurantName: resolvedRestaurantName,
       items: [...cart],
       subtotal,
       discount: discount + pointsDiscount,
@@ -4093,16 +5020,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       pointsRedeemed: pointsToRedeem > 0 ? pointsToRedeem : undefined
     };
 
-    // If payment was completed using Nuvvo Wallet, deduct and log
+    // If payment was completed using Nuvvo Wallet, deduct and log under customer-scoped storage
     if (paymentMethod === 'Wallet' || (paymentMethod as string).toLowerCase().includes('wallet')) {
       try {
-        const storedWalletBal = localStorage.getItem('nuvvo_wallet_balance');
-        const currentBal = storedWalletBal ? Number(storedWalletBal) : 0;
+        const currentBal = getUserScopedItem<number>(user.id, 'wallet_balance', 0);
         const newBal = Math.max(0, currentBal - finalAmount);
-        localStorage.setItem('nuvvo_wallet_balance', newBal.toString());
+        setUserScopedItem(user.id, 'wallet_balance', newBal);
 
-        const storedWalletHistory = localStorage.getItem('nuvvo_wallet_history');
-        const historyList = storedWalletHistory ? JSON.parse(storedWalletHistory) : [];
+        const historyList = getUserScopedItem<any[]>(user.id, 'wallet_history', []);
         const walletDebitTx = {
           id: `w_tx_${Date.now()}`,
           type: 'debit',
@@ -4110,7 +5035,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           description: `Paid for Order #${orderId.slice(-6).toUpperCase()}`,
           date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         };
-        localStorage.setItem('nuvvo_wallet_history', JSON.stringify([walletDebitTx, ...historyList]));
+        setUserScopedItem(user.id, 'wallet_history', [walletDebitTx, ...historyList]);
       } catch (err) {
         console.warn('Error syncing wallet debit:', err);
       }
@@ -4163,6 +5088,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     clearCart();
     setActiveTrackingOrder(newOrder);
+
+    // Dispatch professional HTML email order confirmation & itemized receipt via SMTP (with active Bearer token)
+    const customerEmailToUse = user.email || (user as any).customerEmail || (newOrder.address as any)?.customerEmail;
+    if (customerEmailToUse && customerEmailToUse.includes('@')) {
+      getActiveAuthToken().then(token => {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        return fetch('/api/email/order-confirmation', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            orderId: newOrder.id,
+            customerId: user.id,
+            customerName: user.name || 'Valued Customer',
+            customerEmail: customerEmailToUse,
+            customerPhone: user.phone || newOrder.customerPhone,
+            items: newOrder.items.map(item => ({
+              name: item.foodItem.name,
+              quantity: item.quantity,
+              price: item.foodItem.discountPrice || item.foodItem.price,
+              restaurantName: restaurantsList.find(r => r.id === item.foodItem.restaurantId)?.name || 'Nuvvo Kitchen',
+              isVeg: item.foodItem.vegIndicator === 'veg'
+            })),
+            subtotal: newOrder.subtotal,
+            discount: newOrder.discount,
+            deliveryFee: newOrder.deliveryFee,
+            packagingFee: newOrder.packagingFee,
+            tax: newOrder.tax,
+            tip: newOrder.tip,
+            finalAmount: newOrder.finalAmount,
+            paymentMethod: newOrder.paymentMethod,
+            paymentStatus: newOrder.paymentStatus,
+            deliveryAddress: {
+              flatNo: newOrder.address.flatNo,
+              area: newOrder.address.area,
+              landmark: newOrder.address.landmark,
+              city: newOrder.address.city,
+              fullAddress: (newOrder.address as any).fullAddress
+            },
+            deliveryInstructions: newOrder.deliveryInstructions || newOrder.instructions,
+            date: newOrder.date,
+            eta: newOrder.eta || 25
+          })
+        });
+      }).then(res => res.json()).then(receiptRes => {
+        if (receiptRes?.success) {
+          console.log(`[Order Email] Confirmation receipt successfully emailed to ${customerEmailToUse}`);
+        } else {
+          console.warn(`[Order Email Notice] Email delivery status:`, receiptRes?.error || 'Pending SMTP configuration');
+        }
+      }).catch(emailErr => {
+        console.warn(`[Order Email Notice] Non-blocking dispatch caught:`, emailErr?.message || emailErr);
+      });
+    }
 
     // Multi-Persona Notification dispatcher for order creation
     const subId = orderId.replace('order_', '');
@@ -4371,22 +5350,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     });
 
-    const patchPayload: Partial<Order> = { status };
+    const patchPayload: Partial<Order> = {
+      status,
+      ...(targetOrder ? {
+        customerName: targetOrder.customerName,
+        customerPhone: targetOrder.customerPhone,
+        customerEmail: targetOrder.customerEmail,
+        customerWhatsappNumber: targetOrder.customerWhatsappNumber,
+        whatsappOptIn: targetOrder.whatsappOptIn,
+        restaurantName: targetOrder.restaurantName,
+        deliveryPartnerName: targetOrder.deliveryPartnerName,
+        deliveryPartnerPhone: targetOrder.deliveryPartnerPhone,
+        finalAmount: targetOrder.finalAmount
+      } : {})
+    };
     if (status === 'cancelled') {
       patchPayload.paymentStatus = (targetOrder?.paymentMethod === 'COD' || targetOrder?.paymentMethod === 'Pay on Delivery') 
         ? 'cancelled' 
         : 'refund_initiated';
 
-      // If customer paid via Wallet, process instant refund back into their wallet balance
+      // If customer paid via Wallet, process instant refund back into their customer-scoped wallet balance
       if (targetOrder && (targetOrder.paymentMethod === 'Wallet' || String(targetOrder.paymentMethod).toLowerCase().includes('wallet'))) {
         try {
-          const storedBal = localStorage.getItem('nuvvo_wallet_balance');
-          const cur = storedBal ? Number(storedBal) : 0;
+          const refundOwnerId = targetOrder.customerId || user?.id;
+          const cur = getUserScopedItem<number>(refundOwnerId, 'wallet_balance', 0);
           const refundedBal = cur + (targetOrder.finalAmount || 0);
-          localStorage.setItem('nuvvo_wallet_balance', refundedBal.toString());
+          setUserScopedItem(refundOwnerId, 'wallet_balance', refundedBal);
 
-          const storedHist = localStorage.getItem('nuvvo_wallet_history');
-          const hist = storedHist ? JSON.parse(storedHist) : [];
+          const hist = getUserScopedItem<any[]>(refundOwnerId, 'wallet_history', []);
           const refundTx = {
             id: `w_tx_ref_${Date.now()}`,
             type: 'credit',
@@ -4394,7 +5385,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             description: `Refund for Cancelled Order #${orderId.slice(-6).toUpperCase()}`,
             date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
           };
-          localStorage.setItem('nuvvo_wallet_history', JSON.stringify([refundTx, ...hist]));
+          setUserScopedItem(refundOwnerId, 'wallet_history', [refundTx, ...hist]);
         } catch (e) {
           console.warn('Wallet refund error:', e);
         }
@@ -4614,6 +5605,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     addAuditLog('Order Status Update', `Invoice Reference ${orderId} shifted coordinates to status: ${status}.`);
+  };
+
+  /**
+   * Cancels an order, updates its status to 'cancelled' in Supabase,
+   * processes wallet refunds if applicable, and optionally clears it from history if not yet prepared.
+   */
+  const cancelOrder = async (
+    orderId: string, 
+    clearFromHistory: boolean = false
+  ): Promise<{ success: boolean; cleared?: boolean; error?: string }> => {
+    try {
+      // 1. If clearFromHistory is selected, remove the order completely
+      if (clearFromHistory) {
+        const { cancelOrderInSupabase } = await import('../services/supabaseOrders');
+        const res = await cancelOrderInSupabase(orderId, { clearFromHistory: true });
+        if (res.success) {
+          setOrders(prev => prev.filter(o => o.id !== orderId));
+          if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
+            setActiveTrackingOrder(null);
+          }
+          addAuditLog('Order Cancelled & Cleared', `Order ${orderId} cancelled and cleared from customer history.`);
+          return { success: true, cleared: true };
+        }
+        return res;
+      }
+
+      // 2. Otherwise update status to 'cancelled' (triggers refund processing & notifications)
+      changeOrderStatus(orderId, 'cancelled');
+      const { cancelOrderInSupabase } = await import('../services/supabaseOrders');
+      await cancelOrderInSupabase(orderId, { clearFromHistory: false });
+      return { success: true, cleared: false };
+    } catch (err: any) {
+      console.error('[AppContext] cancelOrder error:', err);
+      return { success: false, error: err?.message || 'Failed to cancel order.' };
+    }
+  };
+
+  /**
+   * Removes an individual order from local state, memory cache, authenticated API, and Supabase.
+   */
+  const removeOrder = async (orderId: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      setOrders(prev => prev.filter(o => o.id !== orderId));
+      if (activeTrackingOrder && activeTrackingOrder.id === orderId) {
+        setActiveTrackingOrder(null);
+      }
+
+      const token = await getActiveAuthToken();
+      if (token) {
+        try {
+          await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        } catch {}
+      }
+
+      try {
+        await supabase.from('orders').delete().eq('id', orderId);
+      } catch (sbErr) {
+        console.warn('[Supabase Orders] Delete notice:', sbErr);
+      }
+
+      try {
+        const { invalidateOrders } = await import('../utils/tanstackQuery');
+        invalidateOrders();
+      } catch {}
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to remove order' };
+    }
+  };
+
+  /**
+   * Resets / clears order history strictly for the active authenticated customer.
+   */
+  const clearOrderHistory = async (phone?: string): Promise<{ success: boolean; count?: number; error?: string }> => {
+    try {
+      const targetPhone = phone || user?.phone;
+      const cleanDigits = targetPhone ? targetPhone.replace(/\D/g, '') : '';
+      const activeId = user?.id;
+
+      const toDelete = orders.filter(o => {
+        if (activeId && o.customerId === activeId) return true;
+        const oPhone = o.customerPhone ? o.customerPhone.replace(/\D/g, '') : '';
+        return Boolean(cleanDigits && oPhone === cleanDigits);
+      });
+
+      const previousCount = toDelete.length;
+      setOrders(prev => prev.filter(o => !toDelete.some(d => d.id === o.id)));
+      setActiveTrackingOrder(null);
+
+      const token = await getActiveAuthToken();
+      if (token && toDelete.length > 0) {
+        await Promise.allSettled(
+          toDelete.map(o =>
+            fetch(`/api/orders/${encodeURIComponent(o.id)}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` }
+            })
+          )
+        );
+      }
+
+      if (activeId) {
+        try {
+          await supabase.from('orders').delete().eq('customer_id', activeId);
+        } catch (sbErr) {
+          console.warn('[Supabase Orders] Clear notice:', sbErr);
+        }
+      }
+
+      try {
+        const { invalidateOrders } = await import('../utils/tanstackQuery');
+        invalidateOrders();
+      } catch {}
+
+      return { success: true, count: previousCount };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to clear order history' };
+    }
   };
 
   // Tracking Simulation loop
@@ -5855,7 +6968,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     ];
     setOrders(sampleList);
-    localStorage.setItem('nuvvo_orders', JSON.stringify(sampleList));
+    if (user?.id) {
+      setUserScopedItem(user.id, 'orders', sampleList);
+    }
     addAuditLog('Sample Orders Seeded', 'Admin populated sample orders for territory analytics.');
   };
 
@@ -5970,8 +7085,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       currentTheme, setThemeId, themesList,
       cartSuccessAnimation, setCartSuccessAnimation,
       isOffline,
-      user, language, setLanguage, otpCode, setOtpCode, loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, 
-      sendCustomerEmailOtp, verifyCustomerEmailOtp, setupCustomerProfile, loginCustomerWithPassword, 
+      user, language, setLanguage, otpCode, setOtpCode, isPasswordRecoveryMode, authRecoveryError, clearAuthRecoveryError, cancelPasswordRecoveryMode,
+      loginWithPhone, verifyOtpAndLogin, directLoginWithPhone, 
+      sendCustomerEmailOtp, verifyCustomerEmailOtp, setupCustomerProfile,
+      registerCustomerWithPassword, loginCustomerWithPassword, resendCustomerVerificationEmail,
+      requestCustomerPasswordReset, completeCustomerPasswordRecovery, changeCustomerPassword,
       resetCustomerPassword, deleteCustomerAccount, recordStaffSalaryPayment,
       adminCheckPhone, adminVerifyPin,
       completeUserProfile, updateUserProfile, logoutUser, updateUserAddresses,
@@ -5984,7 +7102,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       appliedCoupon, applyCouponCode, removeCouponCode,
       deliveryPartnerTip, setDeliveryPartnerTip,
       orderInstructions, setOrderInstructions,
-      orders, createNewOrder, reorderItems, changeOrderStatus, submitOrderRating, submitDeliveryPartnerRating, updateOrderPaymentStatus,
+      orders, createNewOrder, reorderItems, changeOrderStatus, cancelOrder, removeOrder, clearOrderHistory, submitOrderRating, submitDeliveryPartnerRating, updateOrderPaymentStatus,
       activeTrackingOrder, setActiveTrackingOrder, deliveryRouteProgress,
       deliveryPartner, registerAsPartner, partnerOtpVerify, updatePartnerAvailability,
       partnerAcceptOrder, partnerRejectOrder, partnerCompleteDelivery,

@@ -17,6 +17,7 @@ import {
   fallbackCustomerAccounts
 } from "../../lib/auth-utils";
 import { getPublicSupabaseServerClient, getAdminSupabaseServerClient } from "../../src/utils/supabase/server";
+import { logEmailOtpAttempt } from "../../src/services/supabaseEmailLogs";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -48,6 +49,13 @@ export default async function handler(req: any, res: any) {
     // Attempt rate limiting & lockout check
     const attemptCheck = recordEmailOtpVerifyAttempt(cleanEmail, false);
     if (!attemptCheck.allowed && attemptCheck.locked) {
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'verifyOtp',
+        status: 'rate_limited',
+        error_details: attemptCheck.error || "Too many failed attempts. Verification temporarily locked."
+      });
+
       return sendJsonResponse(res, 429, {
         success: false,
         error: attemptCheck.error || "Too many failed attempts. Verification temporarily locked."
@@ -56,20 +64,36 @@ export default async function handler(req: any, res: any) {
 
     let isVerified = false;
     let isExpired = false;
+    let verifiedProvider: 'supabase_auth' | 'hmac_challenge' | 'user_otps' = 'supabase_auth';
     let supabaseUserId = '';
     let registrationMeta: { fullName?: string; location?: string } = {};
 
-    // 1. Verify directly via Supabase Auth verifyOtp
+    // 1. Verify directly via Supabase Auth verifyOtp (both signup and email token types)
     try {
       const publicSupabase = getPublicSupabaseServerClient();
-      const { data: sbData, error: sbError } = await publicSupabase.auth.verifyOtp({
+      // First attempt type: 'signup' (used for customer signup and resend confirmation)
+      let { data: sbData, error: sbError } = await publicSupabase.auth.verifyOtp({
         email: cleanEmail,
         token: inputCode,
-        type: 'email'
+        type: 'signup'
       });
+
+      // If signup token did not match, attempt type: 'email' (magic link / email OTP)
+      if (sbError || !sbData?.user) {
+        const emailAttempt = await publicSupabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: inputCode,
+          type: 'email'
+        });
+        if (!emailAttempt.error && emailAttempt.data?.user) {
+          sbData = emailAttempt.data;
+          sbError = null;
+        }
+      }
 
       if (!sbError && sbData?.user) {
         isVerified = true;
+        verifiedProvider = 'supabase_auth';
         supabaseUserId = sbData.user.id;
         if (sbData.user.user_metadata) {
           registrationMeta = {
@@ -91,6 +115,7 @@ export default async function handler(req: any, res: any) {
         isExpired = true;
       } else if (challengeCheck.verified) {
         isVerified = true;
+        verifiedProvider = 'hmac_challenge';
         if (challengeCheck.payload) {
           registrationMeta = {
             fullName: challengeCheck.payload.fullName || registrationMeta.fullName,
@@ -112,6 +137,7 @@ export default async function handler(req: any, res: any) {
 
         if (dbCheck.valid) {
           isVerified = true;
+          verifiedProvider = 'user_otps';
           if (dbCheck.metadata) {
             registrationMeta = {
               fullName: dbCheck.metadata.fullName || registrationMeta.fullName,
@@ -128,22 +154,49 @@ export default async function handler(req: any, res: any) {
 
     // Expired OTP rejection
     if (isExpired) {
+      const expErr = "The verification code has expired (5-minute validity). Please request a fresh OTP.";
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'verifyOtp',
+        status: 'expired',
+        error_details: expErr
+      });
+
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "The verification code has expired (5-minute validity). Please request a fresh OTP."
+        error: expErr
       });
     }
 
     // Invalid OTP rejection (Strict: No bypasses or demo codes allowed)
     if (!isVerified) {
+      const invErr = attemptCheck.error || "Incorrect verification code. Please check your email and enter the valid 6-digit code.";
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'verifyOtp',
+        status: 'failed',
+        error_details: invErr
+      });
+
       return sendJsonResponse(res, 400, {
         success: false,
-        error: attemptCheck.error || "Incorrect verification code. Please check your email and enter the valid 6-digit code."
+        error: invErr
       });
     }
 
     // Verification succeeded: Reset attempt tracking
     recordEmailOtpVerifyAttempt(cleanEmail, true);
+
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: 'verifyOtp',
+      status: 'verified',
+      provider: verifiedProvider,
+      metadata: {
+        supabaseUserId: supabaseUserId || undefined,
+        fullName: registrationMeta.fullName
+      }
+    });
 
     const customerId = supabaseUserId || `usr_${cleanEmail.replace(/[^a-z0-9]/g, '_')}`;
     const nowIso = new Date().toISOString();

@@ -77,7 +77,7 @@ export default function OrderHistory() {
   }
 
   const userOrders = orders
-    .filter(o => o.customerPhone === user.phone)
+    .filter(o => (o.customerId ? o.customerId === user.id : o.customerPhone === user.phone))
     .slice()
     .reverse();
 

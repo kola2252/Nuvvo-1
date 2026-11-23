@@ -1259,7 +1259,7 @@ export default function TrackingScreen() {
         </div>
       </div>
 
-      <div className="p-4 max-w-md mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-4">
         
         {/* LOCAL NOTIFICATION PROXIMITY BANNER (< 500 METERS) */}
         <AnimatePresence>
@@ -1436,7 +1436,11 @@ export default function TrackingScreen() {
                   type="button"
                   onClick={async () => {
                     try {
-                      const res = await fetch(`/api/payment/phonepe/verify/${activeTrackingOrder.id}`);
+                      const { getActiveAuthToken } = await import('../utils/supabase/client');
+                      const token = await getActiveAuthToken();
+                      const res = await fetch(`/api/payment/phonepe/verify/${activeTrackingOrder.id}`, {
+                        headers: token ? { Authorization: `Bearer ${token}` } : {}
+                      });
                       const json = await res.json();
                       if (json.success && (json.paymentStatus === 'confirmed' || json.paymentStatus === 'success')) {
                         updateOrderPaymentStatus(activeTrackingOrder.id, 'confirmed', 'Verified via PhonePe Gateway');
@@ -2386,7 +2390,7 @@ export default function TrackingScreen() {
       </div>
 
       {/* FLOATING ACTION CHAT SUPPORT TRIGGER BUTTON */}
-      <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+      <div className="fixed bottom-36 right-4 md:bottom-40 md:right-6 z-50 flex flex-col items-end gap-3">
         {/* Unread Pill notification when chat is closed */}
         {!isChatOpen && (unreadDriverCount + unreadRestaurantCount > 0) && (
           <div className="bg-rose-500 border border-white dark:border-zinc-900 text-white text-[9.5px] font-black rounded-full px-2.5 py-1 shadow-md animate-bounce select-none">

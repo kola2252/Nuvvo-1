@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { 
   Search, 
@@ -11,7 +11,9 @@ import {
   SlidersHorizontal,
   ChevronDown,
   Sparkles,
-  Bike
+  Bike,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import LazyImage from './LazyImage';
 import PromotionalCarousel from './PromotionalCarousel';
@@ -40,6 +42,25 @@ export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [vegOnly, setVegOnly] = useState<boolean>(false);
   const [showAddressModal, setShowAddressModal] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    try {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch {}
+  };
 
   const categories = ['All', 'Biryani', 'Starters', 'Fast Food', 'Desserts', 'Beverages', 'Thali'];
 
@@ -82,8 +103,8 @@ export default function Home() {
   }, [foodCatalog, selectedCategory, vegOnly, searchQuery]);
 
   return (
-    <div className="min-h-screen pb-24 max-w-2xl mx-auto px-4 pt-3">
-      {/* Top Bar with Location and App Identity */}
+    <div className="min-h-screen min-h-[100dvh] pb-28 w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3">
+      {/* Top Bar with Location, Full View, and App Identity */}
       <header className="flex items-center justify-between gap-3 mb-3">
         <button
           onClick={() => setShowAddressModal(true)}
@@ -97,13 +118,25 @@ export default function Home() {
               <span>{currentAddress?.type || 'Delivery to'}</span>
               <ChevronDown className="w-3 h-3 group-hover:translate-y-0.5 transition-transform" />
             </div>
-            <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate max-w-[180px] sm:max-w-[260px]">
+            <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate max-w-[180px] sm:max-w-[320px] md:max-w-md">
               {currentAddress?.street || 'Chirala Town, Andhra Pradesh'}
             </p>
           </div>
         </button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Fullscreen / Full View Screen Toggle */}
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit Fullscreen" : "Full View Screen"}
+            aria-label="Toggle Fullscreen"
+            className="p-1.5 sm:px-2.5 sm:py-1 rounded-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300 hover:text-orange-600 dark:hover:text-orange-400 hover:border-orange-300 dark:hover:border-orange-800 shadow-2xs transition-all cursor-pointer flex items-center gap-1 text-[11px] font-bold"
+          >
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5 text-orange-500" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{isFullscreen ? "Exit Full" : "Full View"}</span>
+          </button>
+
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-black bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm">
             <Sparkles className="w-3 h-3" />
             Nuvvo
@@ -194,7 +227,7 @@ export default function Home() {
             <p className="text-xs text-zinc-500 mt-1">Try searching for something else or clearing filters.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 sm:gap-4">
             {filteredDishes.map((dish) => {
               const qtyInCart = cartItemMap.get(dish.id) || 0;
               const isFav = favoriteFoods.includes(dish.id);

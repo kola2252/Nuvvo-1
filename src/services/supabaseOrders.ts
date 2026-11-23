@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { supabase } from '../utils/supabase/client';
+import { supabase, getActiveAuthToken } from '../utils/supabase/client';
 import { Order, OrderStatus } from '../types';
 import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateOrders } from '../utils/tanstackQuery';
 
@@ -38,6 +38,11 @@ export function buildSupabaseOrderPayload(order: Order): Record<string, any> {
     trackingHistory: order.trackingHistory || [],
     rating: order.rating || null,
     feedback: order.feedback || null,
+    customerEmail: order.customerEmail || null,
+    customerWhatsappNumber: order.customerWhatsappNumber || null,
+    whatsappOptIn: Boolean(order.whatsappOptIn),
+    whatsappOptInAt: order.whatsappOptInAt || null,
+    restaurantName: order.restaurantName || null,
     placedAt: order.date || new Date().toISOString()
   };
 
@@ -72,12 +77,19 @@ export function buildSupabaseOrderPayload(order: Order): Record<string, any> {
 export function mapSupabaseRowToOrder(row: any): Order {
   const items = Array.isArray(row.items) ? row.items : [];
   const checkoutData = (row.address && typeof row.address === 'object' && row.address.checkout_data) || {};
-  
+
   return {
     id: String(row.id || `ord_${Date.now()}`),
     customerId: String(row.customer_id || row.customerId || ''),
     customerPhone: String(row.customer_phone || row.customerPhone || ''),
     customerName: String(row.customer_name || row.customerName || 'Customer'),
+    customerEmail: row.customer_email || row.customerEmail || checkoutData.customerEmail || undefined,
+    customerWhatsappNumber: row.customer_whatsapp || row.customerWhatsappNumber || checkoutData.customerWhatsappNumber || undefined,
+    whatsappOptIn: row.whatsapp_consent !== undefined
+      ? Boolean(row.whatsapp_consent)
+      : (row.whatsappOptIn !== undefined ? Boolean(row.whatsappOptIn) : Boolean(checkoutData.whatsappOptIn)),
+    whatsappOptInAt: row.whatsapp_consent_at || row.whatsappOptInAt || checkoutData.whatsappOptInAt || undefined,
+    restaurantName: row.restaurant_name || row.restaurantName || checkoutData.restaurantName || undefined,
     items: items.map((i: any, idx: number) => ({
       id: String(i.id || `item_${idx}`),
       foodItem: i.foodItem || {
@@ -115,8 +127,8 @@ export function mapSupabaseRowToOrder(row: any): Order {
     deliveryPartnerStatus: row.delivery_partner_status || checkoutData.deliveryPartnerStatus || 'Awaiting Delivery Partner Assignment',
     date: row.created_at || row.date || new Date().toISOString(),
     eta: Number(row.eta || checkoutData.eta || 25),
-    trackingHistory: Array.isArray(row.tracking_history) 
-      ? row.tracking_history 
+    trackingHistory: Array.isArray(row.tracking_history)
+      ? row.tracking_history
       : (Array.isArray(checkoutData.trackingHistory) ? checkoutData.trackingHistory : []),
     deliveryPartnerId: row.delivery_partner_id || checkoutData.deliveryPartnerId,
     deliveryPartnerName: row.delivery_partner_name || checkoutData.deliveryPartnerName,
@@ -135,29 +147,55 @@ export function mapSupabaseRowToOrder(row: any): Order {
 }
 
 /**
- * Fetches user past orders from Supabase public.orders table with TanStack Query (30s staleTime).
+ * Fetches ONLY the authenticated customer's own past orders via authenticated backend API
+ * (and user-scoped Supabase RLS fallback), cached strictly by customer userId.
  */
-export async function fetchUserOrdersFromSupabase(phone: string, force: boolean = false): Promise<{
+export async function fetchUserOrdersFromSupabase(
+  phone: string,
+  force: boolean = false,
+  userId?: string
+): Promise<{
   data: Order[] | null;
   error: any | null;
   fromSupabase: boolean;
 }> {
-  if (!phone) {
+  const token = await getActiveAuthToken();
+  if (!token || (!userId && !phone)) {
     return { data: [], error: null, fromSupabase: false };
   }
 
-  const cleanPhone = phone.replace(/\D/g, '');
+  const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
   const digits = cleanPhone.length === 12 && cleanPhone.startsWith('91') ? cleanPhone.slice(2) : cleanPhone;
+  const scopeKey = userId ? `id:${userId}` : `phone:${digits}`;
 
   return tanstackQueryClient.fetchQuery({
-    queryKey: QUERY_KEYS.USER_ORDERS(digits),
+    queryKey: QUERY_KEYS.USER_ORDERS(scopeKey),
     staleTime: force ? 0 : STALE_TIMES.USER_ORDERS,
     queryFn: async () => {
       try {
+        // 1. Primary authenticated server endpoint (strictly customer-isolated by Bearer token)
+        const resp = await fetch('/api/orders?nocache=true', {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+        if (resp.ok) {
+          const rows = await resp.json();
+          if (Array.isArray(rows)) {
+            return { data: rows.map(mapSupabaseRowToOrder), error: null, fromSupabase: true };
+          }
+        }
+      } catch {}
+
+      // 2. User-scoped Supabase query fallback (enforces RLS & customer_id filter)
+      try {
+        if (!userId) {
+          return { data: [], error: null, fromSupabase: false };
+        }
         const { data, error } = await supabase
           .from('orders')
           .select('*')
-          .or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customer_phone.eq.91${digits}`)
+          .eq('customer_id', userId)
           .order('created_at', { ascending: false });
 
         if (error) {
@@ -168,8 +206,7 @@ export async function fetchUserOrdersFromSupabase(phone: string, force: boolean 
         }
 
         if (data && Array.isArray(data)) {
-          const mapped = data.map(mapSupabaseRowToOrder);
-          return { data: mapped, error: null, fromSupabase: true };
+          return { data: data.map(mapSupabaseRowToOrder), error: null, fromSupabase: true };
         }
 
         return { data: [], error: null, fromSupabase: true };
@@ -181,17 +218,36 @@ export async function fetchUserOrdersFromSupabase(phone: string, force: boolean 
 }
 
 /**
- * Fetches all orders from Supabase public.orders table with TanStack Query (20s staleTime).
+ * Fetches all orders for authorized Admin/Super Admin sessions via authenticated backend API.
  */
 export async function fetchAllOrdersFromSupabase(force: boolean = false): Promise<{
   data: Order[] | null;
   error: any | null;
   fromSupabase: boolean;
 }> {
+  const token = await getActiveAuthToken();
+  if (!token) {
+    return { data: [], error: null, fromSupabase: false };
+  }
+
   return tanstackQueryClient.fetchQuery({
     queryKey: QUERY_KEYS.ALL_ORDERS,
     staleTime: force ? 0 : STALE_TIMES.ALL_ORDERS,
     queryFn: async () => {
+      try {
+        const resp = await fetch('/api/orders?nocache=true', {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+        if (resp.ok) {
+          const rows = await resp.json();
+          if (Array.isArray(rows)) {
+            return { data: rows.map(mapSupabaseRowToOrder), error: null, fromSupabase: true };
+          }
+        }
+      } catch {}
+
       try {
         const { data, error } = await supabase
           .from('orders')
@@ -219,35 +275,76 @@ export async function fetchAllOrdersFromSupabase(force: boolean = false): Promis
 }
 
 /**
- * Saves placed order to Supabase orders table with backend persistence fallback.
- * Emits realtime broadcast to sync with all listening client instances.
+ * Saves placed order to authenticated backend (/api/orders which enforces ownership,
+ * Supabase persistence, and automatic WhatsApp Cloud API dispatch) with RLS-scoped sync fallback.
  */
-export async function saveOrderToSupabase(order: Order): Promise<{ success: boolean; error?: string }> {
+export async function saveOrderToSupabase(order: Order): Promise<{ success: boolean; error?: string; whatsappNotification?: any }> {
   try {
-    const payload = buildSupabaseOrderPayload(order);
+    const token = await getActiveAuthToken();
+    const basePayload = buildSupabaseOrderPayload(order);
+    const backendPayload = {
+      ...basePayload,
+      customerEmail: order.customerEmail || '',
+      customerWhatsappNumber: order.customerWhatsappNumber || '',
+      whatsappOptIn: Boolean(order.whatsappOptIn),
+      whatsappOptInAt: order.whatsappOptInAt || null,
+      restaurantName: order.restaurantName || ''
+    };
 
-    // 1. Dual persistence: Send to server backend /api/orders
+    // 1. Primary authoritative authenticated backend POST
+    let backendResJson: any = null;
     try {
-      fetch('/api/orders', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const resp = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }).catch(err => {
-        console.warn('Backend order proxy notice:', err);
+        headers,
+        body: JSON.stringify(backendPayload)
       });
-    } catch {}
+      backendResJson = await resp.json().catch(() => null);
+    } catch (err) {
+      console.warn('Backend order proxy notice:', err);
+    }
 
-    // 2. Direct Supabase database upsert
-    const { error } = await supabase
-      .from('orders')
-      .upsert([payload], { onConflict: 'id' });
+    // 2. Direct Supabase database upsert if backend didn't already persist it
+    let error: any = null;
+    if (!backendResJson?.supabaseSaved) {
+      const extendedPayload = {
+        ...basePayload,
+        customer_email: order.customerEmail || null,
+        customer_whatsapp: order.customerWhatsappNumber || null,
+        whatsapp_consent: Boolean(order.whatsappOptIn),
+        whatsapp_consent_at: order.whatsappOptIn ? (order.whatsappOptInAt || new Date().toISOString()) : null,
+        restaurant_name: order.restaurantName || null
+      };
 
-    if (error) {
+      const upsertRes = await supabase
+        .from('orders')
+        .upsert([extendedPayload], { onConflict: 'id' });
+      error = upsertRes.error;
+
+      if (error && (error.message?.includes('column') || error.code === 'PGRST204')) {
+        const fallbackRes = await supabase
+          .from('orders')
+          .upsert([basePayload], { onConflict: 'id' });
+        error = fallbackRes.error;
+      }
+    }
+
+    if (error && !backendResJson?.supabaseSaved) {
       console.warn('[Supabase Orders] Direct upsert notice:', error.message);
       if (error.code === 'PGRST205') {
-        return { success: false, error: 'orders_table_unmigrated' };
+        return {
+          success: Boolean(backendResJson?.success),
+          error: 'orders_table_unmigrated',
+          whatsappNotification: backendResJson?.whatsappNotification
+        };
       }
-      return { success: false, error: error.message };
+      return {
+        success: Boolean(backendResJson?.success),
+        error: error.message,
+        whatsappNotification: backendResJson?.whatsappNotification
+      };
     }
 
     // 3. Broadcast mutation event over real-time channel
@@ -256,7 +353,10 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
     // Invalidate TanStack Query orders cache
     invalidateOrders();
 
-    return { success: true };
+    return {
+      success: Boolean(backendResJson?.success ?? true),
+      whatsappNotification: backendResJson?.whatsappNotification
+    };
   } catch (err: any) {
     console.warn('[Supabase Orders] saveOrderToSupabase exception notice:', err?.message || err);
     return { success: false, error: err?.message || 'Database error' };
@@ -264,14 +364,14 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
 }
 
 /**
- * Updates an existing order in Supabase orders table.
+ * Updates an existing order in Supabase orders table & notifies authenticated backend for WhatsApp status templates.
  */
 export async function updateOrderInSupabase(
   orderId: string,
   updatedFields: Partial<Order>
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // Only pass schema-compliant columns to direct update
+    const token = await getActiveAuthToken();
     const payload: Record<string, any> = {};
     if (updatedFields.status) payload.status = updatedFields.status;
     if (updatedFields.paymentStatus) payload.payment_status = updatedFields.paymentStatus;
@@ -282,11 +382,13 @@ export async function updateOrderInSupabase(
     if (updatedFields.items) payload.items = updatedFields.items;
     if (updatedFields.address) payload.address = updatedFields.address;
 
-    // 1. Attempt server API update
+    // 1. Authenticated Server API update
     try {
-      fetch(`/api/orders/${orderId}`, {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(updatedFields)
       }).catch(() => {});
     } catch {}
@@ -307,6 +409,58 @@ export async function updateOrderInSupabase(
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Database error' };
+  }
+}
+
+/**
+ * Updates an order status to 'cancelled' or removes an order under verified ownership.
+ */
+export async function cancelOrderInSupabase(
+  orderId: string,
+  options?: { clearFromHistory?: boolean; cancellationReason?: string }
+): Promise<{ success: boolean; cleared?: boolean; error?: string }> {
+  try {
+    const { clearFromHistory = false } = options || {};
+    const token = await getActiveAuthToken();
+
+    if (clearFromHistory) {
+      const { error: delError } = await supabase
+        .from('orders')
+        .delete()
+        .eq('id', orderId);
+
+      if (delError && delError.code !== 'PGRST205') {
+        console.warn('[Supabase Orders] cancel delete error:', delError.message);
+      }
+
+      try {
+        const headers: Record<string, string> = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
+        fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+          method: 'DELETE',
+          headers
+        }).catch(() => {});
+      } catch {}
+
+      invalidateOrders();
+      return { success: true, cleared: true };
+    }
+
+    const patchPayload: Partial<Order> = {
+      status: 'cancelled',
+      paymentStatus: 'refund_initiated'
+    };
+
+    const res = await updateOrderInSupabase(orderId, patchPayload);
+    if (!res.success) {
+      return res;
+    }
+
+    invalidateOrders();
+    return { success: true, cleared: false };
+  } catch (err: any) {
+    console.error('[Supabase Orders] cancelOrderInSupabase exception:', err);
+    return { success: false, error: err?.message || 'Failed to cancel order.' };
   }
 }
 

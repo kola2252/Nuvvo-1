@@ -17,7 +17,12 @@ import sendEmailOtpHandler from "./auth/send-email-otp";
 import verifyEmailOtpHandler from "./auth/verify-email-otp";
 import verifyDbOtpHandler from "./auth/verify-db-otp";
 import setupProfileHandler from "./auth/setup-profile";
+import customerRegisterHandler from "./auth/customer-register";
 import customerLoginHandler from "./auth/customer-login";
+import customerProfileHandler from "./auth/customer-profile";
+import forgotPasswordHandler from "./auth/forgot-password";
+import resendVerificationHandler from "./auth/resend-verification";
+import changePasswordHandler from "./auth/change-password";
 import adminCheckPhoneHandler from "./auth/admin-check-phone";
 import adminVerifyPinHandler from "./auth/admin-verify-pin";
 import verifyEmailHandler from "./verify-email";
@@ -51,8 +56,23 @@ export default function catchAllHandler(req: any, res: any) {
   if (cleanSub === 'auth/setup-profile' || cleanSub.endsWith('/setup-profile')) {
     return setupProfileHandler(req, res);
   }
+  if (cleanSub === 'auth/customer-register' || cleanSub.endsWith('/customer-register')) {
+    return customerRegisterHandler(req, res);
+  }
   if (cleanSub === 'auth/customer-login' || cleanSub.endsWith('/customer-login')) {
     return customerLoginHandler(req, res);
+  }
+  if (cleanSub === 'auth/customer-profile' || cleanSub.endsWith('/customer-profile')) {
+    return customerProfileHandler(req, res);
+  }
+  if (cleanSub === 'auth/forgot-password' || cleanSub.endsWith('/forgot-password')) {
+    return forgotPasswordHandler(req, res);
+  }
+  if (cleanSub === 'auth/resend-verification' || cleanSub.endsWith('/resend-verification')) {
+    return resendVerificationHandler(req, res);
+  }
+  if (cleanSub === 'auth/change-password' || cleanSub.endsWith('/change-password')) {
+    return changePasswordHandler(req, res);
   }
   if (cleanSub === 'auth/admin-check-phone' || cleanSub.endsWith('/admin-check-phone')) {
     return adminCheckPhoneHandler(req, res);

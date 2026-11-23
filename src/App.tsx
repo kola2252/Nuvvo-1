@@ -11,6 +11,7 @@ import Splash from './components/Splash';
 import Home from './components/Home';
 import BottomNav from './components/BottomNav';
 import DesktopSupportWidgets from './components/DesktopSupportWidgets';
+import WhatsAppSupportFab from './components/WhatsAppSupportFab';
 import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
 
@@ -74,7 +75,7 @@ const SuperAdminPanel = safeLazy(() => import('./components/SuperAdminPanel'));
 const MapTracking = safeLazy(() => import('./components/MapTracking'));
 
 export default function App() {
-  const { user, currentPage, selectedFoodItem, notifications, markNotificationAsRead, setCurrentPage, isOffline, cartSuccessAnimation, isAdmin, isSuperAdmin } = useApp();
+  const { user, isPasswordRecoveryMode, currentPage, selectedFoodItem, notifications, markNotificationAsRead, setCurrentPage, isOffline, cartSuccessAnimation, isAdmin, isSuperAdmin } = useApp();
   const [activeToast, setActiveToast] = useState<any>(null);
   const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
@@ -138,7 +139,7 @@ export default function App() {
 
   // Memoize rendered active view so App-level toast/cart/notification updates don't cause page re-renders
   const renderedPage = useMemo(() => {
-    if (!user) {
+    if (!user || isPasswordRecoveryMode) {
       return <Auth />;
     }
 
@@ -192,7 +193,7 @@ export default function App() {
   const showBottomNav = true;
 
   return (
-    <div className="relative font-sans min-h-screen bg-slate-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-300">
+    <div className="relative font-sans min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-300 flex flex-col">
       
       {/* Google Maps Platform quota defense top banner */}
       {gmpQuotaExceeded && (
@@ -304,6 +305,9 @@ export default function App() {
 
       {/* Responsive WhatsApp & AI Chatbot desktop widgets */}
       <DesktopSupportWidgets />
+
+      {/* Persistent bottom-right WhatsApp Customer Support Floating Action Button */}
+      <WhatsAppSupportFab />
 
       {/* Lightweight Add-To-Cart success notification - 300ms timing constraint */}
       <AnimatePresence>

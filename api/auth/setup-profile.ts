@@ -18,6 +18,7 @@ import {
   fallbackUsernamesRegistry
 } from "../../lib/auth-utils";
 import { getAdminSupabaseServerClient } from "../../src/utils/supabase/server";
+import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../src/lib/whatsapp";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -34,6 +35,8 @@ export default async function handler(req: any, res: any) {
       password, 
       confirmPassword, 
       mobile, 
+      whatsappNumber,
+      whatsappOptIn,
       location, 
       address, 
       landmark 
@@ -82,6 +85,35 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // Validate optional Customer WhatsApp Number & strict explicit opt-in consent
+    const rawWa = String(whatsappNumber || '').trim();
+    if (rawWa.includes('@')) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Email address cannot be used as a WhatsApp number. Enter a valid 10-digit mobile number."
+      });
+    }
+
+    let validatedWhatsappE164 = '';
+    if (rawWa) {
+      const waCheck = parseValidWhatsAppPhone(rawWa);
+      if (!waCheck.valid) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: waCheck.reason || "Please enter a valid 10-digit WhatsApp mobile number."
+        });
+      }
+      validatedWhatsappE164 = waCheck.e164;
+    }
+
+    const explicitOptIn = Boolean(whatsappOptIn);
+    if (explicitOptIn && !validatedWhatsappE164) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter a valid WhatsApp mobile number to enable WhatsApp order notifications."
+      });
+    }
+
     // Hash password with cryptographically secure PBKDF2 (never plaintext!)
     const passwordHash = hashPassword(cleanPassword);
 
@@ -96,6 +128,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const userId = body.supabaseUserId || tokenSupabaseId || `usr_${cleanEmail.replace(/[^a-z0-9]/g, '_')}`;
+    const consentTimestamp = explicitOptIn ? new Date().toISOString() : undefined;
     const userProfile = {
       id: userId,
       supabaseUserId: body.supabaseUserId || tokenSupabaseId || undefined,
@@ -103,6 +136,10 @@ export default async function handler(req: any, res: any) {
       username: cleanUsername,
       email: cleanEmail,
       phone: cleanMobile,
+      whatsappNumber: validatedWhatsappE164 || undefined,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp,
+      whatsappOptInSource: validatedWhatsappE164 ? 'registration' : undefined,
       password_hash: passwordHash,
       role: 'Customer',
       isProfileComplete: true,
@@ -154,12 +191,6 @@ export default async function handler(req: any, res: any) {
           }], { onConflict: 'key' });
 
         // Save account record in customer_accounts app_settings
-        const { data: accountsSettings } = await adminClient
-          .from('app_settings')
-          .select('value')
-          .eq('key', `account_${cleanEmail}`)
-          .maybeSingle();
-
         await adminClient
           .from('app_settings')
           .upsert([{
@@ -171,6 +202,18 @@ export default async function handler(req: any, res: any) {
       }
     } catch (dbErr: any) {
       console.warn("[Profile Setup Database Notice]:", dbErr?.message);
+    }
+
+    // Persist validated WhatsApp consent preference in Supabase if WhatsApp number was provided
+    if (validatedWhatsappE164) {
+      await saveCustomerWhatsAppConsent({
+        customerId: userId,
+        customerEmail: cleanEmail,
+        customerPhone: cleanMobile,
+        whatsappNumber: validatedWhatsappE164,
+        consentGranted: explicitOptIn,
+        consentSource: 'registration'
+      }).catch(() => {});
     }
 
     // Always maintain in warm container memory

@@ -498,7 +498,7 @@ export default function MapTracking() {
 
       {/* Bottom Floating Delivery & Highlighted Restaurant Card */}
       <div className="relative z-20 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-slate-200 dark:border-zinc-800 px-4 py-3.5 shadow-2xl safe-bottom">
-        <div className="max-w-md mx-auto space-y-3">
+        <div className="w-full max-w-4xl mx-auto space-y-3">
           {/* Main Delivery & Restaurant Correlation Header */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex-1 min-w-0">

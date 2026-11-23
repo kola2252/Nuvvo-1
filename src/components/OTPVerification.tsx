@@ -13,6 +13,9 @@ import React, { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { CheckCircle2, RotateCcw, ShieldCheck, Mail, ArrowLeft, AlertCircle } from "lucide-react";
 
+import { supabase } from "../utils/supabase/client";
+import { logEmailOtpAttempt } from "../services/supabaseEmailLogs";
+
 export interface OTPVerificationProps {
   identifier: string; // Email or Mobile Number
   purpose?: string;   // 'email_login' | 'registration' | 'login' | 'password_reset'
@@ -40,7 +43,7 @@ export default function OTPVerification({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
-  const [resendTimer, setResendTimer] = useState(60);
+  const [resendTimer, setResendTimer] = useState(30);
   const [remainingAttempts, setRemainingAttempts] = useState<number | null>(null);
 
   // Resend cooldown timer (60-second cooldown to prevent spamming)
@@ -66,7 +69,53 @@ export default function OTPVerification({
     setIsLoading(true);
 
     try {
-      // Validate against the Supabase user_otps table
+      // 1. If verifying an email, verify directly using Supabase Auth verifyOtp
+      if (identifier.includes("@")) {
+        try {
+          let { data: sbData, error: sbError } = await supabase.auth.verifyOtp({
+            email: identifier.trim().toLowerCase(),
+            token: cleanCode,
+            type: "signup"
+          });
+
+          // Also attempt type: 'email' if token was issued via magic link/email OTP
+          if (sbError || !sbData?.user) {
+            const emailAttempt = await supabase.auth.verifyOtp({
+              email: identifier.trim().toLowerCase(),
+              token: cleanCode,
+              type: 'email'
+            });
+            if (!emailAttempt.error && emailAttempt.data?.user) {
+              sbData = emailAttempt.data;
+              sbError = null;
+            }
+          }
+
+          if (!sbError && sbData?.user) {
+            logEmailOtpAttempt({
+              recipient: identifier.trim().toLowerCase(),
+              flow: 'verifyOtp',
+              status: 'verified',
+              provider: 'supabase_auth',
+              metadata: { source: 'OTPVerification_client' }
+            });
+
+            setSuccessMsg("Verification successful! Logging you in...");
+            const token = sbData.session?.access_token || `jwt_${identifier}_${Date.now()}`;
+            try {
+              localStorage.setItem("nuvvo_auth_token", token);
+            } catch {}
+            setTimeout(() => {
+              onSuccess({ token, user: sbData.user });
+            }, 400);
+            return;
+          }
+        } catch (sbEx) {
+          console.warn("[OTPVerification] client verifyOtp notice:", sbEx);
+        }
+      }
+
+      // 2. Validate against server /api/auth/verify-db-otp endpoint
       const res = await fetch("/api/auth/verify-db-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -80,6 +129,16 @@ export default function OTPVerification({
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success) {
+        if (identifier.includes("@")) {
+          logEmailOtpAttempt({
+            recipient: identifier.trim().toLowerCase(),
+            flow: 'verifyOtp',
+            status: 'verified',
+            provider: 'user_otps',
+            metadata: { source: 'OTPVerification_db' }
+          });
+        }
+
         setSuccessMsg("Verification successful! Logging you in...");
         if (data.token) {
           try {
@@ -90,30 +149,63 @@ export default function OTPVerification({
           onSuccess(data);
         }, 400);
       } else {
+        // 3. Fallback: try universal /api/auth/verify-email-otp
+        try {
+          const fallbackRes = await fetch("/api/auth/verify-email-otp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: identifier,
+              otp: cleanCode
+            })
+          });
+          const fallbackData = await fallbackRes.json().catch(() => ({}));
+          if (fallbackRes.ok && fallbackData.success) {
+            if (identifier.includes("@")) {
+              logEmailOtpAttempt({
+                recipient: identifier.trim().toLowerCase(),
+                flow: 'verifyOtp',
+                status: 'verified',
+                provider: 'server',
+                metadata: { source: 'OTPVerification_fallback' }
+              });
+            }
+
+            setSuccessMsg("Verification successful!");
+            if (fallbackData.token) {
+              try {
+                localStorage.setItem("nuvvo_auth_token", fallbackData.token);
+              } catch {}
+            }
+            onSuccess(fallbackData);
+            return;
+          }
+        } catch {}
+
         if (typeof data.remainingAttempts === "number") {
           setRemainingAttempts(data.remainingAttempts);
         }
-        setErrorMsg(data.error || "Verification failed. Please check the code and try again.");
+        const failMessage = data.error || "Verification failed. Please check the code and try again.";
+        if (identifier.includes("@")) {
+          logEmailOtpAttempt({
+            recipient: identifier.trim().toLowerCase(),
+            flow: 'verifyOtp',
+            status: 'failed',
+            error_details: failMessage,
+            metadata: { remainingAttempts: data.remainingAttempts }
+          });
+        }
+        setErrorMsg(failMessage);
       }
     } catch (err: any) {
-      // Fallback: try universal /api/auth/verify-email-otp
-      try {
-        const fallbackRes = await fetch("/api/auth/verify-email-otp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: identifier,
-            otp: cleanCode
-          })
+      if (identifier.includes("@")) {
+        logEmailOtpAttempt({
+          recipient: identifier.trim().toLowerCase(),
+          flow: 'verifyOtp',
+          status: 'failed',
+          error_details: err?.message || 'Connection error'
         });
-        const fallbackData = await fallbackRes.json().catch(() => ({}));
-        if (fallbackRes.ok && fallbackData.success) {
-          setSuccessMsg("Verification successful!");
-          onSuccess(fallbackData);
-          return;
-        }
-      } catch {}
-
+      }
       setErrorMsg("Unable to connect to verification service. Please try again.");
     } finally {
       setIsLoading(false);
@@ -125,6 +217,15 @@ export default function OTPVerification({
     setErrorMsg("");
     setSuccessMsg("");
     setIsLoading(true);
+
+    if (identifier.includes("@")) {
+      logEmailOtpAttempt({
+        recipient: identifier.trim().toLowerCase(),
+        flow: 'signInWithOtp',
+        status: 'initiated',
+        metadata: { action: 'OTPVerification_resend_click' }
+      });
+    }
 
     try {
       if (onResend) {
@@ -144,7 +245,15 @@ export default function OTPVerification({
       setSuccessMsg("A fresh 6-digit code has been sent!");
       setResendTimer(60);
       setOtpCode("");
-    } catch {
+    } catch (err: any) {
+      if (identifier.includes("@")) {
+        logEmailOtpAttempt({
+          recipient: identifier.trim().toLowerCase(),
+          flow: 'signInWithOtp',
+          status: 'failed',
+          error_details: err?.message || 'Failed to resend code'
+        });
+      }
       setErrorMsg("Failed to resend code. Please try again shortly.");
     } finally {
       setIsLoading(false);

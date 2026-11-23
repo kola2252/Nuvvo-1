@@ -13,8 +13,13 @@ import debugOtpHandler from "./debug-otp";
 import sendEmailOtpHandler from "./send-email-otp";
 import verifyEmailOtpHandler from "./verify-email-otp";
 import setupProfileHandler from "./setup-profile";
+import customerRegisterHandler from "./customer-register";
 import customerLoginHandler from "./customer-login";
+import customerProfileHandler from "./customer-profile";
+import forgotPasswordHandler from "./forgot-password";
+import resendVerificationHandler from "./resend-verification";
 import resetPasswordHandler from "./reset-password";
+import changePasswordHandler from "./change-password";
 import deleteAccountHandler from "./delete-account";
 import adminCheckPhoneHandler from "./admin-check-phone";
 import adminVerifyPinHandler from "./admin-verify-pin";
@@ -41,6 +46,18 @@ export default function handler(req: any, res: any) {
   const cleanSub = sub.replace(/^\/+/, '').split('?')[0].toLowerCase();
 
   // Route matches in order of specificity
+  if (cleanSub === 'customer-register' || cleanSub.endsWith('/customer-register')) {
+    return customerRegisterHandler(req, res);
+  }
+  if (cleanSub === 'customer-profile' || cleanSub.endsWith('/customer-profile')) {
+    return customerProfileHandler(req, res);
+  }
+  if (cleanSub === 'forgot-password' || cleanSub.endsWith('/forgot-password')) {
+    return forgotPasswordHandler(req, res);
+  }
+  if (cleanSub === 'resend-verification' || cleanSub.endsWith('/resend-verification')) {
+    return resendVerificationHandler(req, res);
+  }
   if (cleanSub === 'send-email-otp' || cleanSub.endsWith('/send-email-otp')) {
     return sendEmailOtpHandler(req, res);
   }
@@ -55,6 +72,9 @@ export default function handler(req: any, res: any) {
   }
   if (cleanSub === 'reset-password' || cleanSub.endsWith('/reset-password')) {
     return resetPasswordHandler(req, res);
+  }
+  if (cleanSub === 'change-password' || cleanSub.endsWith('/change-password')) {
+    return changePasswordHandler(req, res);
   }
   if (cleanSub === 'delete-account' || cleanSub.endsWith('/delete-account')) {
     return deleteAccountHandler(req, res);
@@ -88,10 +108,14 @@ export default function handler(req: any, res: any) {
     success: true,
     service: "nuvvo-auth-gateway",
     endpoints: [
+      "/api/auth/customer-register",
+      "/api/auth/customer-login",
+      "/api/auth/customer-profile",
+      "/api/auth/forgot-password",
+      "/api/auth/resend-verification",
       "/api/auth/send-email-otp",
       "/api/auth/verify-email-otp",
       "/api/auth/setup-profile",
-      "/api/auth/customer-login",
       "/api/auth/admin-check-phone",
       "/api/auth/admin-verify-pin",
       "/api/auth/send-otp",

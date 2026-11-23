@@ -57,7 +57,7 @@ export default function FavoritesScreen() {
         </span>
       </div>
 
-      <div className="p-4 max-w-lg mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-4">
         
         {/* Tab slider switches */}
         <div className="flex bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border">

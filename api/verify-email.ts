@@ -16,6 +16,7 @@
 
 import nodemailer from "nodemailer";
 import { parseRequestBody, sendJsonResponse } from "../lib/auth-utils";
+import { loadSmtpConfig, saveSmtpConfig } from "../lib/email-service";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -32,6 +33,8 @@ export default async function handler(req: any, res: any) {
     details?: any;
   }> = [];
 
+  let runtimeCustomPass = "";
+
   const addLog = (
     level: "debug" | "info" | "warn" | "error",
     type: "protocol" | "handshake" | "auth" | "transmission" | "system",
@@ -45,6 +48,9 @@ export default async function handler(req: any, res: any) {
     }
     if (process.env.SMTP_PASS) {
       cleanMessage = cleanMessage.replace(new RegExp(process.env.SMTP_PASS.replace(/\s+/g, ""), "gi"), "[REDACTED_PASS]");
+    }
+    if (runtimeCustomPass) {
+      cleanMessage = cleanMessage.replace(new RegExp(runtimeCustomPass.replace(/\s+/g, ""), "gi"), "[REDACTED_PASS]");
     }
 
     const entry = {
@@ -68,16 +74,28 @@ export default async function handler(req: any, res: any) {
   try {
     addLog("info", "system", "Initiating /api/verify-email request inspection.");
 
-    // 1. Gather configuration from environment variables (as documented in .env.example)
-    const emailUser = (process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
-    const emailPass = (process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
-    const smtpHost = (process.env.SMTP_HOST || "smtp.gmail.com").trim();
-    const smtpPort = Number(process.env.SMTP_PORT) || (smtpHost.includes("gmail") ? 465 : 587);
-    const emailFrom = (process.env.EMAIL_FROM || emailUser || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+    // Parse request body and query parameters first to allow credential override or defaults
+    const body = await parseRequestBody(req);
+    const query = req.query || {};
+
+    // 1. Gather configuration from persistent config, request overrides, or environment variables
+    const currentCfg = loadSmtpConfig();
+    const emailUser = (body?.user || query?.user || currentCfg.user || process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
+    const emailPass = (body?.pass || query?.pass || currentCfg.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
+    const smtpHost = (body?.host || query?.host || currentCfg.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
+    const smtpPort = Number(body?.port || query?.port || currentCfg.port || process.env.SMTP_PORT) || (smtpHost.includes("gmail") ? 465 : 587);
+    const emailFrom = (body?.from || query?.from || currentCfg.from || process.env.EMAIL_FROM || emailUser || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+    if (emailPass) runtimeCustomPass = emailPass;
     const isSecure = smtpPort === 465;
+
+    if (body?.save && emailUser && emailPass) {
+      saveSmtpConfig({ user: emailUser, pass: emailPass, host: smtpHost, port: smtpPort, from: emailFrom });
+      addLog("info", "system", "Saved SMTP configuration persistently on server.");
+    }
 
     // Check if credentials are configured
     const isConfigured = Boolean(emailUser && emailPass);
+    const isOverridden = Boolean(body?.user || body?.pass || body?.host);
 
     // Diagnostics metadata to include in all responses
     const transportConfig = {
@@ -88,6 +106,7 @@ export default async function handler(req: any, res: any) {
       authConfigured: isConfigured,
       userConfigured: Boolean(emailUser),
       passConfigured: Boolean(emailPass),
+      isOverride: isOverridden,
       maskedUser: emailUser ? (emailUser.includes("@") ? `${emailUser[0]}***@${emailUser.split("@")[1]}` : `${emailUser.slice(0, 3)}***`) : null,
       fromAddress: emailFrom
     };
@@ -95,20 +114,20 @@ export default async function handler(req: any, res: any) {
     // If credentials are not configured, return clear instructions and details without crashing
     if (!isConfigured) {
       const missingVars: string[] = [];
-      if (!emailUser) missingVars.push("EMAIL_USER");
-      if (!emailPass) missingVars.push("EMAIL_PASS");
+      if (!emailUser) missingVars.push("EMAIL_USER / Username");
+      if (!emailPass) missingVars.push("EMAIL_PASS / Password");
 
       addLog("warn", "system", `SMTP credentials missing: ${missingVars.join(", ")}`);
 
       return sendJsonResponse(res, 200, {
         success: false,
         status: "unconfigured",
-        message: "Email provider credentials are not yet configured in environment variables.",
+        message: "Email provider credentials are not yet configured in environment variables or request.",
         details: {
           missingVariables: missingVars,
           requiredVariables: ["EMAIL_USER", "EMAIL_PASS", "SMTP_HOST (optional, defaults to smtp.gmail.com)", "SMTP_PORT (optional, defaults to 465)"],
           transport: transportConfig,
-          instructions: "To enable live email delivery, configure EMAIL_USER and EMAIL_PASS in your Vercel Project Settings or local .env file as documented in .env.example."
+          instructions: "To enable live email delivery, configure EMAIL_USER and EMAIL_PASS in your Vercel Project Settings or local environment variables as documented in .env.example, or specify test credentials directly in the admin tool."
         },
         logs: smtpLogs
       });
@@ -199,12 +218,9 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 5. Parse request parameters for recipient
-    const body = await parseRequestBody(req);
-    const query = req.query || {};
-
+    // 5. Determine recipient for test email
     // Prioritize recipient: body.to -> query.to -> verified test address -> sender email
-    const requestedRecipient = body?.to || query?.to || query?.email || body?.email || "narendranath.kolamudi@gmail.com";
+    const requestedRecipient = body?.to || query?.to || query?.email || body?.email || "arjungorrepato@gmail.com";
     const recipient = String(requestedRecipient).trim();
     const shouldSendEmail = body?.send !== false && query?.send !== "false";
 

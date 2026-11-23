@@ -5,43 +5,43 @@
 
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { 
-  Phone, Lock, User, Mail, MapPin, Sparkles, Building2, Globe, ShieldCheck, 
-  ShoppingBag, Bike, Building, RotateCcw, ArrowRight, CheckCircle2, KeyRound,
-  ShieldAlert, Eye, EyeOff, LayoutDashboard, Settings
+  Phone, Lock, User, Mail, MapPin, Globe, ShieldCheck, 
+  ShoppingBag, Building, RotateCcw, CheckCircle2, KeyRound,
+  Eye, EyeOff, LayoutDashboard, Settings, Home
 } from 'lucide-react';
-import { Address } from '../types';
 import NuvvoLogo from './NuvvoLogo';
-import OTPVerification from './OTPVerification';
+import ForgotPassword from './ForgotPassword';
 import { translations } from '../utils/translations';
+import { getAuthPersistencePreference } from '../utils/supabase/client';
 
 type AuthStep = 
-  | 'customer_login'           // Part 3: Username/Email + Password or Email OTP
-  | 'customer_register'        // Part 1: Full Name, Email, Location
-  | 'customer_email_otp'       // Part 1: 6-digit Email OTP Verification
-  | 'customer_db_otp'          // Supabase user_otps database verification component
-  | 'customer_profile_setup'   // Part 2: Username, Password, Mobile, Address, Landmark
-  | 'customer_forgot_password' // Customer Forgot Password: Enter Email
-  | 'customer_reset_password'  // Customer Reset Password: Enter OTP & New Password
-  | 'admin_phone'              // Part 4: Admin mobile entry
-  | 'admin_pin'                // Part 4: Server-prompted Admin PIN entry
-  | 'admin_choice_modal'       // Part 4: Dialog: "Open Admin Dashboard" vs "Open Admin Settings"
+  | 'customer_login'           // Username or Email + Password
+  | 'customer_register'        // Full Password-based Customer Registration Form
+  | 'customer_verify_email'    // First-time Supabase Email Confirmation Notice
+  | 'customer_forgot_password' // Send Verified Password Reset Email
+  | 'customer_recovery_reset'  // Supabase PASSWORD_RECOVERY New Password Form
+  | 'admin_phone'              // Admin mobile entry
+  | 'admin_pin'                // Server-prompted Admin PIN entry
+  | 'admin_choice_modal'       // Dialog: "Open Admin Dashboard" vs "Open Admin Settings"
   | 'partner_phone'            // Franchise mobile entry
   | 'partner_otp';             // Franchise mobile OTP
 
 export default function Auth() {
   const { 
-    sendCustomerEmailOtp, 
-    verifyCustomerEmailOtp, 
-    setupCustomerProfile, 
+    isPasswordRecoveryMode,
+    authRecoveryError,
+    clearAuthRecoveryError,
+    cancelPasswordRecoveryMode,
+    registerCustomerWithPassword,
     loginCustomerWithPassword,
-    resetCustomerPassword,
+    resendCustomerVerificationEmail,
+    completeCustomerPasswordRecovery,
     adminCheckPhone, 
     adminVerifyPin,
     loginWithPhone, 
     verifyOtpAndLogin, 
-    directLoginWithPhone, 
     setCurrentPage, 
     language, 
     setLanguage 
@@ -51,6 +51,7 @@ export default function Auth() {
 
   // Primary Role selection: Customer | Admin | Franchise (internal delivery managed via admin)
   const [roleOption, setRoleOption] = useState<string>(() => {
+    if (isPasswordRecoveryMode || authRecoveryError) return 'Customer';
     try {
       const saved = localStorage.getItem('nuvvo_auth_role');
       if (saved && saved !== 'Delivery Partner') return saved;
@@ -59,44 +60,66 @@ export default function Auth() {
   });
 
   // Current active sub-step
-  const [step, setStep] = useState<AuthStep>('customer_login');
+  const [step, setStep] = useState<AuthStep>(() => {
+    if (isPasswordRecoveryMode) return 'customer_recovery_reset';
+    if (authRecoveryError) return 'customer_forgot_password';
+    return 'customer_login';
+  });
 
-  // Customer Login (Part 3) state
-  const [customerLoginMode, setCustomerLoginMode] = useState<'password' | 'email_otp'>('password');
+  // Sync automatically if Supabase enters PASSWORD_RECOVERY mode or returns a link error
+  useEffect(() => {
+    if (isPasswordRecoveryMode) {
+      setRoleOption('Customer');
+      setStep('customer_recovery_reset');
+      setErrorMsg('');
+      setSuccessMsg('Email link verified! Please set your new account password below.');
+    }
+  }, [isPasswordRecoveryMode]);
+
+  useEffect(() => {
+    if (authRecoveryError) {
+      setRoleOption('Customer');
+      const friendlyMsg =
+        authRecoveryError.toLowerCase().includes('expired') || authRecoveryError.toLowerCase().includes('invalid')
+          ? `${authRecoveryError} Please request a new password reset link below.`
+          : authRecoveryError;
+      if (isPasswordRecoveryMode) {
+        setErrorMsg(friendlyMsg);
+      } else {
+        setInitialForgotError(friendlyMsg);
+        setStep('customer_forgot_password');
+      }
+      clearAuthRecoveryError();
+    }
+  }, [authRecoveryError, isPasswordRecoveryMode]);
+
+  // Customer Login state
   const [loginIdentifier, setLoginIdentifier] = useState(''); // username or email
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState<boolean>(() => getAuthPersistencePreference());
+  const [pendingVerifyEmail, setPendingVerifyEmail] = useState('');
 
-  // Customer Forgot & Reset Password state
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [resetOtpCode, setResetOtpCode] = useState('');
-  const [resetNewPassword, setResetNewPassword] = useState('');
-  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
-  const [showResetPassword, setShowResetPassword] = useState(false);
+  // Customer Forgot & Recovery Password state
+  const [initialForgotError, setInitialForgotError] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [showRecoveryPassword, setShowRecoveryPassword] = useState(false);
+  const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
 
-  // Customer Registration (Part 1) state
+  // Customer Registration Form state (Single comprehensive password registration form)
   const [regFullName, setRegFullName] = useState('');
+  const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
+  const [regMobile, setRegMobile] = useState('');
   const [regLocation, setRegLocation] = useState('Chirala Central Hub');
-
-  // Email OTP verification state
-  const [emailOtpCode, setEmailOtpCode] = useState('');
-  const [emailChallengeToken, setEmailChallengeToken] = useState<string>('');
-  const [emailDeliveryNotice, setEmailDeliveryNotice] = useState<string>('');
-  const [isSimulatedEmail, setIsSimulatedEmail] = useState<boolean>(false);
-  const [emailDefaultOtp, setEmailDefaultOtp] = useState<string>('');
-  const [resendTimer, setResendTimer] = useState(30);
-
-  // Customer Profile Setup (Part 2) state
-  const [setupUsername, setSetupUsername] = useState('');
-  const [setupPassword, setSetupPassword] = useState('');
-  const [setupConfirmPassword, setSetupConfirmPassword] = useState('');
-  const [setupMobile, setSetupMobile] = useState('');
-  const [setupLocation, setSetupLocation] = useState('Chirala Central Hub');
-  const [setupFlatNo, setSetupFlatNo] = useState('');
-  const [setupArea, setSetupArea] = useState('');
-  const [setupLandmark, setSetupLandmark] = useState('');
-  const [setupCity, setSetupCity] = useState('Chirala');
+  const [regDeliveryAddress, setRegDeliveryAddress] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+  const [showRegPassword, setShowRegPassword] = useState(false);
+  const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
+  const [regWhatsappNumber, setRegWhatsappNumber] = useState('');
+  const [regWhatsappOptIn, setRegWhatsappOptIn] = useState(false); // Explicitly unchecked by default
 
   // Admin Security Flow - PIN field ONLY rendered after server confirmation
   const [adminPhoneNumber, setAdminPhoneNumber] = useState('9063692135');
@@ -109,6 +132,10 @@ export default function Auth() {
   const [partnerPhone, setPartnerPhone] = useState('');
   const [partnerOtp, setPartnerOtp] = useState('');
 
+  // Resend timer for Franchise OTP & verification email resend
+  const [resendTimer, setResendTimer] = useState(30);
+  const [retryCount, setRetryCount] = useState<number>(0);
+
   // Universal UI feedback
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -116,9 +143,13 @@ export default function Auth() {
 
   // Switch Role handler
   const handleSelectRole = (newRole: string) => {
+    if (isPasswordRecoveryMode) {
+      cancelPasswordRecoveryMode();
+    }
     setRoleOption(newRole);
     setErrorMsg('');
     setSuccessMsg('');
+    setPendingVerifyEmail('');
     try {
       localStorage.setItem('nuvvo_auth_role', newRole);
     } catch {}
@@ -135,9 +166,9 @@ export default function Auth() {
     }
   };
 
-  // Timer countdown for OTP resend
+  // Timer countdown for Franchise OTP resend & verification email resend
   useEffect(() => {
-    if ((step !== 'customer_email_otp' && step !== 'partner_otp') || resendTimer <= 0) return;
+    if ((step !== 'partner_otp' && step !== 'customer_verify_email') || resendTimer <= 0) return;
     const interval = setInterval(() => {
       setResendTimer(prev => prev - 1);
     }, 1000);
@@ -145,132 +176,121 @@ export default function Auth() {
   }, [step, resendTimer]);
 
   // ==========================================
-  // PART 1: CUSTOMER REGISTRATION & EMAIL OTP
+  // CUSTOMER PASSWORD-BASED REGISTRATION
   // ==========================================
-  const handleCustomerSendEmailOtp = async (e: React.FormEvent) => {
+  const handleCustomerRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
 
-    if (!regFullName.trim()) {
-      setErrorMsg('Please enter your full name.');
+    const cleanFullName = regFullName.trim();
+    if (!cleanFullName || cleanFullName.length < 2) {
+      setErrorMsg('Please enter your Full Name.');
       return;
     }
+
+    const cleanUsername = regUsername.trim();
+    if (!cleanUsername || cleanUsername.length < 3 || cleanUsername.length > 30) {
+      setErrorMsg('Username must be between 3 and 30 characters.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_.-]+$/.test(cleanUsername)) {
+      setErrorMsg('Username can only contain letters, numbers, underscores (_), dots (.), and hyphens (-).');
+      return;
+    }
+
     const cleanEmail = regEmail.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setErrorMsg('Please enter a valid email address to receive your verification code.');
-      return;
-    }
-    if (!regLocation.trim()) {
-      setErrorMsg('Please specify your delivery area / location.');
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+      setErrorMsg('Please enter a valid Email Address.');
       return;
     }
 
-    setIsLoading(true);
-    const res = await sendCustomerEmailOtp(cleanEmail, regFullName.trim(), regLocation.trim());
-    setIsLoading(false);
-
-    if (res.success) {
-      setEmailChallengeToken(res.challengeToken || '');
-      setIsSimulatedEmail(Boolean(res.isSimulatedDelivery));
-      setEmailDefaultOtp(res.defaultOtp || '');
-      setSetupLocation(regLocation.trim());
-      setSetupArea(regLocation.trim());
-      setEmailDeliveryNotice(res.message || 'Verification code sent to your email.');
-      setStep('customer_email_otp');
-      setResendTimer(30);
-    } else {
-      setErrorMsg(res.error || 'Failed to dispatch email verification code. Please check your email and try again.');
-    }
-  };
-
-  const handleCustomerVerifyEmailOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-
-    const code = emailOtpCode.trim();
-    if (!code || code.length !== 6) {
-      setErrorMsg('Please enter the 6-digit verification code sent to your email.');
+    const cleanMobile = regMobile.replace(/\D/g, '');
+    if (cleanMobile.length !== 10) {
+      setErrorMsg('Please enter a valid 10-digit Mobile Number.');
       return;
     }
 
-    setIsLoading(true);
-    const res = await verifyCustomerEmailOtp(regEmail.trim().toLowerCase(), code, emailChallengeToken);
-    setIsLoading(false);
-
-    if (res.success) {
-      // Suggest default unique username from email prefix
-      const defaultUsername = regEmail.trim().toLowerCase().split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
-      setSetupUsername(defaultUsername);
-      setSuccessMsg('Email verified successfully! Complete your profile setup to start ordering.');
-      setStep('customer_profile_setup');
-    } else {
-      setErrorMsg(res.error || 'Invalid or expired verification code. Please check the code or request a new one.');
-    }
-  };
-
-  // ==========================================
-  // PART 2: CUSTOMER PROFILE SETUP
-  // ==========================================
-  const handleCustomerSaveProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-
-    const cleanUsername = setupUsername.trim().toLowerCase();
-    if (!cleanUsername || cleanUsername.length < 3) {
-      setErrorMsg('Username must be at least 3 characters.');
+    const cleanLocation = regLocation.trim();
+    if (!cleanLocation || cleanLocation.length < 2) {
+      setErrorMsg('Please enter your Location / Area.');
       return;
     }
-    if (!/^[a-zA-Z0-9_]+$/.test(cleanUsername)) {
-      setErrorMsg('Username may only contain letters, numbers, and underscores.');
+
+    const cleanAddress = regDeliveryAddress.trim();
+    if (!cleanAddress || cleanAddress.length < 5) {
+      setErrorMsg('Please enter your Full Delivery Address.');
       return;
     }
-    if (!setupPassword || setupPassword.length < 6) {
+
+    if (!regPassword || regPassword.length < 6) {
       setErrorMsg('Password must be at least 6 characters long.');
       return;
     }
-    if (setupPassword !== setupConfirmPassword) {
-      setErrorMsg('Passwords do not match. Please verify your password confirmation.');
+
+    if (regPassword !== regConfirmPassword) {
+      setErrorMsg('Password and Confirm Password do not match.');
       return;
     }
-    const cleanMobile = setupMobile.replace(/\D/g, '');
-    if (!cleanMobile || cleanMobile.length !== 10) {
-      setErrorMsg('Please supply a valid 10-digit mobile number.');
+
+    const rawWhatsapp = regWhatsappNumber.trim();
+    if (rawWhatsapp.includes('@')) {
+      setErrorMsg('Email address cannot be used as a WhatsApp number. Enter a valid 10-digit WhatsApp mobile number.');
       return;
     }
-    if (!setupFlatNo.trim() || !setupArea.trim()) {
-      setErrorMsg('Please supply your complete delivery address (Flat/Door no. and Area/Street).');
+    const cleanWaDigits = rawWhatsapp.replace(/\D/g, '');
+    if (rawWhatsapp && cleanWaDigits.length < 10) {
+      setErrorMsg('Please enter a valid 10-digit WhatsApp mobile number.');
+      return;
+    }
+    if (regWhatsappOptIn && cleanWaDigits.length < 10) {
+      setErrorMsg('Please enter a valid 10-digit WhatsApp mobile number to enable WhatsApp order updates.');
       return;
     }
 
     setIsLoading(true);
-    const completeAddress = `${setupFlatNo.trim()}, ${setupArea.trim()}${setupLandmark.trim() ? ` (Near ${setupLandmark.trim()})` : ''}, ${setupCity}`;
-    
-    const res = await setupCustomerProfile({
+    const res = await registerCustomerWithPassword({
+      fullName: cleanFullName,
       username: cleanUsername,
-      password: setupPassword,
+      email: cleanEmail,
       mobile: cleanMobile,
-      location: setupLocation.trim() || setupArea.trim(),
-      deliveryAddress: completeAddress,
-      landmark: setupLandmark.trim(),
-      fullName: regFullName.trim(),
-      email: regEmail.trim().toLowerCase()
+      location: cleanLocation,
+      deliveryAddress: cleanAddress,
+      password: regPassword,
+      confirmPassword: regConfirmPassword,
+      whatsappNumber: cleanWaDigits ? `+91${cleanWaDigits.slice(-10)}` : undefined,
+      whatsappOptIn: regWhatsappOptIn,
+      rememberMe
     });
     setIsLoading(false);
 
-    if (res.success) {
-      setCurrentPage('home');
+    if (!res.success) {
+      setErrorMsg(res.error || 'Could not create your account. Please check your details and try again.');
+      return;
+    }
+
+    if (res.requiresEmailVerification) {
+      setPendingVerifyEmail(cleanEmail);
+      setLoginIdentifier(cleanUsername);
+      setResendTimer(30);
+      setSuccessMsg(
+        res.message ||
+          `Account created! We sent a verification link to ${cleanEmail}. Please verify your email before signing in.`
+      );
+      setStep('customer_verify_email');
     } else {
-      setErrorMsg(res.error || 'Failed to save customer profile. Please try again.');
+      setCurrentPage('home');
     }
   };
 
   // ==========================================
-  // PART 3: CUSTOMER FUTURE LOGIN
+  // CUSTOMER SIGN IN (USERNAME OR EMAIL + PASSWORD)
   // ==========================================
   const handleCustomerPasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
+    setSuccessMsg('');
+    setPendingVerifyEmail('');
 
     if (!loginIdentifier.trim()) {
       setErrorMsg('Please enter your Username or Email Address.');
@@ -282,107 +302,71 @@ export default function Auth() {
     }
 
     setIsLoading(true);
-    const res = await loginCustomerWithPassword(loginIdentifier.trim(), loginPassword);
+    const res = await loginCustomerWithPassword(loginIdentifier.trim(), loginPassword, rememberMe);
     setIsLoading(false);
 
     if (res.success) {
       setCurrentPage('home');
     } else {
+      if (res.requiresEmailVerification && res.email) {
+        setPendingVerifyEmail(res.email);
+      }
       setErrorMsg(res.error || 'Login failed. Please verify your username/email and password.');
     }
   };
 
-  const handleCustomerSendLoginEmailOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-
-    const cleanEmail = loginIdentifier.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setErrorMsg('Please enter a valid email address to receive a login code.');
+  const handleResendVerificationEmail = async (emailOrId?: string) => {
+    const target = (emailOrId || pendingVerifyEmail || regEmail || loginIdentifier).trim();
+    if (!target) {
+      setErrorMsg('Please enter your email or username first.');
       return;
     }
-
     setIsLoading(true);
-    const res = await sendCustomerEmailOtp(cleanEmail, 'Returning Customer', 'Chirala');
+    setErrorMsg('');
+    const res = await resendCustomerVerificationEmail(target);
     setIsLoading(false);
-
     if (res.success) {
-      setRegEmail(cleanEmail);
-      setEmailChallengeToken(res.challengeToken || '');
-      setIsSimulatedEmail(Boolean(res.isSimulatedDelivery));
-      setEmailDefaultOtp(res.defaultOtp || '');
-      setEmailDeliveryNotice(res.message || 'Login code sent to your email.');
-      setStep('customer_db_otp');
       setResendTimer(30);
+      setSuccessMsg(res.message || 'Verification email sent! Please check your inbox and spam folder.');
     } else {
-      setErrorMsg(res.error || 'Failed to send login code.');
-    }
-  };
-
-  const handleCustomerSendForgotPasswordOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    const cleanEmail = forgotEmail.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setErrorMsg('Please enter a valid email address.');
-      return;
-    }
-
-    setIsLoading(true);
-    const res = await sendCustomerEmailOtp(cleanEmail, 'Password Reset', 'Chirala');
-    setIsLoading(false);
-
-    if (res.success) {
-      setRegEmail(cleanEmail);
-      setEmailChallengeToken(res.challengeToken || '');
-      setIsSimulatedEmail(Boolean(res.isSimulatedDelivery));
-      setEmailDefaultOtp(res.defaultOtp || '');
-      setEmailDeliveryNotice(res.message || 'Password reset code sent to your email.');
-      setStep('customer_reset_password');
-      setResendTimer(30);
-    } else {
-      setErrorMsg(res.error || 'Failed to send password reset code. Please check your email.');
-    }
-  };
-
-  const handleCustomerResetPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    const code = resetOtpCode.trim();
-    if (!code || code.length !== 6) {
-      setErrorMsg('Please enter the 6-digit verification code.');
-      return;
-    }
-    if (!resetNewPassword || resetNewPassword.length < 6) {
-      setErrorMsg('Password must be at least 6 characters.');
-      return;
-    }
-    if (resetNewPassword !== resetConfirmPassword) {
-      setErrorMsg('Passwords do not match.');
-      return;
-    }
-
-    setIsLoading(true);
-    const res = await resetCustomerPassword(regEmail.trim().toLowerCase(), code, resetNewPassword);
-    setIsLoading(false);
-
-    if (res.success) {
-      setSuccessMsg('Your password has been reset successfully! Please sign in with your new password.');
-      setLoginIdentifier(regEmail.trim().toLowerCase());
-      setLoginPassword('');
-      setStep('customer_login');
-      setCustomerLoginMode('password');
-    } else {
-      setErrorMsg(res.error || 'Failed to reset password. Please verify the code or request a new one.');
+      setErrorMsg(res.error || 'Unable to resend verification email right now.');
     }
   };
 
   // ==========================================
-  // PART 4: ADMIN PHONE & SERVER PIN AUTH
+  // CUSTOMER PASSWORD RECOVERY - SET NEW PASSWORD
+  // ==========================================
+  const handleCustomerRecoveryPasswordUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!recoveryNewPassword || recoveryNewPassword.length < 6) {
+      setErrorMsg('New Password must be at least 6 characters long.');
+      return;
+    }
+    if (recoveryNewPassword !== recoveryConfirmPassword) {
+      setErrorMsg('New Password and Confirm Password do not match.');
+      return;
+    }
+
+    setIsLoading(true);
+    const res = await completeCustomerPasswordRecovery(recoveryNewPassword);
+    setIsLoading(false);
+
+    if (res.success) {
+      setRecoveryNewPassword('');
+      setRecoveryConfirmPassword('');
+      setLoginPassword('');
+      setSuccessMsg(res.message || 'Password updated successfully! Please sign in with your new password.');
+      setStep('customer_login');
+    } else {
+      setErrorMsg(res.error || 'Failed to update password. Please request a fresh recovery link.');
+    }
+  };
+
+  // ==========================================
+  // ADMIN PHONE & SERVER PIN AUTH (PRESERVED)
   // ==========================================
   const handleAdminPhoneCheck = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -435,7 +419,6 @@ export default function Auth() {
     setIsLoading(false);
 
     if (res.success) {
-      // Step 4 Requirement: Prompt Admin with choices: "Open Admin Dashboard" vs "Open Admin Settings"
       setStep('admin_choice_modal');
     } else {
       setErrorMsg(res.error || 'Incorrect PIN. Verification failed.');
@@ -443,7 +426,7 @@ export default function Auth() {
   };
 
   // ==========================================
-  // PARTNER & FRANCHISE MOBILE OTP FLOW
+  // PARTNER & FRANCHISE MOBILE OTP FLOW (PRESERVED)
   // ==========================================
   const handlePartnerSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -494,18 +477,9 @@ export default function Auth() {
     }
   };
 
-  const handleQuickCustomerEnter = async () => {
-    setIsLoading(true);
-    const res = await directLoginWithPhone('9876543210', 'Customer');
-    setIsLoading(false);
-    if (res.success) {
-      setCurrentPage('home');
-    }
-  };
-
   return (
-    <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-zinc-950 p-4 transition-colors duration-300">
-      <div className="w-full max-w-md bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl shadow-2xl overflow-hidden">
+    <div className="flex items-center justify-center min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-zinc-950 p-3 sm:p-4 transition-colors duration-300">
+      <div className="w-full max-w-md sm:max-w-lg bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl shadow-2xl overflow-hidden">
         
         {/* Banner with Logo branding */}
         <div className="bg-gradient-to-b from-[#FAF8F5] to-white dark:from-zinc-900 dark:to-zinc-950 p-6 text-center relative border-b dark:border-zinc-800">
@@ -584,11 +558,21 @@ export default function Auth() {
                 <span className="text-sm">⚠️</span>
                 <span className="flex-1 leading-relaxed">{errorMsg}</span>
               </div>
-              <div className="flex items-center justify-between pt-1 border-t border-rose-200/60 dark:border-rose-900/40">
+              <div className="flex items-center justify-between pt-1 border-t border-rose-200/60 dark:border-rose-900/40 gap-2 flex-wrap">
+                {pendingVerifyEmail && (
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() => handleResendVerificationEmail(pendingVerifyEmail)}
+                    className="text-[11px] font-black text-orange-600 dark:text-orange-400 hover:underline uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                  >
+                    <Mail className="w-3 h-3" /> Resend Verification Email
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setErrorMsg('')}
-                  className="text-[11px] font-black text-rose-700 dark:text-rose-300 hover:underline uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                  className="text-[11px] font-black text-rose-700 dark:text-rose-300 hover:underline uppercase tracking-wider flex items-center gap-1 cursor-pointer ml-auto"
                 >
                   <RotateCcw className="w-3 h-3" /> Dismiss
                 </button>
@@ -605,7 +589,7 @@ export default function Auth() {
           )}
 
           {/* ========================================================= */}
-          {/* STEP: CUSTOMER LOGIN (PART 3)                             */}
+          {/* STEP: CUSTOMER LOGIN (USERNAME OR EMAIL + PASSWORD)       */}
           {/* ========================================================= */}
           {step === 'customer_login' && roleOption === 'Customer' && (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
@@ -613,236 +597,454 @@ export default function Auth() {
               <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-2xl mb-5">
                 <button
                   type="button"
-                  onClick={() => { setErrorMsg(''); setStep('customer_login'); }}
+                  onClick={() => { setErrorMsg(''); setSuccessMsg(''); setStep('customer_login'); }}
                   className="flex-1 py-2 text-xs font-black rounded-xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-50 shadow-xs cursor-pointer"
                 >
                   Sign In
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setErrorMsg(''); setStep('customer_register'); }}
+                  onClick={() => { setErrorMsg(''); setSuccessMsg(''); setStep('customer_register'); }}
                   className="flex-1 py-2 text-xs font-bold rounded-xl text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
                 >
-                  Create Account (OTP)
+                  Create Account
                 </button>
               </div>
 
               <div className="text-center mb-4">
                 <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Welcome Back</h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {customerLoginMode === 'password'
-                    ? 'Log in using your Username or Email and Custom Password'
-                    : 'Enter your Email address to receive a secure login code'}
+                  Sign in with your Username or Email Address and Password
                 </p>
               </div>
 
-              {customerLoginMode === 'password' ? (
-                <form onSubmit={handleCustomerPasswordLogin} className="space-y-3.5">
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Username or Email Address
-                    </label>
-                    <div className="relative">
-                      <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. arjun or customer@email.com"
-                        value={loginIdentifier}
-                        onChange={e => setLoginIdentifier(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider">
-                        Password
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => setCustomerLoginMode('email_otp')}
-                        className="text-[10px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
-                      >
-                        Login via Email OTP
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        required
-                        placeholder="Enter your password"
-                        value={loginPassword}
-                        onChange={e => setLoginPassword(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-10 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(p => !p)}
-                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    <div className="flex justify-end mt-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setErrorMsg('');
-                          setForgotEmail(loginIdentifier.includes('@') ? loginIdentifier : '');
-                          setStep('customer_forgot_password');
-                        }}
-                        className="text-[11px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
-                      >
-                        Forgot Password?
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2"
-                  >
-                    {isLoading ? 'Signing In...' : 'Sign In'}
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleCustomerSendLoginEmailOtp} className="space-y-3.5">
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Email Address
-                    </label>
-                    <div className="relative">
-                      <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                      <input
-                        type="email"
-                        required
-                        placeholder="customer@email.com"
-                        value={loginIdentifier}
-                        onChange={e => setLoginIdentifier(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2"
-                  >
-                    {isLoading ? 'Sending Code...' : 'Send Login Code via Email'}
-                  </button>
-
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => setCustomerLoginMode('password')}
-                      className="text-xs font-bold text-zinc-500 hover:underline cursor-pointer"
-                    >
-                      ← Back to Password Login
-                    </button>
-                  </div>
-                </form>
-              )}
-            </motion.div>
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: CUSTOMER FORGOT PASSWORD - STEP 1 (EMAIL ENTRY)    */}
-          {/* ========================================================= */}
-          {step === 'customer_forgot_password' && roleOption === 'Customer' && (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="text-center mb-5">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-orange-50 text-orange-600 border border-orange-200 dark:bg-orange-950/40 dark:border-orange-900/40">
-                  <KeyRound className="w-3.5 h-3.5" /> Password Recovery
-                </div>
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Forgot Password?</h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-xs mx-auto">
-                  Enter your registered email address to receive a secure 6-digit password reset verification code.
-                </p>
-              </div>
-
-              <form onSubmit={handleCustomerSendForgotPasswordOtp} className="space-y-3.5">
+              <form onSubmit={handleCustomerPasswordLogin} autoComplete="on" className="space-y-3.5">
                 <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    Registered Email Address
+                  <label htmlFor="customer-login-identifier" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Username or Email Address
                   </label>
                   <div className="relative">
-                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+                    <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
                     <input
-                      type="email"
+                      id="customer-login-identifier"
+                      name="username"
+                      type="text"
                       required
-                      placeholder="customer@email.com"
-                      value={forgotEmail}
-                      onChange={e => setForgotEmail(e.target.value)}
+                      autoComplete="username"
+                      placeholder="e.g. arjun22 or customer@email.com"
+                      value={loginIdentifier}
+                      onChange={e => setLoginIdentifier(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
                     />
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="customer-login-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+                    <input
+                      id="customer-login-password"
+                      name="password"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      autoComplete="current-password"
+                      placeholder="Enter your password"
+                      value={loginPassword}
+                      onChange={e => setLoginPassword(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-10 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(p => !p)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-2">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        id="customer-remember-me"
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={e => setRememberMe(e.target.checked)}
+                        className="w-4 h-4 accent-orange-500 rounded cursor-pointer"
+                      />
+                      <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">
+                        Remember me on this device
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                        setInitialForgotError('');
+                        setStep('customer_forgot_password');
+                      }}
+                      className="text-[11px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer shrink-0"
+                    >
+                      Forgot Password?
+                    </button>
                   </div>
                 </div>
 
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2 flex items-center justify-center gap-2"
+                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2"
                 >
-                  <Mail className="w-4 h-4" />
-                  <span>{isLoading ? 'Sending Reset Code...' : 'Send Password Reset Code'}</span>
+                  {isLoading ? 'Signing In...' : 'Sign In'}
                 </button>
-
-                <div className="text-center pt-2">
-                  <button
-                    type="button"
-                    onClick={() => { setErrorMsg(''); setStep('customer_login'); }}
-                    className="text-xs font-bold text-zinc-500 hover:underline cursor-pointer"
-                  >
-                    ← Back to Sign In
-                  </button>
-                </div>
               </form>
             </motion.div>
           )}
 
           {/* ========================================================= */}
-          {/* STEP: CUSTOMER RESET PASSWORD - STEP 2 (CODE & NEW PASS)  */}
+          {/* STEP: CUSTOMER PASSWORD-BASED REGISTRATION                */}
           {/* ========================================================= */}
-          {step === 'customer_reset_password' && roleOption === 'Customer' && (
+          {step === 'customer_register' && roleOption === 'Customer' && (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="text-center mb-5">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-orange-50 text-orange-600 border border-orange-200 dark:bg-orange-950/40 dark:border-orange-900/40">
-                  <KeyRound className="w-3.5 h-3.5" /> Verification & Reset
-                </div>
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Set New Password</h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  Verification code sent to <strong className="text-zinc-800 dark:text-zinc-200">{regEmail}</strong>
+              <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-2xl mb-5">
+                <button
+                  type="button"
+                  onClick={() => { setErrorMsg(''); setSuccessMsg(''); setStep('customer_login'); }}
+                  className="flex-1 py-2 text-xs font-bold rounded-xl text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setErrorMsg(''); setSuccessMsg(''); setStep('customer_register'); }}
+                  className="flex-1 py-2 text-xs font-black rounded-xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-50 shadow-xs cursor-pointer"
+                >
+                  Create Account
+                </button>
+              </div>
+
+              <div className="text-center mb-4">
+                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Create Customer Account</h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Register with your unique username and password to start ordering
                 </p>
               </div>
 
-              {/* Informative notice when verification code is sent */}
-              {emailDeliveryNotice && (
-                <div className="mb-4 p-3 bg-orange-50 dark:bg-zinc-800/80 border border-orange-200 dark:border-zinc-700 rounded-2xl text-xs space-y-1">
-                  <p className="text-zinc-700 dark:text-zinc-300 font-medium">{emailDeliveryNotice}</p>
-                </div>
-              )}
+              <form onSubmit={handleCustomerRegister} autoComplete="on" className="space-y-3">
+                {/* Full Name & Unique Username */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="reg-full-name" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Full Name *
+                    </label>
+                    <div className="relative">
+                      <User className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                      <input
+                        id="reg-full-name"
+                        name="name"
+                        type="text"
+                        required
+                        autoComplete="name"
+                        placeholder="e.g. Ramesh Kumar"
+                        value={regFullName}
+                        onChange={e => setRegFullName(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
 
-              <form onSubmit={handleCustomerResetPassword} className="space-y-3.5">
+                  <div>
+                    <label htmlFor="reg-username" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Unique Username *
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-orange-500">@</span>
+                      <input
+                        id="reg-username"
+                        name="username"
+                        type="text"
+                        required
+                        autoComplete="username"
+                        placeholder="e.g. arjun22"
+                        value={regUsername}
+                        onChange={e => setRegUsername(e.target.value.replace(/[^a-zA-Z0-9_.-]/g, ''))}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-7 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Email & Mobile Number */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="reg-email" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Email Address *
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                      <input
+                        id="reg-email"
+                        name="email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        placeholder="name@gmail.com"
+                        value={regEmail}
+                        onChange={e => setRegEmail(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="reg-mobile" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Mobile Number (10 Digits) *
+                    </label>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                      <input
+                        id="reg-mobile"
+                        name="tel"
+                        type="tel"
+                        maxLength={10}
+                        required
+                        autoComplete="tel-national"
+                        placeholder="9876543210"
+                        value={regMobile}
+                        onChange={e => setRegMobile(e.target.value.replace(/\D/g, ''))}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold font-mono text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Location / Area */}
                 <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    6-Digit Verification Code
+                  <label htmlFor="reg-location" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Location / Area *
                   </label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={6}
-                    placeholder="• • • • • •"
-                    value={resetOtpCode}
-                    onChange={e => setResetOtpCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full bg-slate-50 dark:bg-zinc-800 px-4 py-3 text-center tracking-[0.4em] font-mono text-xl font-black rounded-2xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                  />
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                    <input
+                      id="reg-location"
+                      name="address-level2"
+                      type="text"
+                      required
+                      autoComplete="address-level2"
+                      placeholder="e.g. Chirala Central Hub, Kothapet Road"
+                      value={regLocation}
+                      onChange={e => setRegLocation(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                    />
+                  </div>
                 </div>
 
+                {/* Full Delivery Address */}
+                <div>
+                  <label htmlFor="reg-delivery-address" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Full Delivery Address *
+                  </label>
+                  <div className="relative">
+                    <Home className="absolute left-3 top-3 w-3.5 h-3.5 text-zinc-400" />
+                    <textarea
+                      id="reg-delivery-address"
+                      name="street-address"
+                      required
+                      rows={2}
+                      autoComplete="street-address"
+                      placeholder="Flat / House No., Street Name, Landmark, Chirala"
+                      value={regDeliveryAddress}
+                      onChange={e => setRegDeliveryAddress(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500 resize-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Password & Confirm Password */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="reg-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Password (Min 6 chars) *
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                      <input
+                        id="reg-password"
+                        name="new-password"
+                        type={showRegPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="new-password"
+                        placeholder="Create password"
+                        value={regPassword}
+                        onChange={e => setRegPassword(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegPassword(p => !p)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                      >
+                        {showRegPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="reg-confirm-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Confirm Password *
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                      <input
+                        id="reg-confirm-password"
+                        name="confirm-password"
+                        type={showRegConfirmPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="new-password"
+                        placeholder="Re-enter password"
+                        value={regConfirmPassword}
+                        onChange={e => setRegConfirmPassword(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegConfirmPassword(p => !p)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                      >
+                        {showRegConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* WhatsApp Notification Number & Explicit Consent (Optional, unchecked by default) */}
+                <div className="p-3 rounded-2xl bg-orange-50/50 dark:bg-zinc-800/70 border border-orange-200/70 dark:border-zinc-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="block text-[10px] font-black text-zinc-600 dark:text-zinc-300 uppercase tracking-wider">
+                      WhatsApp Mobile Number (Optional)
+                    </label>
+                    {regMobile.replace(/\D/g, '').length === 10 && (
+                      <button
+                        type="button"
+                        onClick={() => setRegWhatsappNumber(regMobile.replace(/\D/g, ''))}
+                        className="text-[10px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer whitespace-nowrap"
+                      >
+                        Use mobile number
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-zinc-400">+91</span>
+                    <input
+                      type="tel"
+                      maxLength={10}
+                      placeholder="10-digit WhatsApp number"
+                      value={regWhatsappNumber}
+                      onChange={e => setRegWhatsappNumber(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-white dark:bg-zinc-900 pl-10 pr-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 font-mono focus:outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer pt-0.5 select-none">
+                    <input
+                      type="checkbox"
+                      checked={regWhatsappOptIn}
+                      onChange={e => setRegWhatsappOptIn(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-orange-500 rounded cursor-pointer shrink-0"
+                    />
+                    <span className="text-[11px] leading-snug text-zinc-600 dark:text-zinc-300 font-medium">
+                      Send automatic order confirmations and live delivery status updates on WhatsApp. (Explicit consent; opt out anytime in Account Settings.)
+                    </span>
+                  </label>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2"
+                >
+                  {isLoading ? 'Creating Account...' : 'Create Account'}
+                </button>
+              </form>
+            </motion.div>
+          )}
+
+          {/* ========================================================= */}
+          {/* STEP: FIRST-TIME SUPABASE EMAIL VERIFICATION NOTICE       */}
+          {/* ========================================================= */}
+          {step === 'customer_verify_email' && roleOption === 'Customer' && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="text-center space-y-4 py-2">
+              <div className="w-14 h-14 bg-orange-100 dark:bg-orange-950/40 text-orange-600 mx-auto rounded-3xl flex items-center justify-center border border-orange-200 dark:border-orange-800 shadow-sm">
+                <Mail className="w-7 h-7" />
+              </div>
+
+              <div>
+                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Confirm Your Email Address</h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
+                  We sent a verification link to{' '}
+                  <strong className="text-zinc-800 dark:text-zinc-200">{pendingVerifyEmail || regEmail}</strong>.
+                  Please open your inbox and confirm your email before signing in.
+                </p>
+              </div>
+
+              <div className="space-y-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorMsg('');
+                    setStep('customer_login');
+                  }}
+                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98"
+                >
+                  Proceed to Sign In
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isLoading || resendTimer > 0}
+                  onClick={() => handleResendVerificationEmail(pendingVerifyEmail || regEmail)}
+                  className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-750 disabled:opacity-50 text-xs font-bold text-zinc-700 dark:text-zinc-300 cursor-pointer transition"
+                >
+                  {resendTimer > 0 ? `Resend Verification Email (${resendTimer}s)` : 'Resend Verification Email'}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* ========================================================= */}
+          {/* STEP: CUSTOMER FORGOT PASSWORD COMPONENT                  */}
+          {/* ========================================================= */}
+          {step === 'customer_forgot_password' && roleOption === 'Customer' && (
+            <ForgotPassword
+              initialEmail={loginIdentifier.includes('@') ? loginIdentifier.trim() : ''}
+              initialError={initialForgotError}
+              onBackToSignIn={() => {
+                setErrorMsg('');
+                setSuccessMsg('');
+                setInitialForgotError('');
+                setStep('customer_login');
+              }}
+            />
+          )}
+
+          {/* ========================================================= */}
+          {/* STEP: SUPABASE PASSWORD RECOVERY - SET NEW PASSWORD       */}
+          {/* ========================================================= */}
+          {step === 'customer_recovery_reset' && roleOption === 'Customer' && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="text-center mb-5">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-orange-50 text-orange-600 border border-orange-200 dark:bg-orange-950/40 dark:border-orange-900/40">
+                  <KeyRound className="w-3.5 h-3.5" /> Verified Recovery Session
+                </div>
+                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Set New Password</h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                  Enter and confirm your new password below.
+                </p>
+              </div>
+
+              <form onSubmit={handleCustomerRecoveryPasswordUpdate} className="space-y-3.5">
                 <div>
                   <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
                     New Password (Min 6 Characters)
@@ -850,19 +1052,22 @@ export default function Auth() {
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
                     <input
-                      type={showResetPassword ? 'text' : 'password'}
+                      type={showRecoveryPassword ? 'text' : 'password'}
                       required
+                      minLength={6}
+                      autoComplete="new-password"
                       placeholder="Enter new password"
-                      value={resetNewPassword}
-                      onChange={e => setResetNewPassword(e.target.value)}
+                      value={recoveryNewPassword}
+                      onChange={e => setRecoveryNewPassword(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-10 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
                     />
                     <button
                       type="button"
-                      onClick={() => setShowResetPassword(p => !p)}
+                      onClick={() => setShowRecoveryPassword(p => !p)}
+                      aria-label={showRecoveryPassword ? 'Hide password' : 'Show password'}
                       className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
                     >
-                      {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {showRecoveryPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
@@ -874,378 +1079,67 @@ export default function Auth() {
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
                     <input
-                      type={showResetPassword ? 'text' : 'password'}
+                      type={showRecoveryConfirmPassword ? 'text' : 'password'}
                       required
+                      minLength={6}
+                      autoComplete="new-password"
                       placeholder="Confirm new password"
-                      value={resetConfirmPassword}
-                      onChange={e => setResetConfirmPassword(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                      value={recoveryConfirmPassword}
+                      onChange={e => setRecoveryConfirmPassword(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-10 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowRecoveryConfirmPassword(p => !p)}
+                      aria-label={showRecoveryConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                    >
+                      {showRecoveryConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
+                  {recoveryConfirmPassword && recoveryNewPassword !== recoveryConfirmPassword && (
+                    <p className="text-[11px] font-semibold text-rose-500 mt-1">
+                      Passwords do not match yet.
+                    </p>
+                  )}
                 </div>
 
                 <button
                   type="submit"
-                  disabled={isLoading}
+                  disabled={isLoading || recoveryNewPassword.length < 6 || recoveryNewPassword !== recoveryConfirmPassword}
                   className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2 flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>{isLoading ? 'Updating Password...' : 'Reset & Save Password'}</span>
+                  <span>{isLoading ? 'Updating Password...' : 'Save New Password'}</span>
                 </button>
 
-                <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center justify-between pt-2 text-xs">
                   <button
                     type="button"
-                    onClick={() => { setErrorMsg(''); setStep('customer_forgot_password'); }}
-                    className="text-xs font-bold text-zinc-500 hover:underline cursor-pointer"
+                    onClick={() => {
+                      cancelPasswordRecoveryMode();
+                      setErrorMsg('');
+                      setSuccessMsg('');
+                      setInitialForgotError('');
+                      setStep('customer_forgot_password');
+                    }}
+                    className="font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
                   >
-                    ← Change Email
+                    Request New Reset Link
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setErrorMsg(''); setStep('customer_login'); }}
-                    className="text-xs font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
+                    onClick={() => {
+                      cancelPasswordRecoveryMode();
+                      setErrorMsg('');
+                      setSuccessMsg('');
+                      setStep('customer_login');
+                    }}
+                    className="font-bold text-zinc-500 hover:underline cursor-pointer"
                   >
-                    Back to Sign In
+                    Cancel & Back to Sign In
                   </button>
                 </div>
-              </form>
-            </motion.div>
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: CUSTOMER FIRST-TIME REGISTRATION (PART 1)          */}
-          {/* ========================================================= */}
-          {step === 'customer_register' && roleOption === 'Customer' && (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-2xl mb-5">
-                <button
-                  type="button"
-                  onClick={() => { setErrorMsg(''); setStep('customer_login'); }}
-                  className="flex-1 py-2 text-xs font-bold rounded-xl text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer"
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setErrorMsg(''); setStep('customer_register'); }}
-                  className="flex-1 py-2 text-xs font-black rounded-xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-50 shadow-xs cursor-pointer"
-                >
-                  Create Account (OTP)
-                </button>
-              </div>
-
-              <div className="text-center mb-4">
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Customer Registration</h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Step 1: Enter your details to receive a 6-digit verification code on your email
-                </p>
-              </div>
-
-              <form onSubmit={handleCustomerSendEmailOtp} className="space-y-3.5">
-                <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    1. Customer Full Name
-                  </label>
-                  <div className="relative">
-                    <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Ramesh Kumar"
-                      value={regFullName}
-                      onChange={e => setRegFullName(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    2. Email Address
-                  </label>
-                  <div className="relative">
-                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                    <input
-                      type="email"
-                      required
-                      placeholder="name@gmail.com"
-                      value={regEmail}
-                      onChange={e => setRegEmail(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    3. Customer Location / Area
-                  </label>
-                  <div className="relative">
-                    <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Chirala Central Hub, Bapatla, etc."
-                      value={regLocation}
-                      onChange={e => setRegLocation(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-10 pr-3.5 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-sm font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-2 flex items-center justify-center gap-2"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>{isLoading ? 'Sending OTP...' : 'Send OTP'}</span>
-                </button>
-              </form>
-            </motion.div>
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: EMAIL OTP CODE VERIFICATION (PART 1)                */}
-          {/* ========================================================= */}
-          {step === 'customer_email_otp' && (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="text-center mb-5">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-orange-50 text-orange-600 border border-orange-200 dark:bg-orange-950/40 dark:border-orange-900/40">
-                  ✉️ Email Verification
-                </div>
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Enter Email OTP</h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Please enter the 6-digit verification code sent to <span className="font-bold text-zinc-800 dark:text-zinc-100">{regEmail}</span>
-                </p>
-              </div>
-
-              {/* Informative notice when verification code is sent */}
-              {emailDeliveryNotice && (
-                <div className="mb-4 p-3 bg-orange-50 dark:bg-zinc-800/80 border border-orange-200 dark:border-zinc-700 rounded-2xl text-xs space-y-1">
-                  <p className="text-zinc-700 dark:text-zinc-300 font-medium">{emailDeliveryNotice}</p>
-                </div>
-              )}
-
-              <form onSubmit={handleCustomerVerifyEmailOtp} className="space-y-4">
-                <div>
-                  <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                    6-Digit Verification Code
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    pattern="[0-9]{6}"
-                    placeholder="• • • • • •"
-                    value={emailOtpCode}
-                    onChange={e => setEmailOtpCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono text-2xl font-black tracking-widest py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98"
-                >
-                  {isLoading ? 'Verifying...' : 'Verify Code & Proceed to Profile Setup'}
-                </button>
-              </form>
-
-              <div className="flex items-center justify-between mt-5 text-xs text-zinc-500">
-                <button
-                  type="button"
-                  onClick={() => setStep('customer_register')}
-                  className="text-orange-600 font-bold hover:underline cursor-pointer"
-                >
-                  Change Email
-                </button>
-                <span>
-                  {resendTimer > 0 ? (
-                    `Resend code in ${resendTimer}s`
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        sendCustomerEmailOtp(regEmail, regFullName || 'Customer', regLocation || 'Chirala');
-                        setResendTimer(30);
-                      }}
-                      className="text-orange-600 font-bold hover:underline cursor-pointer"
-                    >
-                      Resend Code
-                    </button>
-                  )}
-                </span>
-              </div>
-            </motion.div>
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: SUPABASE USER_OTPS DATABASE VERIFICATION            */}
-          {/* ========================================================= */}
-          {step === 'customer_db_otp' && (
-            <OTPVerification
-              identifier={regEmail}
-              purpose="email_login"
-              title="Verify Login Code"
-              subtitle={`Enter the 6-digit verification code sent to ${regEmail}`}
-              notice={emailDeliveryNotice}
-              onBack={() => setStep('customer_login')}
-              onResend={async () => {
-                await sendCustomerEmailOtp(regEmail, regFullName || 'Returning Customer', 'Chirala');
-              }}
-              onSuccess={(result) => {
-                if (result.metadata?.fullName) {
-                  setRegFullName(result.metadata.fullName);
-                }
-                setCurrentPage('home');
-              }}
-            />
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: CUSTOMER PROFILE SETUP (PART 2)                     */}
-          {/* ========================================================= */}
-          {step === 'customer_profile_setup' && (
-            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              <div className="text-center mb-5">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-950/40 dark:border-emerald-900/40">
-                  ✓ Step 2 of 2: Profile Setup
-                </div>
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">Set Up Your Profile</h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Create your unique username, password, and delivery address
-                </p>
-              </div>
-
-              <form onSubmit={handleCustomerSaveProfile} className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Username (Unique)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. arjun22"
-                      value={setupUsername}
-                      onChange={e => setSetupUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Mobile Number (10 Digits)
-                    </label>
-                    <input
-                      type="tel"
-                      maxLength={10}
-                      required
-                      placeholder="9876543210"
-                      value={setupMobile}
-                      onChange={e => setSetupMobile(e.target.value.replace(/\D/g, ''))}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 font-mono focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Custom Password
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      placeholder="Min 6 characters"
-                      value={setupPassword}
-                      onChange={e => setSetupPassword(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Confirm Password
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      placeholder="Re-enter password"
-                      value={setupConfirmPassword}
-                      onChange={e => setSetupConfirmPassword(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-100 dark:border-zinc-800 pt-2.5 mt-2 space-y-2">
-                  <p className="text-[11px] font-black text-zinc-700 dark:text-zinc-300 flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5 text-orange-500" />
-                    Delivery Address Details
-                  </p>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[9.5px] font-bold text-zinc-500 uppercase mb-0.5">Flat / Door No.</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Flat 301, Tower A"
-                        value={setupFlatNo}
-                        onChange={e => setSetupFlatNo(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[9.5px] font-bold text-zinc-500 uppercase mb-0.5">Area / Street</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Main Road, Trunk Rd"
-                        value={setupArea}
-                        onChange={e => setSetupArea(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[9.5px] font-bold text-zinc-500 uppercase mb-0.5">Optional Landmark</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Near Clock Tower"
-                        value={setupLandmark}
-                        onChange={e => setSetupLandmark(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[9.5px] font-bold text-zinc-500 uppercase mb-0.5">City</label>
-                      <select
-                        value={setupCity}
-                        onChange={e => setSetupCity(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-zinc-800 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                      >
-                        <option value="Chirala">Chirala</option>
-                        <option value="Bapatla">Bapatla</option>
-                        <option value="Ongole">Ongole</option>
-                        <option value="Guntur">Guntur</option>
-                        <option value="Vijayawada">Vijayawada</option>
-                        <option value="Hyderabad">Hyderabad</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-orange-500/20 cursor-pointer active:scale-98 mt-3"
-                >
-                  {isLoading ? 'Saving Profile...' : 'Complete Registration & Start Ordering'}
-                </button>
               </form>
             </motion.div>
           )}
@@ -1534,17 +1428,29 @@ export default function Auth() {
                 </button>
                 <span>
                   {resendTimer > 0 ? (
-                    `Resend code in ${resendTimer}s`
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 dark:bg-zinc-800 rounded-xl text-zinc-500 font-mono text-[11px] border border-slate-200 dark:border-zinc-700">
+                      <RotateCcw className="w-3 h-3 animate-spin text-zinc-400" />
+                      <span>Resend OTP in <strong>{resendTimer}s</strong></span>
+                    </span>
                   ) : (
                     <button
                       type="button"
+                      disabled={isLoading}
                       onClick={() => {
+                        const nextRetry = retryCount + 1;
+                        setRetryCount(nextRetry);
                         loginWithPhone(partnerPhone, roleOption);
                         setResendTimer(30);
                       }}
-                      className="text-orange-600 font-bold hover:underline cursor-pointer"
+                      className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/40 dark:hover:bg-orange-900/40 text-orange-600 dark:text-orange-400 font-black rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 border border-orange-200 dark:border-orange-800/60 shadow-xs active:scale-95"
                     >
-                      Resend OTP
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Resend OTP</span>
+                      {retryCount > 0 && (
+                        <span className="px-1.5 py-0.2 text-[10px] bg-orange-200 dark:bg-orange-900 text-orange-800 dark:text-orange-200 rounded-full font-mono font-bold">
+                          {retryCount}
+                        </span>
+                      )}
                     </button>
                   )}
                 </span>

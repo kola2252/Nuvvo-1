@@ -221,7 +221,7 @@ export default function FranchiseScreen() {
 
       {/* DASHBOARD RENDER FOR APPROVED PARTNERS */}
       {activeFranchiseApp ? (
-        <div className="px-4 py-5 max-w-lg mx-auto space-y-6">
+        <div className="px-4 py-5 max-w-4xl mx-auto space-y-6">
           
           {/* DASHBOARD HERO */}
           <div className="bg-slate-900 dark:bg-zinc-900 text-white rounded-3xl p-5 relative overflow-hidden border border-zinc-800/80 shadow-md">
@@ -395,7 +395,7 @@ export default function FranchiseScreen() {
         </div>
       ) : (
         /* STANDARD REGISTER / INQUIRY PAGE WITH HERO AND FORM */
-        <div className="px-4 py-5 max-w-lg mx-auto space-y-6">
+        <div className="px-4 py-5 max-w-4xl mx-auto space-y-6">
 
           {/* HERO BANNER SECTION */}
           <div className="bg-gradient-to-tr from-slate-900 via-zinc-900 to-black text-white rounded-3xl p-6 relative overflow-hidden border shadow-lg text-left">

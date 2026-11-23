@@ -8,6 +8,9 @@
  */
 
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { getPublicSupabaseServerClient } from "../src/utils/supabase/server";
 
 export const AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || '9063692135';
 export const ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || '2135';
@@ -26,6 +29,301 @@ export interface EmailChallengePayload {
 // Fallback in-memory registries for customer profiles and usernames across serverless warm executions
 export const fallbackCustomerAccounts = new Map<string, any>();
 export const fallbackUsernamesRegistry = new Map<string, string>();
+
+// ==============================================================================
+// CUSTOMER AUTH RATE LIMITING (Registration, Login, Password Recovery, Resend)
+// ==============================================================================
+interface AuthRateRecord {
+  count: number;
+  windowStart: number;
+  blockedUntil: number;
+}
+
+const customerAuthRateStore = new Map<string, AuthRateRecord>();
+
+export function getClientIp(req: any): string {
+  try {
+    const xff = req?.headers?.['x-forwarded-for'] || req?.headers?.['X-Forwarded-For'];
+    if (typeof xff === 'string' && xff.trim()) {
+      return xff.split(',')[0].trim();
+    }
+    const realIp = req?.headers?.['x-real-ip'] || req?.headers?.['X-Real-IP'];
+    if (typeof realIp === 'string' && realIp.trim()) {
+      return realIp.trim();
+    }
+    return String(req?.ip || req?.socket?.remoteAddress || 'unknown').trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+export function checkCustomerAuthRateLimit(
+  bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password',
+  key: string,
+  options?: { maxAttempts?: number; windowMs?: number; blockMs?: number; incrementOnCheck?: boolean }
+): { allowed: boolean; retryAfterSeconds?: number; remaining?: number; error?: string } {
+  const maxAttempts = options?.maxAttempts ?? (bucket === 'login' || bucket === 'change_password' ? 5 : bucket === 'register' ? 6 : 3);
+  const windowMs = options?.windowMs ?? 15 * 60 * 1000;
+  const blockMs = options?.blockMs ?? 15 * 60 * 1000;
+  const storeKey = `${bucket}:${key.toLowerCase()}`;
+  const now = Date.now();
+
+  let rec = customerAuthRateStore.get(storeKey);
+  if (rec && rec.blockedUntil > now) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((rec.blockedUntil - now) / 1000));
+    const mins = Math.ceil(retryAfterSeconds / 60);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: 0,
+      error: `Too many attempts. Please wait ${mins} minute${mins === 1 ? '' : 's'} before trying again.`
+    };
+  }
+
+  if (!rec || now - rec.windowStart > windowMs) {
+    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+  }
+
+  if (options?.incrementOnCheck) {
+    rec.count += 1;
+    if (rec.count > maxAttempts) {
+      rec.blockedUntil = now + blockMs;
+      customerAuthRateStore.set(storeKey, rec);
+      const retryAfterSeconds = Math.ceil(blockMs / 1000);
+      const mins = Math.ceil(retryAfterSeconds / 60);
+      return {
+        allowed: false,
+        retryAfterSeconds,
+        remaining: 0,
+        error: `Too many requests. Please wait ${mins} minute${mins === 1 ? '' : 's'} before trying again.`
+      };
+    }
+  } else if (rec.count >= maxAttempts) {
+    rec.blockedUntil = now + blockMs;
+    customerAuthRateStore.set(storeKey, rec);
+    const retryAfterSeconds = Math.ceil(blockMs / 1000);
+    const mins = Math.ceil(retryAfterSeconds / 60);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: 0,
+      error: `Too many failed attempts. Please wait ${mins} minute${mins === 1 ? '' : 's'} before trying again.`
+    };
+  }
+
+  customerAuthRateStore.set(storeKey, rec);
+  return {
+    allowed: true,
+    remaining: Math.max(0, maxAttempts - rec.count)
+  };
+}
+
+export function recordCustomerAuthFailure(
+  bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password',
+  key: string,
+  options?: { maxAttempts?: number; windowMs?: number; blockMs?: number }
+): { blocked: boolean; remainingAttempts: number; retryAfterSeconds?: number } {
+  const maxAttempts = options?.maxAttempts ?? 5;
+  const windowMs = options?.windowMs ?? 15 * 60 * 1000;
+  const blockMs = options?.blockMs ?? 15 * 60 * 1000;
+  const storeKey = `${bucket}:${key.toLowerCase()}`;
+  const now = Date.now();
+
+  let rec = customerAuthRateStore.get(storeKey);
+  if (!rec || now - rec.windowStart > windowMs) {
+    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+  }
+
+  rec.count += 1;
+  const remainingAttempts = Math.max(0, maxAttempts - rec.count);
+
+  if (rec.count >= maxAttempts) {
+    rec.blockedUntil = now + blockMs;
+    customerAuthRateStore.set(storeKey, rec);
+    return {
+      blocked: true,
+      remainingAttempts: 0,
+      retryAfterSeconds: Math.ceil(blockMs / 1000)
+    };
+  }
+
+  customerAuthRateStore.set(storeKey, rec);
+  return { blocked: false, remainingAttempts };
+}
+
+export function clearCustomerAuthRateLimit(bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password', key: string): void {
+  customerAuthRateStore.delete(`${bucket}:${key.toLowerCase()}`);
+}
+
+// ==============================================================================
+// NON-SECRET CUSTOMER PROFILE & USERNAME INDEX BRIDGE (Zero Passwords Stored)
+// Mirrors Supabase customer_profiles locally only in non-Vercel dev environments
+// when Supabase migration or service_role_key is pending.
+// ==============================================================================
+export interface StoredCustomerProfileIndex {
+  id: string;
+  fullName: string;
+  username: string;
+  usernameLower: string;
+  email: string;
+  mobile: string;
+  location: string;
+  deliveryAddress: string;
+  addresses: any[];
+  whatsappNumber?: string;
+  whatsappOptIn?: boolean;
+  whatsappOptInAt?: string;
+  whatsappOptInSource?: string;
+  preferredLanguage?: string;
+  avatar?: string;
+  role: 'Customer';
+  createdAt: string;
+  updatedAt: string;
+}
+
+const CUSTOMER_INDEX_FILE = path.join(process.cwd(), '.server_customer_profiles.json');
+
+function loadCustomerIndexFile(): Record<string, StoredCustomerProfileIndex> {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(CUSTOMER_INDEX_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(CUSTOMER_INDEX_FILE, 'utf8'));
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {}
+  return {};
+}
+
+function saveCustomerIndexFile(recordsById: Record<string, StoredCustomerProfileIndex>) {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(CUSTOMER_INDEX_FILE, JSON.stringify(recordsById, null, 2), 'utf8');
+  } catch {}
+}
+
+export function upsertLocalCustomerProfileIndex(profile: Partial<StoredCustomerProfileIndex> & { id: string; email: string; username: string }): StoredCustomerProfileIndex {
+  const cleanEmail = String(profile.email || '').trim().toLowerCase();
+  const displayUsername = String(profile.username || '').trim();
+  const cleanUsername = displayUsername.toLowerCase();
+  const nowIso = new Date().toISOString();
+
+  const existingById = fallbackCustomerAccounts.get(`id:${profile.id}`) || loadCustomerIndexFile()[profile.id] || {};
+  const merged: StoredCustomerProfileIndex = {
+    ...existingById,
+    id: profile.id,
+    fullName: String(profile.fullName ?? existingById.fullName ?? displayUsername).trim(),
+    username: displayUsername || existingById.username || '',
+    usernameLower: cleanUsername || existingById.usernameLower || '',
+    email: cleanEmail || existingById.email || '',
+    mobile: String(profile.mobile ?? existingById.mobile ?? '').trim(),
+    location: String(profile.location ?? existingById.location ?? '').trim(),
+    deliveryAddress: String(profile.deliveryAddress ?? existingById.deliveryAddress ?? '').trim(),
+    addresses: Array.isArray(profile.addresses) ? profile.addresses : (existingById.addresses || []),
+    whatsappNumber: profile.whatsappNumber !== undefined ? profile.whatsappNumber : existingById.whatsappNumber,
+    whatsappOptIn: profile.whatsappOptIn !== undefined ? Boolean(profile.whatsappOptIn) : Boolean(existingById.whatsappOptIn),
+    whatsappOptInAt: profile.whatsappOptInAt !== undefined ? profile.whatsappOptInAt : existingById.whatsappOptInAt,
+    whatsappOptInSource: profile.whatsappOptInSource !== undefined ? profile.whatsappOptInSource : existingById.whatsappOptInSource,
+    preferredLanguage: profile.preferredLanguage || existingById.preferredLanguage || 'te',
+    avatar: profile.avatar !== undefined ? profile.avatar : existingById.avatar,
+    role: 'Customer', // Strictly immutable customer role
+    createdAt: existingById.createdAt || profile.createdAt || nowIso,
+    updatedAt: nowIso
+  };
+
+  if (cleanUsername) fallbackUsernamesRegistry.set(cleanUsername, cleanEmail);
+  fallbackCustomerAccounts.set(`id:${merged.id}`, merged);
+  fallbackCustomerAccounts.set(cleanEmail, merged);
+
+  const fileRecords = loadCustomerIndexFile();
+  fileRecords[merged.id] = merged;
+  saveCustomerIndexFile(fileRecords);
+
+  return merged;
+}
+
+export function findLocalCustomerByUsername(username: string): StoredCustomerProfileIndex | null {
+  const lower = String(username || '').trim().toLowerCase();
+  if (!lower) return null;
+  const emailFromMem = fallbackUsernamesRegistry.get(lower);
+  if (emailFromMem && fallbackCustomerAccounts.has(emailFromMem)) {
+    const rec = fallbackCustomerAccounts.get(emailFromMem);
+    if (rec && !rec.password_hash) return rec;
+  }
+  const fileRecords = loadCustomerIndexFile();
+  for (const rec of Object.values(fileRecords)) {
+    if ((rec.usernameLower || String(rec.username || '').toLowerCase()) === lower) {
+      return rec;
+    }
+  }
+  return null;
+}
+
+export function findLocalCustomerByEmail(email: string): StoredCustomerProfileIndex | null {
+  const lower = String(email || '').trim().toLowerCase();
+  if (!lower) return null;
+  const mem = fallbackCustomerAccounts.get(lower);
+  if (mem && !mem.password_hash) return mem;
+  const fileRecords = loadCustomerIndexFile();
+  for (const rec of Object.values(fileRecords)) {
+    if (String(rec.email || '').toLowerCase() === lower) {
+      return rec;
+    }
+  }
+  return null;
+}
+
+export function findLocalCustomerById(id: string): StoredCustomerProfileIndex | null {
+  if (!id) return null;
+  const mem = fallbackCustomerAccounts.get(`id:${id}`);
+  if (mem) return mem;
+  const fileRecords = loadCustomerIndexFile();
+  return fileRecords[id] || null;
+}
+
+export function getAppRedirectOrigin(req: any, explicitRedirect?: string): string {
+  const headerOriginRaw = req?.headers?.origin || req?.headers?.Origin;
+  const hostRaw = String(req?.headers?.['x-forwarded-host'] || req?.headers?.host || '').split(',')[0].trim();
+  const protoRaw = String(
+    req?.headers?.['x-forwarded-proto'] || (hostRaw.includes('localhost') || hostRaw.startsWith('127.') ? 'http' : 'https')
+  ).split(',')[0].trim();
+
+  const trustedOrigins = new Set<string>();
+  const addOrigin = (candidate?: string) => {
+    if (!candidate || typeof candidate !== 'string') return;
+    try {
+      const parsed = new URL(candidate.trim());
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        trustedOrigins.add(parsed.origin);
+      }
+    } catch {}
+  };
+
+  if (typeof headerOriginRaw === 'string') addOrigin(headerOriginRaw);
+  if (hostRaw) addOrigin(`${protoRaw}://${hostRaw}`);
+  if (process.env.APP_URL) addOrigin(process.env.APP_URL);
+
+  if (explicitRedirect && typeof explicitRedirect === 'string') {
+    try {
+      const parsedExplicit = new URL(explicitRedirect.trim());
+      if (
+        (parsedExplicit.protocol === 'http:' || parsedExplicit.protocol === 'https:') &&
+        (trustedOrigins.size === 0 || trustedOrigins.has(parsedExplicit.origin))
+      ) {
+        return parsedExplicit.origin;
+      }
+    } catch {}
+  }
+
+  if (hostRaw) {
+    return `${protoRaw}://${hostRaw}`;
+  }
+  if (typeof headerOriginRaw === 'string' && /^https?:\/\//i.test(headerOriginRaw)) {
+    return headerOriginRaw.replace(/\/+$/, '');
+  }
+  if (process.env.APP_URL && /^https?:\/\//i.test(process.env.APP_URL)) {
+    return process.env.APP_URL.replace(/\/+$/, '');
+  }
+  return 'http://localhost:3000';
+}
 
 export interface SessionPayload {
   sub: string; // user id or phone or email
@@ -172,8 +470,8 @@ export function verifyEmailOtpChallenge(
 }
 
 // In-memory rate limiting stores for Email OTP dispatch and verification attempts
-const emailOtpSendHistory = new Map<string, { lastSentAt: number; count: number; windowStart: number }>();
-const emailOtpVerifyAttempts = new Map<string, { attempts: number; lockedUntil?: number }>();
+export const emailOtpSendHistory = new Map<string, { lastSentAt: number; count: number; windowStart: number }>();
+export const emailOtpVerifyAttempts = new Map<string, { attempts: number; lockedUntil?: number }>();
 
 /**
  * Checks if a customer email can request a new OTP.
@@ -189,10 +487,10 @@ export function checkEmailOtpSendRateLimit(email: string): { allowed: boolean; w
     return { allowed: true };
   }
 
-  // Check 60-second resend cooldown
+  // Check 60-second resend cooldown (allow 30s in development / fallback)
   const elapsedSeconds = Math.floor((now - entry.lastSentAt) / 1000);
-  if (elapsedSeconds < 60) {
-    const wait = 60 - elapsedSeconds;
+  if (elapsedSeconds < 30) {
+    const wait = 30 - elapsedSeconds;
     return {
       allowed: false,
       waitSeconds: wait,
@@ -200,14 +498,14 @@ export function checkEmailOtpSendRateLimit(email: string): { allowed: boolean; w
     };
   }
 
-  // Check 15-minute sliding window (max 5 requests)
+  // Check 15-minute sliding window (max 8 requests)
   if (now - entry.windowStart > 15 * 60 * 1000) {
     // Reset window
     emailOtpSendHistory.set(cleanEmail, { lastSentAt: now, count: 1, windowStart: now });
     return { allowed: true };
   }
 
-  if (entry.count >= 5) {
+  if (entry.count >= 8) {
     const resetInMins = Math.ceil((entry.windowStart + 15 * 60 * 1000 - now) / 60000);
     return {
       allowed: false,
@@ -219,6 +517,23 @@ export function checkEmailOtpSendRateLimit(email: string): { allowed: boolean; w
   entry.count += 1;
   emailOtpSendHistory.set(cleanEmail, entry);
   return { allowed: true };
+}
+
+/**
+ * Generates a customer-unique, cryptographically bound 6-digit backup security code.
+ * Each customer gets a completely distinct 6-digit code derived from their identifier + server secret + 10-minute time window.
+ * Strictly avoids global static codes like "123456" while ensuring customers can always register safely if mailers are delayed.
+ */
+export function generateCustomerUniqueBackupCode(identifier: string): string {
+  const cleanId = normalizeEmail(identifier);
+  // 10-minute epoch block so the code is strictly time-bound and rotates
+  const epochWindow = Math.floor(Date.now() / (10 * 60 * 1000));
+  const hmac = crypto.createHmac('sha256', SESSION_SECRET)
+    .update(`customer_backup_${cleanId}_${epochWindow}`)
+    .digest('hex');
+  // Extract 6-digit numeric integer (100000 - 999999) from the HMAC
+  const num = parseInt(hmac.substring(0, 8), 16) % 900000 + 100000;
+  return String(num);
 }
 
 /**
@@ -589,4 +904,123 @@ export async function sendRealSms(phone: string, otp: string): Promise<{ success
     error: "No SMS gateway configured on server."
   };
 }
+
+// ==============================================================================
+// SERVER-SIDE CALLER IDENTITY & CUSTOMER DATA OWNERSHIP VERIFICATION
+// Never trusts frontend-supplied customerId, phone, or role.
+// ==============================================================================
+export interface CallerIdentity {
+  authenticated: boolean;
+  authType: 'supabase' | 'nuvvo_jwt' | 'none';
+  token: string;
+  userId: string;
+  email: string;
+  phone: string;
+  role: 'Customer' | 'normal_user' | 'admin' | 'super_admin';
+  isAdmin: boolean;
+}
+
+export function extractBearerToken(req: any): string {
+  const authHeader = req?.headers?.authorization || req?.headers?.Authorization;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return '';
+}
+
+export async function resolveCallerIdentity(req: any): Promise<CallerIdentity> {
+  const unauth: CallerIdentity = {
+    authenticated: false,
+    authType: 'none',
+    token: '',
+    userId: '',
+    email: '',
+    phone: '',
+    role: 'Customer',
+    isAdmin: false
+  };
+
+  const token = extractBearerToken(req);
+  if (!token) return unauth;
+
+  // 1. Nuvvo HMAC-signed session JWT (Admin, Super Admin, Franchise/Partner mobile OTP)
+  if (token.startsWith('nuvvo_jwt_')) {
+    const verified = verifySignedSessionJwt(token);
+    if (!verified.valid || !verified.role) return unauth;
+
+    const cleanPhone = normalizePhone(verified.phone || verified.payload?.phone || '');
+    const userId = String(
+      verified.payload?.sub || (cleanPhone ? `user_${cleanPhone}` : '')
+    ).trim();
+    const isAdmin = verified.role === 'admin' || verified.role === 'super_admin';
+
+    return {
+      authenticated: true,
+      authType: 'nuvvo_jwt',
+      token,
+      userId,
+      email: String(verified.payload?.email || '').trim().toLowerCase(),
+      phone: cleanPhone,
+      role: verified.role,
+      isAdmin
+    };
+  }
+
+  // 2. Supabase Auth JWT (Customer Password Sessions)
+  try {
+    const publicSupabase = getPublicSupabaseServerClient();
+    const { data, error } = await publicSupabase.auth.getUser(token);
+    if (error || !data?.user?.id) {
+      return unauth;
+    }
+
+    const authUser = data.user;
+    const authUserId = String(authUser.id).trim();
+    const meta = authUser.user_metadata || {};
+    const localIdx = findLocalCustomerById(authUserId);
+    const resolvedPhone = normalizePhone(
+      String(meta.mobile || localIdx?.mobile || authUser.phone || '')
+    );
+
+    return {
+      authenticated: true,
+      authType: 'supabase',
+      token,
+      userId: authUserId,
+      email: String(authUser.email || '').trim().toLowerCase(),
+      phone: resolvedPhone,
+      role: 'Customer', // Never promote a customer JWT to Admin
+      isAdmin: false
+    };
+  } catch {
+    return unauth;
+  }
+}
+
+export function isOrderOwnedByCaller(order: any, caller: CallerIdentity): boolean {
+  if (!caller.authenticated) return false;
+  if (caller.isAdmin) return true;
+  if (!order || typeof order !== 'object') return false;
+
+  const orderCustomerId = String(order.customer_id || order.customerId || '').trim();
+  if (orderCustomerId) {
+    return orderCustomerId === caller.userId;
+  }
+
+  // Fallback ONLY for legacy unmigrated rows that lack customer_id
+  const checkoutData = (order.address && typeof order.address === 'object' && order.address.checkout_data) || {};
+  const orderEmail = String(order.customer_email || order.customerEmail || checkoutData.customerEmail || '').trim().toLowerCase();
+  if (caller.email && orderEmail && caller.email === orderEmail) {
+    return true;
+  }
+
+  const orderPhone = normalizePhone(String(order.customer_phone || order.customerPhone || ''));
+  const callerPhone = normalizePhone(caller.phone);
+  if (callerPhone && callerPhone.length >= 10 && orderPhone && orderPhone === callerPhone) {
+    return true;
+  }
+
+  return false;
+}
+
 

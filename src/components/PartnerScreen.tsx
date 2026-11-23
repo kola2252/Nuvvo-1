@@ -134,7 +134,7 @@ export default function PartnerScreen() {
         <span className="text-[10px] font-mono bg-zinc-900 dark:bg-zinc-800 text-white dark:text-zinc-300 px-2 py-1 rounded font-bold uppercase">Consolidated</span>
       </div>
 
-      <div className="p-4 max-w-md mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-4">
         
         {!isLogged && !deliveryPartner ? (
           <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-6 shadow-sm">

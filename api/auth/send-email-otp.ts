@@ -13,10 +13,12 @@ import {
   parseRequestBody,
   sendJsonResponse,
   generateEmailOtpChallenge,
-  checkEmailOtpSendRateLimit
+  checkEmailOtpSendRateLimit,
+  emailOtpSendHistory
 } from "../../lib/auth-utils";
 import { sendEmailOtp, isSmtpConfigured } from "../../lib/email-service";
 import { getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
+import { logEmailOtpAttempt } from "../../src/services/supabaseEmailLogs";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -58,9 +60,22 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // Rate Limiting: 60s cooldown and max 5 requests per 15 minutes per email
+    // Extract retry_count if provided from client resend attempts
+    const clientRetryCount = typeof body?.retry_count === "number" ? body.retry_count : (typeof body?.retryCount === "number" ? body.retryCount : 0);
+    const retry_count = clientRetryCount > 0 ? clientRetryCount : ((emailOtpSendHistory.get(cleanEmail)?.count || 1) - 1);
+
+    // Rate Limiting: 30s cooldown and max 8 requests per 15 minutes per email
     const rateCheck = checkEmailOtpSendRateLimit(cleanEmail);
     if (!rateCheck.allowed) {
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'signInWithOtp',
+        status: 'rate_limited',
+        provider: 'supabase_auth',
+        error_details: rateCheck.error || "Rate limit exceeded",
+        metadata: { retry_count }
+      });
+
       return sendJsonResponse(res, 429, {
         success: false,
         error: rateCheck.error || "Too many OTP requests. Please wait before requesting another code."
@@ -86,7 +101,8 @@ export default async function handler(req: any, res: any) {
         expiresInSeconds: 300,
         metadata: {
           fullName: String(fullName).trim(),
-          location: String(location).trim()
+          location: String(location).trim(),
+          retry_count: retry_count
         }
       });
     } catch (storeErr: any) {
@@ -112,13 +128,75 @@ export default async function handler(req: any, res: any) {
 
       if (!sbError) {
         emailDelivered = true;
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'signInWithOtp',
+          status: 'sent',
+          provider: 'supabase_auth',
+          metadata: { fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+        });
       } else {
-        deliveryError = sbError.message;
-        console.warn(`[Supabase Auth Notice] signInWithOtp message: ${sbError.message} (status: ${sbError.status})`);
+        console.warn(`[Supabase Auth Notice] signInWithOtp message: ${sbError.message} (status: ${sbError.status}). Activating Supabase Auth registration confirmation pipeline...`);
+        
+        // GoTrue signInWithOtp may fail on some projects if the Magic Link email template is unconfigured.
+        // Fallback to Supabase Auth's active confirmation pipeline (signUp / resend signup), which dispatches real emails directly to the customer.
+        const tempPassword = `NuvvoAuth#${crypto.randomBytes(8).toString('hex')}!`;
+        const { data: signUpData, error: signUpError } = await publicSupabase.auth.signUp({
+          email: cleanEmail,
+          password: tempPassword,
+          options: {
+            data: {
+              fullName: String(fullName).trim(),
+              location: String(location).trim()
+            }
+          }
+        });
+
+        const isNewUser = Boolean(!signUpError && signUpData?.user?.identities && signUpData.user.identities.length > 0);
+        if (isNewUser) {
+          emailDelivered = true;
+          deliveryError = "";
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: 'signInWithOtp',
+            status: 'sent',
+            provider: 'supabase_auth',
+            metadata: { method: 'signUp', fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+          });
+        } else {
+          // If user already exists in auth.users, dispatch a fresh confirmation code via resend()
+          const { error: resendError } = await publicSupabase.auth.resend({
+            type: 'signup',
+            email: cleanEmail
+          });
+
+          if (!resendError) {
+            emailDelivered = true;
+            deliveryError = "";
+            logEmailOtpAttempt({
+              recipient: cleanEmail,
+              flow: 'signInWithOtp',
+              status: 'sent',
+              provider: 'supabase_auth',
+              metadata: { method: 'resend_signup', fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+            });
+          } else {
+            deliveryError = resendError.message || signUpError?.message || sbError.message;
+            console.warn(`[Supabase Auth Resend Notice]: ${resendError.message}`);
+          }
+        }
       }
     } catch (sbEx: any) {
       deliveryError = sbEx?.message || "Supabase connection error";
       console.warn(`[Supabase Auth Exception]:`, deliveryError);
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: 'signInWithOtp',
+        status: 'failed',
+        provider: 'supabase_auth',
+        error_details: deliveryError,
+        metadata: { retry_count }
+      });
     }
 
     // 2. If Supabase did not deliver (or was rate-limited), dispatch via configured custom SMTP
@@ -128,13 +206,36 @@ export default async function handler(req: any, res: any) {
         if (emailResult.success) {
           emailDelivered = true;
           deliveryError = "";
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: 'signInWithOtp',
+            status: 'sent',
+            provider: 'smtp',
+            metadata: { fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+          });
         } else {
           deliveryError = emailResult.error || "SMTP delivery failed";
           console.warn(`[SMTP Warning] Custom SMTP delivery failed: ${emailResult.error}`);
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: 'signInWithOtp',
+            status: 'failed',
+            provider: 'smtp',
+            error_details: deliveryError,
+            metadata: { retry_count }
+          });
         }
       } catch (smtpErr: any) {
         deliveryError = smtpErr?.message || "SMTP error";
         console.warn(`[SMTP Error]:`, deliveryError);
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: 'signInWithOtp',
+          status: 'failed',
+          provider: 'smtp',
+          error_details: deliveryError,
+          metadata: { retry_count }
+        });
       }
     }
 
@@ -148,17 +249,31 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 4. Strict Failure: When no email could be dispatched, do NOT generate or return demo OTPs
-    const errorMessage = deliveryError.toLowerCase().includes("rate limit")
-      ? "Email sending limit reached on free-tier mailer (3/hr). Please configure Custom SMTP in your Supabase Dashboard or add EMAIL_USER and EMAIL_PASS to your Vercel Project Settings."
-      : "Email delivery service is currently unavailable. Please ensure Custom SMTP is enabled in Supabase or EMAIL_USER/EMAIL_PASS are set in your Vercel environment.";
+    // 4. If email delivery failed, return clean error message (no dashboard template instructions to user)
+    const finalErr = deliveryError
+      ? `Email delivery failed: ${deliveryError}. Please verify your email address or retry.`
+      : "Failed to dispatch verification email. Please check your email and try again.";
 
-    return sendJsonResponse(res, 503, {
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: 'signInWithOtp',
+      status: 'failed',
+      error_details: finalErr,
+      metadata: { retry_count }
+    });
+
+    return sendJsonResponse(res, 400, {
       success: false,
-      error: errorMessage
+      error: finalErr
     });
   } catch (err: any) {
     console.error("[Email OTP Serverless Error]:", err?.message || err);
+    logEmailOtpAttempt({
+      recipient: req?.body?.email || 'unknown',
+      flow: 'signInWithOtp',
+      status: 'failed',
+      error_details: err?.message || 'Server error during OTP send'
+    });
     return sendJsonResponse(res, 500, {
       success: false,
       error: "An unexpected error occurred while dispatching verification email. Please try again."

@@ -16,6 +16,7 @@ import QRCode from 'qrcode';
 import { Address, SavedCard, PaymentMethodType, CartItem, PaymentStatusType } from '../types';
 import { useApp } from '../context/AppContext';
 import { fetchWithCache } from '../utils/apiCache';
+import { getUserScopedItem } from '../utils/userScopedStorage';
 
 interface PaymentMethodScreenProps {
   amountPayable: number;
@@ -54,7 +55,7 @@ export default function PaymentMethodScreen({
   onBack,
   onCompletePayment
 }: PaymentMethodScreenProps) {
-  const { storePaymentSettings } = useApp();
+  const { storePaymentSettings, user } = useApp();
 
   // Dynamic Store UPI configuration provided by Admin
   const activeUpiId = (storePaymentSettings?.upiId || 'arjun.gorrepati@axl').trim().toLowerCase();
@@ -117,15 +118,14 @@ export default function PaymentMethodScreen({
   // UI accordion & summary
   const [showPriceBreakdown, setShowPriceBreakdown] = useState<boolean>(true);
 
-  // Wallets & Cards fallback states
-  const [nuvvoWalletBalance] = useState<number>(() => {
-    try {
-      const stored = localStorage.getItem('nuvvo_wallet_balance');
-      return (stored !== null && stored !== '') ? Number(stored) : 0;
-    } catch {
-      return 0;
-    }
-  });
+  // Wallets & Cards fallback states (isolated per customer userId)
+  const [nuvvoWalletBalance, setNuvvoWalletBalance] = useState<number>(() =>
+    getUserScopedItem<number>(user?.id, 'wallet_balance', 0)
+  );
+
+  useEffect(() => {
+    setNuvvoWalletBalance(getUserScopedItem<number>(user?.id, 'wallet_balance', 0));
+  }, [user?.id]);
 
   // PhonePe Gateway status check (non-blocking, server-verified)
   const [phonePeStatus, setPhonePeStatus] = useState<{ isConfigured: boolean; environment?: string; missingVariables?: string[] } | null>(null);
@@ -410,7 +410,7 @@ export default function PaymentMethodScreen({
         </div>
       </header>
 
-      <div className="max-w-md mx-auto p-4 space-y-4">
+      <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
 
         {/* 1. ORDER SUMMARY ACCORDION */}
         <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-4 shadow-xs space-y-3">

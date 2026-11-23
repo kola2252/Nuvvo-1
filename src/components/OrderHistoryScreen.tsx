@@ -9,12 +9,15 @@ import {
   History, ArrowLeft, RefreshCw, Search, Calendar, MapPin, 
   ShoppingBag, CheckCircle, Clock, Truck, ChefHat, XCircle, 
   ChevronDown, ChevronUp, Download, RotateCcw, Star, ShieldCheck,
-  AlertCircle, Database, Sparkles, Filter, FileText
+  AlertCircle, Database, Sparkles, Filter, FileText, Trash2, AlertTriangle,
+  X, Eye, Receipt, Info, Check, ArrowUpDown
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types';
 import { fetchUserOrdersFromSupabase } from '../services/supabaseOrders';
 import { downloadOrderInvoice } from '../utils/orderInvoiceGenerator';
 import WhatsAppOrderConfirmation from './WhatsAppOrderConfirmation';
+
+export type OrderSortOption = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc';
 
 export default function OrderHistoryScreen() {
   const { 
@@ -25,7 +28,10 @@ export default function OrderHistoryScreen() {
     reorderItems, 
     setActiveTrackingOrder,
     submitOrderRating,
-    submitDeliveryPartnerRating
+    submitDeliveryPartnerRating,
+    cancelOrder,
+    removeOrder,
+    clearOrderHistory
   } = useApp();
 
   const [supabaseOrders, setSupabaseOrders] = useState<Order[]>([]);
@@ -37,7 +43,9 @@ export default function OrderHistoryScreen() {
   // Search and filter states
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'delivered' | 'cancelled'>('all');
+  const [sortBy, setSortBy] = useState<OrderSortOption>('date_desc');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+
 
   // Rating states for delivered orders
   const [ratingStates, setRatingStates] = useState<{
@@ -55,9 +63,10 @@ export default function OrderHistoryScreen() {
     }
   }>({});
 
-  // Fetch orders from Supabase on mount and user phone change
+  // Fetch orders from Supabase on mount and authenticated user change
   const loadOrders = useCallback(async (showRefreshIndicator = false) => {
-    if (!user?.phone) {
+    if (!user?.id && !user?.phone) {
+      setSupabaseOrders([]);
       setIsLoading(false);
       return;
     }
@@ -70,9 +79,8 @@ export default function OrderHistoryScreen() {
     setFetchError(null);
 
     try {
-      const result = await fetchUserOrdersFromSupabase(user.phone, showRefreshIndicator);
+      const result = await fetchUserOrdersFromSupabase(user?.phone || '', showRefreshIndicator, user?.id);
       if (result.error) {
-        // Log friendly notice; Supabase table might be in initial bootstrap
         console.warn('Supabase orders query notification:', result.error?.message);
         setFetchError(result.error?.message || 'Notice: Connected to local device cache');
         setIsFromSupabase(false);
@@ -88,18 +96,23 @@ export default function OrderHistoryScreen() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [user?.phone]);
+  }, [user?.id, user?.phone]);
 
   useEffect(() => {
+    setSupabaseOrders([]);
     loadOrders();
   }, [loadOrders]);
 
   // Combine Supabase orders with local orders (deduplicating by ID, prioritizing latest)
   const combinedOrders = useMemo(() => {
+    if (!user) return [];
     const userPhoneClean = user?.phone ? user.phone.replace(/\D/g, '') : '';
     const relevantLocal = localOrders.filter(o => {
+      if (o.customerId && user?.id) {
+        return o.customerId === user.id;
+      }
       const oPhone = o.customerPhone ? o.customerPhone.replace(/\D/g, '') : '';
-      return oPhone === userPhoneClean || o.customerId === user?.id;
+      return Boolean(userPhoneClean && oPhone === userPhoneClean);
     });
 
     const map = new Map<string, Order>();
@@ -116,11 +129,11 @@ export default function OrderHistoryScreen() {
       const timeB = new Date(b.date).getTime() || 0;
       return timeB - timeA;
     });
-  }, [localOrders, supabaseOrders, user?.phone, user?.id]);
+  }, [localOrders, supabaseOrders, user]);
 
-  // Filter orders by search term and status tab
+  // Filter and sort orders by search term, status tab, and selected sort option
   const filteredOrders = useMemo(() => {
-    return combinedOrders.filter(order => {
+    const list = combinedOrders.filter(order => {
       // Status filtering
       if (statusFilter === 'active') {
         const isActive = ['accepted', 'preparing', 'picked', 'on_the_way'].includes(order.status);
@@ -142,7 +155,28 @@ export default function OrderHistoryScreen() {
 
       return matchesId || matchesStatus || matchesRestaurant || matchesDish;
     });
-  }, [combinedOrders, statusFilter, searchQuery]);
+
+    // Apply sorting
+    return [...list].sort((a, b) => {
+      const timeA = new Date(a.date).getTime() || 0;
+      const timeB = new Date(b.date).getTime() || 0;
+      const amountA = Number(a.finalAmount ?? a.totalAmount ?? a.subtotal ?? 0);
+      const amountB = Number(b.finalAmount ?? b.totalAmount ?? b.subtotal ?? 0);
+
+      switch (sortBy) {
+        case 'date_asc':
+          return timeA - timeB; // Oldest first
+        case 'amount_desc':
+          return amountB - amountA; // Highest amount first
+        case 'amount_asc':
+          return amountA - amountB; // Lowest amount first
+        case 'date_desc':
+        default:
+          return timeB - timeA; // Newest first
+      }
+    });
+  }, [combinedOrders, statusFilter, searchQuery, sortBy]);
+
 
   const toggleExpand = (orderId: string) => {
     setExpandedOrderId(prev => (prev === orderId ? null : orderId));
@@ -158,8 +192,95 @@ export default function OrderHistoryScreen() {
     setCurrentPage('tracking');
   };
 
-  const handleDownloadInvoice = (order: Order) => {
-    downloadOrderInvoice(order);
+  const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
+  const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+
+  const handleDownloadInvoice = async (order: Order) => {
+    try {
+      setDownloadingOrderId(order.id);
+      await downloadOrderInvoice(order);
+      setActionNotice(`Receipt for order #${order.id.slice(-6).toUpperCase()} downloaded!`);
+      setTimeout(() => setActionNotice(null), 3500);
+    } catch (err: any) {
+      alert(`Unable to generate PDF invoice: ${err?.message || 'Error creating document'}`);
+    } finally {
+      setDownloadingOrderId(null);
+    }
+  };
+
+  const handleRemoveOrder = async (order: Order) => {
+    const orderRef = `#${order.id.slice(-6).toUpperCase()}`;
+    const confirmed = window.confirm(`Are you sure you want to remove Order ${orderRef} from your order history?`);
+    if (!confirmed) return;
+
+    setDeletingOrderId(order.id);
+    try {
+      if (removeOrder) {
+        await removeOrder(order.id);
+      }
+      setSupabaseOrders(prev => prev.filter(o => o.id !== order.id));
+      setActionNotice(`Order ${orderRef} has been removed from your history.`);
+      setTimeout(() => setActionNotice(null), 3500);
+    } catch (err: any) {
+      alert(`Failed to remove order: ${err?.message || 'An error occurred'}`);
+    } finally {
+      setDeletingOrderId(null);
+    }
+  };
+
+  const handleResetAllOrders = async () => {
+    const confirmed = window.confirm('Are you sure you want to reset and clear all past order history? This cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      if (clearOrderHistory) {
+        await clearOrderHistory(user?.phone);
+      }
+      setSupabaseOrders([]);
+      setShowClearHistoryConfirm(false);
+      setActionNotice('Order history has been successfully reset.');
+      setTimeout(() => setActionNotice(null), 3500);
+    } catch (err: any) {
+      alert(`Failed to reset order history: ${err?.message || 'An error occurred'}`);
+    }
+  };
+
+  const [selectedOrderForModal, setSelectedOrderForModal] = useState<Order | null>(null);
+  const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
+  const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState<boolean>(false);
+  const [clearFromHistoryOption, setClearFromHistoryOption] = useState<boolean>(false);
+
+  const handleCancelOrder = async (order: Order, clearFromHistory: boolean = false) => {
+    const orderRef = `#${order.id.slice(-6).toUpperCase()}`;
+    setCancellingOrderId(order.id);
+
+    try {
+      if (cancelOrder) {
+        const res = await cancelOrder(order.id, clearFromHistory);
+        if (res.success) {
+          if (res.cleared || clearFromHistory) {
+            setSupabaseOrders(prev => prev.filter(o => o.id !== order.id));
+            setSelectedOrderForModal(null);
+            setIsCancelConfirmOpen(false);
+            setActionNotice(`Order ${orderRef} was cancelled and removed from your history.`);
+          } else {
+            setSupabaseOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'cancelled', paymentStatus: 'refund_initiated' } : o));
+            setSelectedOrderForModal(prev => prev && prev.id === order.id ? { ...prev, status: 'cancelled', paymentStatus: 'refund_initiated' } : prev);
+            setIsCancelConfirmOpen(false);
+            setActionNotice(`Order ${orderRef} has been cancelled successfully. Refund initiated if pre-paid.`);
+          }
+        } else {
+          alert(`Could not cancel order: ${res.error || 'Server rejected cancellation request.'}`);
+        }
+      }
+      setTimeout(() => setActionNotice(null), 4000);
+    } catch (err: any) {
+      alert(`Error cancelling order: ${err?.message || 'Network error occurred.'}`);
+    } finally {
+      setCancellingOrderId(null);
+    }
   };
 
   const handleRateOrder = (orderId: string) => {
@@ -313,7 +434,7 @@ export default function OrderHistoryScreen() {
 
   return (
     <div className="min-h-screen bg-slate-50/70 dark:bg-zinc-950 pb-28 pt-4 px-3 sm:px-6">
-      <div className="max-w-2xl mx-auto space-y-4">
+      <div className="max-w-5xl mx-auto space-y-4">
         
         {/* Top Header Card */}
         <div className="bg-white dark:bg-zinc-900 rounded-2xl p-4 border border-slate-200/80 dark:border-zinc-800 shadow-sm flex items-center justify-between">
@@ -368,51 +489,109 @@ export default function OrderHistoryScreen() {
             >
               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-orange-500' : ''}`} />
             </button>
-          </div>
-        </div>
 
-        {/* Search & Filter Controls */}
-        <div className="bg-white dark:bg-zinc-900 rounded-2xl p-3 border border-slate-200/80 dark:border-zinc-800 shadow-sm space-y-3">
-          <div className="relative">
-            <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Search by dish name, order ID, or category..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-zinc-800/80 text-zinc-900 dark:text-zinc-100 pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold focus:outline-none focus:border-orange-500"
-            />
-          </div>
-
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar text-xs">
-            {[
-              { id: 'all', label: 'All Orders' },
-              { id: 'active', label: 'Active', badge: combinedOrders.filter(o => ['accepted', 'preparing', 'picked', 'on_the_way'].includes(o.status)).length },
-              { id: 'delivered', label: 'Delivered', badge: combinedOrders.filter(o => o.status === 'delivered').length },
-              { id: 'cancelled', label: 'Cancelled' }
-            ].map(tab => (
+            {/* Reset / Clear All Orders Button */}
+            {combinedOrders.length > 0 && (
               <button
-                key={tab.id}
                 type="button"
-                onClick={() => setStatusFilter(tab.id as any)}
-                className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer text-xs flex items-center gap-1.5 ${
-                  statusFilter === tab.id
-                    ? 'bg-orange-500 text-white shadow-xs'
-                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-650 dark:text-zinc-350'
-                }`}
+                onClick={handleResetAllOrders}
+                className="px-2.5 py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-300 font-bold text-[11px] transition flex items-center gap-1 cursor-pointer active:scale-95"
+                title="Reset or clear all order history"
               >
-                <span>{tab.label}</span>
-                {tab.badge !== undefined && tab.badge > 0 && (
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-black ${
-                    statusFilter === tab.id ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300'
-                  }`}>
-                    {tab.badge}
-                  </span>
-                )}
+                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                <span className="hidden sm:inline">Reset History</span>
               </button>
-            ))}
+            )}
           </div>
         </div>
+
+        {/* Action Notice Alert Banner */}
+        {actionNotice && (
+          <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 shadow-xs transition-all animate-in fade-in">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{actionNotice}</span>
+          </div>
+        )}
+
+        {/* Search, Filter & Sort Controls */}
+        <div className="bg-white dark:bg-zinc-900 rounded-2xl p-3 border border-slate-200/80 dark:border-zinc-800 shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search by dish name, order ID, or category..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-zinc-800/80 text-zinc-900 dark:text-zinc-100 pl-9 pr-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold focus:outline-none focus:border-orange-500"
+              />
+            </div>
+
+            {/* Sorting Dropdown */}
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-zinc-800/80 border border-slate-200 dark:border-zinc-700 rounded-xl px-2.5 py-1.5 shrink-0 text-xs shadow-xs">
+              <ArrowUpDown className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+              <label htmlFor="order-sort-select" className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400 shrink-0">
+                Sort:
+              </label>
+              <select
+                id="order-sort-select"
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as OrderSortOption)}
+                className="bg-transparent text-xs font-bold text-zinc-800 dark:text-zinc-200 focus:outline-none cursor-pointer pr-1"
+                aria-label="Sort orders by date or amount"
+              >
+                <option value="date_desc" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100">
+                  Date: Newest First
+                </option>
+                <option value="date_asc" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100">
+                  Date: Oldest First
+                </option>
+                <option value="amount_desc" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100">
+                  Total Amount: High to Low (₹)
+                </option>
+                <option value="amount_asc" className="bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100">
+                  Total Amount: Low to High (₹)
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 dark:border-zinc-800/60">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar text-xs flex-1">
+              {[
+                { id: 'all', label: 'All Orders' },
+                { id: 'active', label: 'Active', badge: combinedOrders.filter(o => ['accepted', 'preparing', 'picked', 'on_the_way'].includes(o.status)).length },
+                { id: 'delivered', label: 'Delivered', badge: combinedOrders.filter(o => o.status === 'delivered').length },
+                { id: 'cancelled', label: 'Cancelled' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.id as any)}
+                  className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer text-xs flex items-center gap-1.5 ${
+                    statusFilter === tab.id
+                      ? 'bg-orange-500 text-white shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-650 dark:text-zinc-350'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                  {tab.badge !== undefined && tab.badge > 0 && (
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-black ${
+                      statusFilter === tab.id ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300'
+                    }`}>
+                      {tab.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <span className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 whitespace-nowrap pl-2">
+              {filteredOrders.length} {filteredOrders.length === 1 ? 'order' : 'orders'}
+            </span>
+          </div>
+        </div>
+
 
         {/* Loading State */}
         {isLoading && (
@@ -496,10 +675,18 @@ export default function OrderHistoryScreen() {
                   className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200/90 dark:border-zinc-800 shadow-sm overflow-hidden transition-all hover:border-slate-300 dark:hover:border-zinc-700"
                 >
                   {/* Order Top Bar: ID, Status, Timestamp */}
-                  <div className="p-3.5 sm:p-4 border-b border-slate-100 dark:border-zinc-800/80 bg-slate-50/50 dark:bg-zinc-850/30">
+                  <div 
+                    onClick={() => {
+                      setSelectedOrderForModal(order);
+                      setIsCancelConfirmOpen(false);
+                      setClearFromHistoryOption(order.status === 'accepted');
+                    }}
+                    className="p-3.5 sm:p-4 border-b border-slate-100 dark:border-zinc-800/80 bg-slate-50/50 dark:bg-zinc-850/30 cursor-pointer hover:bg-slate-100/70 dark:hover:bg-zinc-800/40 transition group"
+                    title="Click to view full order details"
+                  >
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-black text-zinc-900 dark:text-zinc-100">
+                        <span className="font-mono text-xs font-black text-zinc-900 dark:text-zinc-100 group-hover:text-orange-600 transition">
                           #{order.id.replace('order_', 'ORD-').slice(-8).toUpperCase()}
                         </span>
                         {relativeTime && (
@@ -516,9 +703,14 @@ export default function OrderHistoryScreen() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1 text-[11px] text-zinc-400 font-mono mt-1.5">
-                      <Calendar className="w-3 h-3 text-zinc-400" />
-                      <span>{formatTimestamp(order.date)}</span>
+                    <div className="flex items-center justify-between gap-1 text-[11px] text-zinc-400 font-mono mt-1.5">
+                      <div className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3 text-zinc-400" />
+                        <span>{formatTimestamp(order.date)}</span>
+                      </div>
+                      <span className="text-[10px] text-orange-600 dark:text-orange-400 font-bold opacity-0 group-hover:opacity-100 transition">
+                        View details →
+                      </span>
                     </div>
                   </div>
 
@@ -828,19 +1020,52 @@ export default function OrderHistoryScreen() {
                   </div>
 
                   {/* Action Buttons Toolbar */}
-                  <div className="p-3 bg-slate-50/70 dark:bg-zinc-850/50 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                  <div className="p-3 bg-slate-50/70 dark:bg-zinc-850/50 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* View Details Modal Button */}
                       <button
                         type="button"
-                        onClick={() => handleDownloadInvoice(order)}
-                        className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-750 text-zinc-700 dark:text-zinc-200 font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs"
-                        title="Download Official PDF Tax Invoice"
+                        onClick={() => {
+                          setSelectedOrderForModal(order);
+                          setIsCancelConfirmOpen(false);
+                          setClearFromHistoryOption(order.status === 'accepted');
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-bold text-[11px] transition flex items-center gap-1 cursor-pointer active:scale-95 shadow-xs"
+                        title="View full order details, tracking & bill breakdown"
                       >
-                        <Download className="w-3.5 h-3.5 text-zinc-500" />
-                        <span>Invoice</span>
+                        <Eye className="w-3.5 h-3.5 text-zinc-500" />
+                        <span>Details</span>
                       </button>
 
-                      {/* Free WhatsApp Order Confirmation Click-to-Chat */}
+                      {/* Download Invoice Button with jsPDF generator */}
+                      <button
+                        type="button"
+                        disabled={downloadingOrderId === order.id}
+                        onClick={() => handleDownloadInvoice(order)}
+                        className="px-3 py-1.5 rounded-xl border border-orange-200 dark:border-orange-850 bg-orange-50/80 hover:bg-orange-100 dark:bg-orange-950/40 dark:hover:bg-orange-900/50 text-orange-700 dark:text-orange-300 font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs disabled:opacity-60"
+                        title="Generate and Download Clean Itemized PDF Receipt"
+                      >
+                        {downloadingOrderId === order.id ? (
+                          <RefreshCw className="w-3.5 h-3.5 text-orange-600 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                        )}
+                        <span>{downloadingOrderId === order.id ? 'Generating PDF...' : 'Invoice'}</span>
+                      </button>
+
+                      {/* Remove / Delete Order Button */}
+                      <button
+                        type="button"
+                        disabled={deletingOrderId === order.id}
+                        onClick={() => handleRemoveOrder(order)}
+                        className="p-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/40 text-zinc-400 dark:text-zinc-500 font-bold text-[11px] transition flex items-center gap-1 cursor-pointer active:scale-95 shadow-xs disabled:opacity-50"
+                        title="Remove this order from your history"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span className="hidden xs:inline text-[10px]">Remove</span>
+                      </button>
+
+                      {/* Automatic WhatsApp Cloud API Delivery Status Badge */}
                       <WhatsAppOrderConfirmation 
                         order={order} 
                         customerPhone={user?.phone || order.customerPhone} 
@@ -849,6 +1074,23 @@ export default function OrderHistoryScreen() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      {/* Cancel Order shortcut button on card if not yet in kitchen or preparing */}
+                      {['accepted', 'preparing'].includes(order.status) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedOrderForModal(order);
+                            setIsCancelConfirmOpen(true);
+                            setClearFromHistoryOption(order.status === 'accepted');
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50/80 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-300 font-bold text-[11px] transition flex items-center gap-1 cursor-pointer active:scale-95 shadow-xs"
+                          title="Cancel this order"
+                        >
+                          <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                          <span>Cancel</span>
+                        </button>
+                      )}
+
                       {/* Active Order live tracking button */}
                       {isActiveOrder && (
                         <button
@@ -877,6 +1119,439 @@ export default function OrderHistoryScreen() {
             })}
           </div>
         )}
+
+        {/* Order Details Modal with Cancel Order & Clear from History */}
+        {selectedOrderForModal && (() => {
+          const modalBadge = getStatusBadge(selectedOrderForModal.status);
+          const ModalBadgeIcon = modalBadge.icon;
+          const isNotYetPrepared = selectedOrderForModal.status === 'accepted';
+          const isPreparing = selectedOrderForModal.status === 'preparing';
+          const isCancellable = ['accepted', 'preparing'].includes(selectedOrderForModal.status);
+          const isCancelled = selectedOrderForModal.status === 'cancelled';
+          const isDelivered = selectedOrderForModal.status === 'delivered';
+          const totalModalItems = selectedOrderForModal.items.reduce((acc, i) => acc + (i.quantity || 1), 0);
+
+          return (
+            <div 
+              role="dialog"
+              aria-modal="true"
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200"
+              onClick={() => {
+                if (!cancellingOrderId) {
+                  setSelectedOrderForModal(null);
+                  setIsCancelConfirmOpen(false);
+                }
+              }}
+            >
+              <div 
+                className="relative w-full max-w-lg bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden my-auto max-h-[92vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Modal Top Bar */}
+                <div className="px-5 py-4 border-b border-slate-100 dark:border-zinc-800 flex items-center justify-between bg-slate-50/60 dark:bg-zinc-850/60 shrink-0">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-orange-100 dark:bg-orange-950/60 text-orange-600 flex items-center justify-center font-bold">
+                      <Receipt className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-extrabold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
+                        <span>Order Details</span>
+                        <span className="font-mono text-xs font-bold text-orange-600 dark:text-orange-400">
+                          #{selectedOrderForModal.id.replace('order_', 'ORD-').slice(-8).toUpperCase()}
+                        </span>
+                      </h2>
+                      <p className="text-[11px] text-zinc-400 font-mono mt-0.5">
+                        {formatTimestamp(selectedOrderForModal.date)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedOrderForModal(null);
+                      setIsCancelConfirmOpen(false);
+                    }}
+                    className="p-1.5 rounded-xl hover:bg-slate-200 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition cursor-pointer"
+                    aria-label="Close details modal"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Modal Scrollable Body */}
+                <div className="overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
+                  
+                  {/* Status Banner */}
+                  <div className={`p-3.5 rounded-2xl border ${modalBadge.bg} ${modalBadge.border} flex items-center justify-between gap-3`}>
+                    <div className="flex items-center gap-2.5">
+                      <div className={`w-8 h-8 rounded-xl bg-white/80 dark:bg-black/30 flex items-center justify-center shrink-0 ${modalBadge.text}`}>
+                        <ModalBadgeIcon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className={`font-black text-xs block ${modalBadge.text}`}>
+                          {modalBadge.label}
+                        </span>
+                        <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {isCancelled
+                            ? 'This order was cancelled. Payment refunded if charged.'
+                            : isDelivered
+                            ? 'Delivered securely to your address.'
+                            : isPreparing
+                            ? 'Freshly preparing in the kitchen.'
+                            : isNotYetPrepared
+                            ? 'Order confirmed. Not yet started in kitchen.'
+                            : 'Out for delivery to your doorstep.'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {isNotYetPrepared && (
+                      <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 font-bold px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-800 shrink-0">
+                        Not Yet Prepared
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Status Progress Stepper */}
+                  {!isCancelled && (
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-850/50 rounded-2xl border border-slate-200/60 dark:border-zinc-800">
+                      <div className="grid grid-cols-4 gap-1 text-center relative">
+                        {[
+                          { key: 'accepted', label: 'Confirmed', icon: Clock },
+                          { key: 'preparing', label: 'In Kitchen', icon: ChefHat },
+                          { key: 'picked', label: 'On Way', icon: Truck },
+                          { key: 'delivered', label: 'Delivered', icon: CheckCircle }
+                        ].map((step, idx) => {
+                          const statusOrder = ['accepted', 'preparing', 'picked', 'on_the_way', 'delivered'];
+                          const currentIdx = statusOrder.indexOf(selectedOrderForModal.status === 'on_the_way' ? 'picked' : selectedOrderForModal.status);
+                          const isDone = currentIdx >= idx;
+                          const isCurrent = currentIdx === idx;
+                          const StepIcon = step.icon;
+
+                          return (
+                            <div key={step.key} className="flex flex-col items-center">
+                              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
+                                isDone 
+                                  ? 'bg-orange-500 text-white shadow-xs' 
+                                  : 'bg-slate-200 dark:bg-zinc-800 text-zinc-400'
+                              } ${isCurrent ? 'ring-2 ring-orange-500/40 ring-offset-1' : ''}`}>
+                                <StepIcon className="w-3.5 h-3.5" />
+                              </div>
+                              <span className={`text-[10px] mt-1 font-bold ${
+                                isDone ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-400'
+                              }`}>
+                                {step.label}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Cancellation Alert / Confirmation Box */}
+                  {isCancelConfirmOpen && (
+                    <div className="p-4 bg-rose-50 dark:bg-rose-950/40 border-2 border-rose-300 dark:border-rose-900/60 rounded-2xl space-y-3 animate-in fade-in duration-150">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                        <div>
+                          <h3 className="font-extrabold text-rose-950 dark:text-rose-100 text-xs">
+                            Cancel Order Confirmation
+                          </h3>
+                          <p className="text-[11px] text-rose-700 dark:text-rose-300 mt-0.5 leading-relaxed">
+                            {isNotYetPrepared 
+                              ? 'This order has not yet been prepared by the restaurant. You can cancel it immediately.'
+                              : 'The kitchen has already begun preparing this order. Cancelling will notify the store and initiate refund processing.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Not yet prepared - Option to clear from order history */}
+                      {isNotYetPrepared ? (
+                        <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-rose-200 dark:border-rose-900/40">
+                          <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={clearFromHistoryOption}
+                              onChange={(e) => setClearFromHistoryOption(e.target.checked)}
+                              className="mt-0.5 w-4 h-4 text-rose-600 rounded border-slate-300 focus:ring-rose-500 cursor-pointer"
+                            />
+                            <div>
+                              <span className="font-bold text-zinc-900 dark:text-zinc-100 text-xs">
+                                Clear from my order history
+                              </span>
+                              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                                Since the order is not yet prepared, permanently remove it from your past orders list and database.
+                              </p>
+                            </div>
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="p-2.5 bg-white/70 dark:bg-zinc-900/70 rounded-xl border border-rose-200/60 dark:border-rose-900/30 text-[10.5px] text-zinc-600 dark:text-zinc-400 flex items-center gap-1.5">
+                          <Info className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                          <span>Order is in kitchen; it will be marked as 'Cancelled' for auditing and record-keeping.</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          disabled={cancellingOrderId === selectedOrderForModal.id}
+                          onClick={() => handleCancelOrder(selectedOrderForModal, clearFromHistoryOption && isNotYetPrepared)}
+                          className="flex-1 py-2 px-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm"
+                        >
+                          {cancellingOrderId === selectedOrderForModal.id ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Cancelling Order...</span>
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>{clearFromHistoryOption && isNotYetPrepared ? 'Cancel & Clear from History' : 'Confirm Cancel Order'}</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={cancellingOrderId === selectedOrderForModal.id}
+                          onClick={() => setIsCancelConfirmOpen(false)}
+                          className="py-2 px-3 bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 font-bold rounded-xl text-xs transition cursor-pointer"
+                        >
+                          Keep Order
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Items Ordered List */}
+                  <div className="space-y-2">
+                    <h3 className="font-extrabold text-zinc-900 dark:text-zinc-100 text-xs uppercase tracking-wider flex items-center justify-between">
+                      <span>Items Ordered ({totalModalItems})</span>
+                      <span className="text-zinc-400 font-mono text-[11px] font-normal">
+                        {selectedOrderForModal.items.length} {selectedOrderForModal.items.length === 1 ? 'Dish' : 'Dishes'}
+                      </span>
+                    </h3>
+
+                    <div className="bg-slate-50 dark:bg-zinc-850/50 rounded-2xl p-3 border border-slate-200/70 dark:border-zinc-800 space-y-2.5">
+                      {selectedOrderForModal.items.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-3 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span 
+                              className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
+                                item.foodItem?.vegIndicator === 'veg' 
+                                  ? 'border-emerald-500' 
+                                  : 'border-rose-500'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                item.foodItem?.vegIndicator === 'veg' ? 'bg-emerald-500' : 'bg-rose-500'
+                              }`} />
+                            </span>
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-zinc-900 dark:text-zinc-100">
+                                  {item.foodItem?.name || 'Gourmet Dish'}
+                                </span>
+                                <span className="text-zinc-400 font-mono font-bold text-[11px]">
+                                  ×{item.quantity}
+                                </span>
+                              </div>
+                              {item.foodItem?.category && (
+                                <span className="text-[10px] text-zinc-400">
+                                  {item.foodItem.category}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <span className="font-bold text-zinc-800 dark:text-zinc-200 font-mono">
+                            ₹{(item.foodItem?.price || 0) * (item.quantity || 1)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Delivery Location & Drop-off Notes */}
+                  <div className="space-y-2">
+                    <h3 className="font-extrabold text-zinc-900 dark:text-zinc-100 text-xs uppercase tracking-wider">
+                      Delivery Information
+                    </h3>
+
+                    <div className="bg-slate-50 dark:bg-zinc-850/50 rounded-2xl p-3 border border-slate-200/70 dark:border-zinc-800 space-y-2.5">
+                      {selectedOrderForModal.address && (
+                        <div className="flex items-start gap-2 text-xs">
+                          <MapPin className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-bold text-zinc-800 dark:text-zinc-200 block">
+                              {selectedOrderForModal.address.type || 'Delivery Location'}: {selectedOrderForModal.address.flatNo || ''}
+                            </span>
+                            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                              {[selectedOrderForModal.address.area, selectedOrderForModal.address.landmark, selectedOrderForModal.address.city || 'Chirala']
+                                .filter(Boolean)
+                                .join(', ')}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Drop-off Notes / Delivery Instructions */}
+                      {(selectedOrderForModal.deliveryInstructions || selectedOrderForModal.instructions) && (
+                        <div className="p-2.5 bg-orange-500/10 dark:bg-orange-950/30 rounded-xl border border-orange-500/20 flex items-start gap-2 text-[11px] text-orange-950 dark:text-orange-200">
+                          <FileText className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-bold text-orange-700 dark:text-orange-400 block">
+                              Delivery Instructions (Drop-off notes):
+                            </span>
+                            <span className="italic">
+                              "{selectedOrderForModal.deliveryInstructions || selectedOrderForModal.instructions}"
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Bill Breakdown */}
+                  <div className="space-y-2">
+                    <h3 className="font-extrabold text-zinc-900 dark:text-zinc-100 text-xs uppercase tracking-wider">
+                      Bill Summary
+                    </h3>
+
+                    <div className="bg-slate-50 dark:bg-zinc-850/50 rounded-2xl p-3 border border-slate-200/70 dark:border-zinc-800 space-y-1.5 font-mono text-xs">
+                      <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
+                        <span>Items Subtotal</span>
+                        <span>₹{selectedOrderForModal.subtotal || 0}</span>
+                      </div>
+
+                      {Number(selectedOrderForModal.discount || 0) > 0 && (
+                        <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-bold">
+                          <span>Discount {selectedOrderForModal.couponUsed ? `(${selectedOrderForModal.couponUsed})` : ''}</span>
+                          <span>-₹{selectedOrderForModal.discount}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
+                        <span>Delivery Fee</span>
+                        <span>
+                          {Number(selectedOrderForModal.deliveryFee || 0) > 0 
+                            ? `₹${selectedOrderForModal.deliveryFee}` 
+                            : <span className="text-emerald-600 font-bold uppercase text-[10px]">Free</span>}
+                        </span>
+                      </div>
+
+                      {Number(selectedOrderForModal.tax || 0) > 0 && (
+                        <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
+                          <span>Taxes & Charges</span>
+                          <span>₹{selectedOrderForModal.tax}</span>
+                        </div>
+                      )}
+
+                      {Number(selectedOrderForModal.tip || 0) > 0 && (
+                        <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
+                          <span>Delivery Tip</span>
+                          <span>₹{selectedOrderForModal.tip}</span>
+                        </div>
+                      )}
+
+                      <div className="pt-2 border-t border-slate-200 dark:border-zinc-700 flex justify-between items-center text-sm font-black text-zinc-900 dark:text-zinc-50 font-sans">
+                        <span>Total Paid</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-950 text-orange-700 dark:text-orange-300 font-mono">
+                            {selectedOrderForModal.paymentMethod || 'UPI'}
+                          </span>
+                          <span className="font-mono text-base font-black">
+                            ₹{selectedOrderForModal.finalAmount || selectedOrderForModal.subtotal || 0}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Modal Actions Footer */}
+                <div className="p-3.5 sm:p-4 bg-slate-50 dark:bg-zinc-850/80 border-t border-slate-200 dark:border-zinc-800 flex items-center justify-between gap-2 shrink-0 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    {/* Cancel Order Button */}
+                    {isCancellable && !isCancelConfirmOpen && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCancelConfirmOpen(true);
+                          setClearFromHistoryOption(isNotYetPrepared);
+                        }}
+                        className="py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition"
+                      >
+                        <XCircle className="w-4 h-4 text-rose-600" />
+                        <span>Cancel Order</span>
+                      </button>
+                    )}
+
+                    {/* Download Invoice Button */}
+                    <button
+                      type="button"
+                      disabled={downloadingOrderId === selectedOrderForModal.id}
+                      onClick={() => handleDownloadInvoice(selectedOrderForModal)}
+                      className="py-2 px-3 rounded-xl bg-white dark:bg-zinc-800 hover:bg-slate-100 dark:hover:bg-zinc-700 border border-slate-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition disabled:opacity-50"
+                    >
+                      <Download className="w-4 h-4 text-orange-600" />
+                      <span>Invoice</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Live Tracking shortcut */}
+                    {['accepted', 'preparing', 'picked', 'on_the_way'].includes(selectedOrderForModal.status) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ord = selectedOrderForModal;
+                          setSelectedOrderForModal(null);
+                          handleTrackLive(ord);
+                        }}
+                        className="py-2 px-3.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
+                      >
+                        <Truck className="w-4 h-4" />
+                        <span>Track Live</span>
+                      </button>
+                    )}
+
+                    {/* Reorder shortcut */}
+                    {(isDelivered || isCancelled) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ord = selectedOrderForModal;
+                          setSelectedOrderForModal(null);
+                          handleReorder(ord);
+                        }}
+                        className="py-2 px-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>Reorder</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedOrderForModal(null);
+                        setIsCancelConfirmOpen(false);
+                      }}
+                      className="py-2 px-3 rounded-xl bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 font-bold text-xs transition cursor-pointer"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          );
+        })()}
 
       </div>
     </div>

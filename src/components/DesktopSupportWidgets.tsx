@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { MessageSquare, X, Send, Sparkles, Phone, Bot, Check, Minimize2, Trash2 } from 'lucide-react';
+import { X, Send, Bot, Minimize2, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface ChatMessage {
@@ -148,27 +148,11 @@ function DesktopSupportWidgets() {
 
   return (
     <>
-      {/* Floating Action Buttons Area - Hidden on small viewports, visible on desktop (md+) */}
+      {/* AI Chatbot Floating Action Button - Hidden on small viewports, stacked cleanly above WhatsAppSupportFab on desktop (md+) */}
       <div 
         id="desktop-support-action-dock"
-        className="fixed bottom-6 right-6 z-[200] hidden md:flex flex-col items-end gap-3 pointer-events-auto"
+        className="fixed bottom-24 right-6 z-[200] hidden md:flex flex-col items-end gap-3 pointer-events-auto"
       >
-        {/* WhatsApp Float Trigger Button */}
-        <button
-          onClick={() => clickToWhatsAppSupport('Support Query: Hi Nuvvo Team!')}
-          className="w-12 h-12 bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 cursor-pointer relative group border border-emerald-400/20"
-          title="Direct WhatsApp Support Line"
-          id="desktop-whatsapp-support-btn"
-        >
-          <span className="absolute inset-0 rounded-full border-2 border-emerald-500 animate-ping opacity-30 pointer-events-none" />
-          <Phone className="w-5 h-5" />
-          
-          {/* Tooltip */}
-          <span className="absolute right-14 bg-zinc-900 text-white text-[10px] font-black px-2.5 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap tracking-wide uppercase pointer-events-none shadow-md">
-            WhatsApp Food Bookings & Support
-          </span>
-        </button>
-
         {/* AI Chatbot Float Trigger Button */}
         <button
           onClick={() => setIsOpen(prev => !prev)}
@@ -205,7 +189,7 @@ function DesktopSupportWidgets() {
             exit={{ opacity: 0, scale: 0.95, y: 30 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             id="desktop-support-chatbot-window"
-            className="fixed bottom-22 right-6 z-[210] hidden md:flex flex-col w-[380px] h-[540px] max-h-[80vh] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-850 rounded-3xl shadow-2xl overflow-hidden transition-all duration-200"
+            className="fixed bottom-40 right-6 z-[210] hidden md:flex flex-col w-[380px] h-[540px] max-h-[75vh] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-850 rounded-3xl shadow-2xl overflow-hidden transition-all duration-200"
           >
             {/* Header */}
             <div className="bg-gradient-to-r from-purple-700 to-indigo-800 dark:from-purple-900 dark:to-zinc-900 p-4 text-white flex items-center justify-between border-b border-purple-500/10">

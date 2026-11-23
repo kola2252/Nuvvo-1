@@ -22,6 +22,8 @@ import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
 import { isAdminRole } from '../config/authConfig';
 import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
 import { fetchWithCache } from '../utils/apiCache';
+import AdminEmailTool from './AdminEmailTool';
+import AdminWhatsAppSettings from './AdminWhatsAppSettings';
 
 export default function AdminPanel() {
   const { 
@@ -36,10 +38,10 @@ export default function AdminPanel() {
     requestAdminSaveConfirmation
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'settings' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>(() => {
+  const [activeTab, setActiveTab] = useState<'settings' | 'whatsapp' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>(() => {
     try {
       const target = localStorage.getItem('nuvvo_admin_target_tab');
-      if (target === 'settings' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
+      if (target === 'settings' || target === 'whatsapp' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
         return target;
       }
     } catch {}
@@ -99,9 +101,10 @@ export default function AdminPanel() {
     }
   };
 
-  // WhatsApp Cloud API Diagnostic State
+  // WhatsApp Cloud API Diagnostic State & Automated Failed Notification Alert Counter
   const [whatsappStatus, setWhatsappStatus] = useState<any>(null);
   const [whatsappStatusLoading, setWhatsappStatusLoading] = useState<boolean>(false);
+  const [whatsappFailedFocusTick, setWhatsappFailedFocusTick] = useState<number>(0);
 
   // PhonePe Gateway Diagnostic State
   const [phonepeStatus, setPhonepeStatus] = useState<any>(null);
@@ -152,11 +155,32 @@ export default function AdminPanel() {
   };
 
   useEffect(() => {
-    if (activeTab === 'settings' || activeTab === 'payments') {
-      fetchWhatsappStatus();
+    if (activeTab === 'settings' || activeTab === 'payments' || activeTab === 'whatsapp') {
+      fetchWhatsappStatus(activeTab === 'whatsapp');
       fetchPhonePeStatus();
     }
   }, [activeTab]);
+
+  // Automated 30s background polling so recently failed WhatsApp notifications surface immediately
+  useEffect(() => {
+    if (!isAdmin || !isAdminRole(user?.role)) return;
+    fetchWhatsappStatus(true);
+    const intervalId = setInterval(() => {
+      fetchWhatsappStatus(true);
+    }, 30_000);
+    return () => clearInterval(intervalId);
+  }, [isAdmin, user?.role]);
+
+  const recentFailedWhatsappCount = Number(
+    whatsappStatus?.summaryCounts?.recentFailed24h ??
+    whatsappStatus?.summaryCounts?.failed ??
+    0
+  );
+
+  const handleInterveneFailedWhatsapp = () => {
+    setActiveTab('whatsapp');
+    setWhatsappFailedFocusTick(t => t + 1);
+  };
 
   useEffect(() => {
     if (storePaymentSettings) {
@@ -532,7 +556,23 @@ export default function AdminPanel() {
             <p className="text-[10px] text-zinc-400 font-bold font-mono tracking-wide mt-0.5">METRIC CONTROL ENGINE</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Automated Failed WhatsApp Notification Alert Badge (24h window) */}
+          {recentFailedWhatsappCount > 0 && (
+            <button
+              type="button"
+              id="admin-whatsapp-failed-alert-badge"
+              onClick={handleInterveneFailedWhatsapp}
+              title="View recently failed WhatsApp notifications and retry delivery"
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {recentFailedWhatsappCount} Failed WhatsApp {recentFailedWhatsappCount === 1 ? 'Alert' : 'Alerts'} (24h)
+              </span>
+              <span className="underline font-extrabold">Intervene</span>
+            </button>
+          )}
           {/* Hidden diagnostic button to verify server-side Supabase client using SERVICE_ROLE_KEY */}
           <button
             onClick={runSupabaseDiagnostic}
@@ -544,11 +584,11 @@ export default function AdminPanel() {
           >
             <ShieldCheck className="w-3.5 h-3.5" />
           </button>
-          <span className="text-xs bg-orange-500/10 text-orange-600 px-3 py-1 rounded-full font-bold">Terminal Live</span>
+          <span className="text-xs bg-orange-500/10 text-orange-600 px-3 py-1 rounded-full font-bold whitespace-nowrap">Terminal Live</span>
         </div>
       </div>
 
-      <div className="p-4 max-w-md mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4">
         
         {/* EASY DISH / HOTEL / RESTAURANT MANAGEMENT */}
         <AdminCatalogManager />
@@ -607,9 +647,10 @@ export default function AdminPanel() {
         </div>
 
         {/* Core panel tabs */}
-        <div className="grid grid-cols-3 sm:grid-cols-6 bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
+        <div className="grid grid-cols-3 sm:grid-cols-7 bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
           {[
             { id: 'settings', label: 'Settings & Admin ⚙️' },
+            { id: 'whatsapp', label: 'WhatsApp 📲' },
             { id: 'analytics', label: 'Stats 📊' },
             { id: 'catalog', label: user?.role === 'Customer' ? 'Dishes 🔒' : 'Dishes 🍛' },
             { id: 'payments', label: 'PhonePe 💳' },
@@ -619,13 +660,21 @@ export default function AdminPanel() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`py-2 rounded-xl font-bold transition cursor-pointer text-[11px] truncate ${
+              className={`py-2 px-1 rounded-xl font-bold transition cursor-pointer text-[11px] truncate inline-flex items-center justify-center gap-1 ${
                 activeTab === tab.id 
                   ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 shadow-xs'
                   : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
               }`}
             >
-              {tab.label}
+              <span className="truncate">{tab.label}</span>
+              {tab.id === 'whatsapp' && recentFailedWhatsappCount > 0 && (
+                <span
+                  aria-label={`${recentFailedWhatsappCount} failed WhatsApp notifications`}
+                  className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-black leading-none tabular-nums shrink-0"
+                >
+                  {recentFailedWhatsappCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -847,25 +896,34 @@ export default function AdminPanel() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 {/* WhatsApp Cloud API Box */}
                 <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
-                      <span>📲 WhatsApp Cloud API</span>
+                      <span>📲 Meta WhatsApp Cloud API</span>
                     </span>
-                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md ${
                       (whatsappStatus?.isConfigured || whatsappStatus?.configured)
                         ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
                         : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
                     }`}>
-                      {(whatsappStatus?.isConfigured || whatsappStatus?.configured) ? '● Connected' : '○ Standby (Safe Mode)'}
+                      {(whatsappStatus?.isConfigured || whatsappStatus?.configured) ? 'Configured' : 'Credentials Pending'}
                     </span>
                   </div>
                   <p className="text-[10px] text-zinc-500 leading-relaxed">
                     {(whatsappStatus?.isConfigured || whatsappStatus?.configured) 
-                      ? 'Automated real-time dispatch actively sends order confirmations to configured business numbers.'
-                      : 'Free customer Click-to-Chat active. To enable automated Cloud API alerts, set WHATSAPP_ACCESS_TOKEN in Vercel.'}
+                      ? 'Official Meta Cloud API dispatch active for automatic Admin (+91 9063692135) and consented Customer order alerts.'
+                      : 'Backend outbox and webhook tracking are active. Configure Meta Cloud API tokens and approved templates to enable live delivery.'}
                   </p>
-                  <div className="text-[9.5px] font-mono text-zinc-400">
-                    Recipient: <span className="font-bold text-zinc-700 dark:text-zinc-300">{whatsappStatus?.businessRecipientMasked || '9063692135'}</span>
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[9.5px] font-mono text-zinc-400">
+                      Admin: <span className="font-bold text-zinc-700 dark:text-zinc-300">{whatsappStatus?.businessRecipientMasked || '+919063692135'}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('whatsapp')}
+                      className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer whitespace-nowrap"
+                    >
+                      Open WhatsApp Settings
+                    </button>
                   </div>
                 </div>
 
@@ -894,6 +952,9 @@ export default function AdminPanel() {
                 </div>
               </div>
             </div>
+
+            {/* Admin Email Tool (SMTP Connectivity Verification & Test Dispatcher) */}
+            <AdminEmailTool />
 
             {/* Quick Navigation to Admin Modules */}
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
@@ -1421,6 +1482,14 @@ export default function AdminPanel() {
             {/* Embedded Catalog Manager inside Admin Settings */}
             <AdminCatalogManager />
           </div>
+        )}
+
+        {/* WHATSAPP NOTIFICATION SETTINGS & HISTORY SECTION */}
+        {activeTab === 'whatsapp' && (
+          <AdminWhatsAppSettings
+            focusFailedTrigger={whatsappFailedFocusTick}
+            onNotificationRetried={() => fetchWhatsappStatus(true)}
+          />
         )}
 
         {/* ANALYTICS SECTION */}
@@ -2782,41 +2851,49 @@ export default function AdminPanel() {
               {/* Status details */}
               {whatsappStatus ? (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/80 border border-slate-100 dark:border-zinc-800">
+                  <div className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/80 border border-slate-100 dark:border-zinc-800">
                     <div className="flex items-center gap-2">
-                      <div className={`w-3 h-3 rounded-full ${(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
                       <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100">
-                        {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Cloud API Ready & Connected' : 'Configuration Pending (Safe Mode Active)'}
+                        {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Meta Cloud API Ready' : 'Meta Credentials Pending'}
                       </span>
                     </div>
-                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
-                      (whatsappStatus.isConfigured || whatsappStatus.configured)
-                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
-                        : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
-                    }`}>
-                      {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Live' : 'Needs Token'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md ${
+                        (whatsappStatus.isConfigured || whatsappStatus.configured)
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
+                      }`}>
+                        {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Configured' : 'Needs Setup'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('whatsapp')}
+                        className="px-2.5 py-1 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer whitespace-nowrap"
+                      >
+                        Manage Settings
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[10px] font-mono">
                     <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
                       <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">WHATSAPP_ACCESS_TOKEN</p>
                       <p className={`font-bold mt-1 ${(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_ACCESS_TOKEN') ? 'text-rose-500' : 'text-emerald-600'}`}>
-                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_ACCESS_TOKEN') ? '✕ Missing' : '✓ Configured'}
+                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_ACCESS_TOKEN') ? 'Missing' : 'Configured'}
                       </p>
                     </div>
 
                     <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
                       <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">PHONE_NUMBER_ID</p>
                       <p className={`font-bold mt-1 ${(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_PHONE_NUMBER_ID') ? 'text-rose-500' : 'text-emerald-600'}`}>
-                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_PHONE_NUMBER_ID') ? '✕ Missing' : '✓ Configured'}
+                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_PHONE_NUMBER_ID') ? 'Missing' : 'Configured'}
                       </p>
                     </div>
 
                     <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
-                      <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">BUSINESS RECIPIENT</p>
+                      <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">ADMIN WHATSAPP</p>
                       <p className="font-bold text-zinc-700 dark:text-zinc-200 mt-1 truncate">
-                        {whatsappStatus.businessRecipientMasked || whatsappStatus.recipient || '919063692135 (Default)'}
+                        {whatsappStatus.businessRecipientMasked || whatsappStatus.recipient || '+919063692135'}
                       </p>
                     </div>
                   </div>
@@ -2825,10 +2902,10 @@ export default function AdminPanel() {
                     <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 rounded-2xl text-[10.5px] text-amber-900 dark:text-amber-200 space-y-1">
                       <p className="font-bold flex items-center gap-1.5">
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>Order Placement Remains 100% Operational:</span>
+                        <span>Orders Safely Recorded While Meta Setup Is Pending</span>
                       </p>
                       <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-300">
-                        When WhatsApp tokens are not set, orders are still safely created and stored in Supabase. A diagnostic record <code className="font-mono text-amber-700 dark:text-amber-300 font-bold">not_configured</code> is saved to prevent customer failures. To enable WhatsApp delivery, configure <code className="font-mono">WHATSAPP_ACCESS_TOKEN</code> and <code className="font-mono">WHATSAPP_PHONE_NUMBER_ID</code> in Vercel Project Settings &gt; Environment Variables.
+                        Customer orders remain 100% operational. Open the WhatsApp Settings tab to view missing Meta Cloud API variables, webhook verification settings, template approvals, and notification retry logs.
                       </p>
                     </div>
                   )}

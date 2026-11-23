@@ -85,7 +85,7 @@ export default function BottomNav() {
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-slate-200 dark:border-zinc-800 shadow-lg safe-bottom">
-      <div className="max-w-md mx-auto px-1 py-1.5 flex items-center justify-around">
+      <div className="w-full max-w-xl md:max-w-3xl lg:max-w-4xl mx-auto px-3 sm:px-6 py-1.5 flex items-center justify-around">
         {fullNavItems.map((item) => {
           const Icon = item.icon;
           const isActive = 

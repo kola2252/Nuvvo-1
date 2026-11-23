@@ -154,6 +154,10 @@ export interface User {
   isEmailVerified?: boolean;
   emailVerifiedAt?: string;
   preferredLanguage?: AppLanguage;
+  whatsappNumber?: string; // E.164 format e.g. +919876543210
+  whatsappOptIn?: boolean; // Explicit customer opt-in consent
+  whatsappOptInAt?: string;
+  whatsappOptInSource?: 'registration' | 'checkout' | 'profile';
   referralCredits?: number;
   referredBy?: string;
   referralCode?: string;
@@ -184,6 +188,10 @@ export interface Order {
   customerId: string;
   customerPhone: string;
   customerName: string;
+  customerEmail?: string;
+  customerWhatsappNumber?: string;
+  whatsappOptIn?: boolean;
+  whatsappOptInAt?: string;
   items: CartItem[];
   subtotal: number;
   discount: number;
@@ -194,6 +202,7 @@ export interface Order {
   finalAmount: number;
   totalAmount?: number;
   restaurantId?: string;
+  restaurantName?: string;
   status: OrderStatus;
   address: Address;
   instructions?: string;

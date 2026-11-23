@@ -127,6 +127,33 @@ export const createServerClient = (): SupabaseClient => {
   return getPublicSupabaseServerClient();
 };
 
+/**
+ * Returns a fresh user-scoped Supabase client that sends the caller's Bearer JWT
+ * so PostgREST queries run under the authenticated user's RLS policies.
+ */
+export const createUserScopedSupabaseClient = (accessToken: string): SupabaseClient => {
+  const supabaseUrl = getSupabaseUrl();
+  const publicKey =
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+
+  return createSupabaseClient(supabaseUrl, publicKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  });
+};
+
 export const createClient = createServerClient;
 
 /**

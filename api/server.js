@@ -8,8 +8,462 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// lib/email-service.ts
+var email_service_exports = {};
+__export(email_service_exports, {
+  createEmailTransporter: () => createEmailTransporter,
+  isSmtpConfigured: () => isSmtpConfigured,
+  loadSmtpConfig: () => loadSmtpConfig,
+  saveSmtpConfig: () => saveSmtpConfig,
+  sendEmailOtp: () => sendEmailOtp,
+  sendOrderConfirmationEmail: () => sendOrderConfirmationEmail,
+  testSmtpConnection: () => testSmtpConnection
+});
+import nodemailer from "nodemailer";
+import fs2 from "fs";
+import path2 from "path";
+function loadSmtpConfig() {
+  let fileConfig = {};
+  try {
+    if (fs2.existsSync(SMTP_CONFIG_FILE)) {
+      fileConfig = JSON.parse(fs2.readFileSync(SMTP_CONFIG_FILE, "utf8")) || {};
+    }
+  } catch {
+  }
+  const user = (fileConfig.user || process.env.EMAIL_USER || process.env.SMTP_USER || "officialnuvvo@gmail.com").trim();
+  const pass = (fileConfig.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
+  const host = (fileConfig.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
+  const port = Number(fileConfig.port || process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
+  const from = (fileConfig.from || process.env.EMAIL_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+  return { user, pass, host, port, from };
+}
+function saveSmtpConfig(config) {
+  const current = loadSmtpConfig();
+  const updated = {
+    user: (config.user ?? current.user).trim(),
+    pass: (config.pass ?? current.pass).trim(),
+    host: (config.host ?? current.host).trim() || "smtp.gmail.com",
+    port: Number(config.port) || current.port || 465,
+    from: (config.from ?? current.from).trim() || current.user
+  };
+  try {
+    fs2.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), "utf8");
+  } catch (e) {
+    console.warn("Failed to persist SMTP config:", e);
+  }
+  return updated;
+}
+function isSmtpConfigured() {
+  const cfg = loadSmtpConfig();
+  return Boolean(cfg.user && cfg.pass);
+}
+function createEmailTransporter() {
+  const cfg = loadSmtpConfig();
+  if (!cfg.user || !cfg.pass) {
+    return null;
+  }
+  const secure = cfg.port === 465;
+  return nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure,
+    auth: {
+      user: cfg.user,
+      pass: cfg.pass.replace(/\s+/g, "")
+      // Strip spaces if Gmail App Password was copied with spaces
+    },
+    tls: {
+      rejectUnauthorized: false
+      // Avoid self-signed or proxy TLS handshake rejections in cloud environments
+    },
+    connectionTimeout: 15e3,
+    greetingTimeout: 15e3,
+    socketTimeout: 15e3
+  });
+}
+async function testSmtpConnection() {
+  if (!isSmtpConfigured()) {
+    return {
+      success: false,
+      configured: false,
+      error: "EMAIL_USER and EMAIL_PASS (or SMTP_USER and SMTP_PASS) are not set in environment variables."
+    };
+  }
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    return {
+      success: false,
+      configured: false,
+      error: "Failed to initialize email transporter."
+    };
+  }
+  try {
+    await transporter.verify();
+    return {
+      success: true,
+      configured: true,
+      message: `SMTP connection established successfully to ${process.env.SMTP_HOST || "smtp.gmail.com"}.`
+    };
+  } catch (err) {
+    return {
+      success: false,
+      configured: true,
+      error: `SMTP verification failed: ${err?.message || err}. Please verify your email and app password.`
+    };
+  }
+}
+async function sendEmailOtp(recipientEmail, otpCode, userName) {
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    return {
+      success: false,
+      configured: false,
+      provider: "not_configured",
+      error: "Email delivery credentials (EMAIL_USER & EMAIL_PASS) are not configured in Vercel/Environment. Please configure Gmail App Password or custom SMTP."
+    };
+  }
+  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "no-reply@nuvvo.delivery";
+  const greetingName = userName ? `Hello ${userName},` : "Hello,";
+  const mailOptions = {
+    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    to: recipientEmail,
+    subject: `Your Nuvvo Verification Code: ${otpCode}`,
+    text: `${greetingName}
+
+Your 6-digit verification code for Nuvvo registration is: ${otpCode}
+
+This code is valid for 10 minutes. Please do not share this code with anyone.
+
+Thank you,
+Nuvvo Team`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nuvvo Verification Code</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 30px 15px;">
+          <tr>
+            <td align="center">
+              <table width="100%" max-width="500" border="0" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                <!-- Header -->
+                <tr>
+                  <td align="center" style="background: linear-gradient(135deg, #ea580c, #f97316); padding: 28px 20px; color: #ffffff;">
+                    <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">NUVVO</h1>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.9;">Food Delivery & Cloud Kitchen</p>
+                  </td>
+                </tr>
+                <!-- Body -->
+                <tr>
+                  <td style="padding: 32px 28px;">
+                    <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 18px; font-weight: 700;">Email Verification</h2>
+                    <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.5;">
+                      ${greetingName} Thank you for joining Nuvvo. Please use the verification pass code below to complete your registration:
+                    </p>
+                    
+                    <div style="background-color: #fff7ed; border: 2px dashed #fdba74; border-radius: 12px; padding: 18px; text-align: center; margin: 24px 0;">
+                      <span style="font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #ea580c;">
+                        ${otpCode}
+                      </span>
+                    </div>
+
+                    <p style="margin: 0 0 8px 0; color: #64748b; font-size: 12px;">
+                      \u23F1\uFE0F <strong>Validity:</strong> This code is valid for <strong>10 minutes</strong>.
+                    </p>
+                    <p style="margin: 0; color: #94a3b8; font-size: 11px;">
+                      \u{1F512} If you did not request this verification code, you can safely ignore this email.
+                    </p>
+                  </td>
+                </tr>
+                <!-- Footer -->
+                <tr>
+                  <td style="background-color: #f1f5f9; padding: 16px 20px; text-align: center; border-top: 1px solid #e2e8f0;">
+                    <p style="margin: 0; color: #64748b; font-size: 11px;">
+                      &copy; ${(/* @__PURE__ */ new Date()).getFullYear()} Nuvvo Food Delivery. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `
+  };
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      configured: true,
+      provider: "nodemailer_smtp",
+      messageId: info.messageId
+    };
+  } catch (err) {
+    console.error("[Nodemailer Error] Failed to send email:", err?.message || err);
+    return {
+      success: false,
+      configured: true,
+      provider: "nodemailer_smtp",
+      error: `SMTP delivery failed: ${err?.message || "Unknown error"}. Check EMAIL_USER and EMAIL_PASS.`
+    };
+  }
+}
+async function sendOrderConfirmationEmail(payload) {
+  const {
+    orderId,
+    customerName,
+    customerEmail,
+    items,
+    subtotal,
+    discount = 0,
+    deliveryFee = 0,
+    packagingFee = 0,
+    tax = 0,
+    tip = 0,
+    finalAmount,
+    paymentMethod,
+    paymentStatus = "Confirmed",
+    deliveryAddress,
+    deliveryInstructions,
+    date = (/* @__PURE__ */ new Date()).toISOString(),
+    eta = 25
+  } = payload;
+  if (!customerEmail || !customerEmail.includes("@")) {
+    return {
+      success: false,
+      configured: false,
+      error: "A valid customer email is required to send the order confirmation receipt."
+    };
+  }
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    console.warn(`[SMTP Notice] SMTP not configured. Order confirmation email for #${orderId} logged without sending.`);
+    return {
+      success: false,
+      configured: false,
+      provider: "not_configured",
+      error: "SMTP credentials are not configured in environment (EMAIL_USER / EMAIL_PASS). Order confirmation skipped."
+    };
+  }
+  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "orders@nuvvo.delivery";
+  const displayOrderId = orderId.startsWith("order_") ? orderId.replace("order_", "#").toUpperCase() : `#${orderId.toUpperCase()}`;
+  const formattedDate = new Date(date).toLocaleString("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata"
+  });
+  const addressLine = deliveryAddress.fullAddress || [deliveryAddress.flatNo, deliveryAddress.area, deliveryAddress.landmark ? `Near ${deliveryAddress.landmark}` : "", deliveryAddress.city].filter(Boolean).join(", ") || "Delivery Address on File";
+  const itemsHtml = items.map((item) => `
+    <tr>
+      <td style="padding: 12px 0; border-bottom: 1px solid #f1f5f9;">
+        <div style="font-weight: 700; color: #1e293b; font-size: 14px;">
+          ${item.isVeg ? '<span style="color: #16a34a; font-size: 11px; margin-right: 4px;">\u{1F7E2} Veg</span>' : '<span style="color: #dc2626; font-size: 11px; margin-right: 4px;">\u{1F534} Non-Veg</span>'}
+          ${item.name}
+        </div>
+        ${item.restaurantName ? `<div style="font-size: 11px; color: #64748b; margin-top: 2px;">${item.restaurantName}</div>` : ""}
+      </td>
+      <td align="center" style="padding: 12px 8px; border-bottom: 1px solid #f1f5f9; color: #475569; font-weight: 600; font-size: 13px;">
+        \xD7 ${item.quantity}
+      </td>
+      <td align="right" style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; font-weight: 700; color: #0f172a; font-size: 14px; font-family: monospace;">
+        \u20B9${(item.price * item.quantity).toFixed(2)}
+      </td>
+    </tr>
+  `).join("");
+  const emailHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Receipt - ${displayOrderId}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 24px 12px;">
+    <tr>
+      <td align="center">
+        <table width="100%" max-width="600" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; background-color: #ffffff; border-radius: 20px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);">
+          <!-- Header Banner -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #ea580c 0%, #f97316 100%); padding: 32px 28px; text-align: center; color: #ffffff;">
+              <h1 style="margin: 0; font-size: 26px; font-weight: 900; letter-spacing: -0.5px;">NUVVO</h1>
+              <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.95;">Food Delivery & Cloud Kitchen</p>
+              
+              <div style="display: inline-block; background-color: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); border-radius: 9999px; padding: 6px 16px; margin-top: 16px; font-size: 12px; font-weight: 800;">
+                \u2713 Order Confirmed \u2022 ETA ~${eta} mins
+              </div>
+            </td>
+          </tr>
+
+          <!-- Order Summary Card -->
+          <tr>
+            <td style="padding: 28px 24px;">
+              <p style="margin: 0 0 4px 0; color: #64748b; font-size: 13px;">Hi <strong style="color: #0f172a;">${customerName}</strong>,</p>
+              <h2 style="margin: 0 0 16px 0; color: #0f172a; font-size: 20px; font-weight: 800;">Thank you for your order!</h2>
+              <p style="margin: 0 0 24px 0; color: #475569; font-size: 14px; line-height: 1.5;">
+                We've received your payment and our kitchen has started preparing your fresh meal. Here is your itemized receipt for order <strong>${displayOrderId}</strong>.
+              </p>
+
+              <!-- Order Meta Strip -->
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #fff7ed; border: 1px solid #fed7aa; border-radius: 12px; margin-bottom: 24px; padding: 12px 16px;">
+                <tr>
+                  <td width="50%" style="font-size: 12px; color: #7c2d12; line-height: 1.5;">
+                    <div><strong>Order ID:</strong> ${displayOrderId}</div>
+                    <div><strong>Date:</strong> ${formattedDate}</div>
+                  </td>
+                  <td width="50%" align="right" style="font-size: 12px; color: #7c2d12; line-height: 1.5;">
+                    <div><strong>Payment:</strong> ${paymentMethod} (${paymentStatus})</div>
+                    <div><strong>Estimated Delivery:</strong> ~${eta} mins</div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Itemized Table -->
+              <h3 style="margin: 0 0 12px 0; color: #0f172a; font-size: 15px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;">Itemized Receipt</h3>
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 20px;">
+                <thead>
+                  <tr style="border-bottom: 2px solid #e2e8f0; font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 800;">
+                    <th align="left" style="padding-bottom: 8px;">Item Description</th>
+                    <th align="center" style="padding-bottom: 8px; width: 60px;">Qty</th>
+                    <th align="right" style="padding-bottom: 8px; width: 90px;">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${itemsHtml}
+                </tbody>
+              </table>
+
+              <!-- Bill Breakdown -->
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 24px;">
+                <tr>
+                  <td style="color: #64748b; font-size: 13px; padding-bottom: 6px;">Item Subtotal</td>
+                  <td align="right" style="color: #0f172a; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">\u20B9${subtotal.toFixed(2)}</td>
+                </tr>
+                ${discount > 0 ? `
+                <tr>
+                  <td style="color: #16a34a; font-size: 13px; padding-bottom: 6px;">Discounts & Rewards</td>
+                  <td align="right" style="color: #16a34a; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">-\u20B9${discount.toFixed(2)}</td>
+                </tr>` : ""}
+                <tr>
+                  <td style="color: #64748b; font-size: 13px; padding-bottom: 6px;">Delivery Partner Fee</td>
+                  <td align="right" style="color: #0f172a; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">${deliveryFee > 0 ? `\u20B9${deliveryFee.toFixed(2)}` : '<span style="color:#16a34a;">FREE</span>'}</td>
+                </tr>
+                ${packagingFee > 0 ? `
+                <tr>
+                  <td style="color: #64748b; font-size: 13px; padding-bottom: 6px;">Packaging Fee</td>
+                  <td align="right" style="color: #0f172a; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">\u20B9${packagingFee.toFixed(2)}</td>
+                </tr>` : ""}
+                ${tax > 0 ? `
+                <tr>
+                  <td style="color: #64748b; font-size: 13px; padding-bottom: 6px;">Taxes & GST (5%)</td>
+                  <td align="right" style="color: #0f172a; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">\u20B9${tax.toFixed(2)}</td>
+                </tr>` : ""}
+                ${tip > 0 ? `
+                <tr>
+                  <td style="color: #ea580c; font-size: 13px; padding-bottom: 6px;">Delivery Partner Tip</td>
+                  <td align="right" style="color: #ea580c; font-size: 13px; font-weight: 600; padding-bottom: 6px; font-family: monospace;">\u20B9${tip.toFixed(2)}</td>
+                </tr>` : ""}
+                <tr style="border-top: 1px dashed #cbd5e1;">
+                  <td style="color: #0f172a; font-size: 16px; font-weight: 900; padding-top: 10px;">Total Paid</td>
+                  <td align="right" style="color: #ea580c; font-size: 18px; font-weight: 900; padding-top: 10px; font-family: monospace;">\u20B9${finalAmount.toFixed(2)}</td>
+                </tr>
+              </table>
+
+              <!-- Delivery Information Section -->
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin-bottom: 24px;">
+                <tr>
+                  <td>
+                    <div style="font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 800; margin-bottom: 4px;">\u{1F4CD} Delivery Location</div>
+                    <div style="font-size: 13px; font-weight: 600; color: #1e293b; line-height: 1.4;">${addressLine}</div>
+                    ${deliveryInstructions ? `
+                      <div style="margin-top: 8px; font-size: 12px; color: #c2410c; background-color: #fff7ed; padding: 6px 10px; border-radius: 8px; border-left: 3px solid #ea580c;">
+                        <strong>Instructions:</strong> "${deliveryInstructions}"
+                      </div>
+                    ` : ""}
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Track Button -->
+              <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center">
+                    <a href="https://ais-dev-doqwgurnhhm6f2nyj4d7mf-343969814096.asia-southeast1.run.app" style="display: inline-block; background: linear-gradient(135deg, #ea580c, #f97316); color: #ffffff; text-decoration: none; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 12px; box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);">
+                      Track Your Live Delivery \u2192
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f1f5f9; padding: 20px 24px; text-align: center; border-top: 1px solid #e2e8f0;">
+              <p style="margin: 0 0 6px 0; color: #64748b; font-size: 12px; font-weight: 600;">
+                Questions about your order? Contact Nuvvo Support at support@nuvvo.delivery
+              </p>
+              <p style="margin: 0; color: #94a3b8; font-size: 11px;">
+                &copy; ${(/* @__PURE__ */ new Date()).getFullYear()} Nuvvo Food Delivery \u2022 Chirala Hub, Andhra Pradesh. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+  const mailOptions = {
+    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    to: customerEmail,
+    subject: `Order Confirmed: ${displayOrderId} - \u20B9${finalAmount.toFixed(2)} (ETA ~${eta} mins)`,
+    text: `Hello ${customerName},
+
+Your order ${displayOrderId} has been confirmed!
+Total Paid: \u20B9${finalAmount.toFixed(2)}
+Payment Method: ${paymentMethod} (${paymentStatus})
+Delivery Address: ${addressLine}
+
+Estimated Delivery Time: ~${eta} mins.
+
+Thank you for choosing Nuvvo!`,
+    html: emailHtml
+  };
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`[SMTP Success] Order confirmation email dispatched for order ${displayOrderId} to ${customerEmail} (MessageId: ${info.messageId})`);
+    return {
+      success: true,
+      configured: true,
+      provider: "nodemailer_smtp",
+      messageId: info.messageId
+    };
+  } catch (err) {
+    console.error(`[SMTP Error] Failed to send order confirmation email for order ${displayOrderId}:`, err?.message || err);
+    return {
+      success: false,
+      configured: true,
+      provider: "nodemailer_smtp",
+      error: `Failed to dispatch order receipt: ${err?.message || "Unknown SMTP error"}`
+    };
+  }
+}
+var SMTP_CONFIG_FILE;
+var init_email_service = __esm({
+  "lib/email-service.ts"() {
+    SMTP_CONFIG_FILE = path2.join(process.cwd(), ".server_smtp_config.json");
+  }
+});
+
 // utils/supabase/server.ts
-import { createClient as createSupabaseClient2 } from "@supabase/supabase-js";
+import { createClient as createSupabaseClient3 } from "@supabase/supabase-js";
 var getSupabaseUrl2, getAdminSupabaseServerClient2, getPublicSupabaseServerClient2;
 var init_server = __esm({
   "utils/supabase/server.ts"() {
@@ -21,8 +475,8 @@ var init_server = __esm({
       try {
         const privilegedKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
         if (privilegedKey && privilegedKey.trim()) {
-          const supabaseUrl = getSupabaseUrl2();
-          const client = createSupabaseClient2(supabaseUrl, privilegedKey.trim(), {
+          const supabaseUrl2 = getSupabaseUrl2();
+          const client = createSupabaseClient3(supabaseUrl2, privilegedKey.trim(), {
             auth: {
               persistSession: false,
               autoRefreshToken: false
@@ -41,9 +495,9 @@ var init_server = __esm({
       };
     };
     getPublicSupabaseServerClient2 = () => {
-      const supabaseUrl = getSupabaseUrl2();
+      const supabaseUrl2 = getSupabaseUrl2();
       const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
-      return createSupabaseClient2(supabaseUrl, publicKey, {
+      return createSupabaseClient3(supabaseUrl2, publicKey, {
         auth: {
           persistSession: false,
           autoRefreshToken: false
@@ -311,9 +765,9 @@ var init_otp = __esm({
 
 // server.ts
 import express from "express";
-import crypto6 from "crypto";
-import fs from "fs";
-import path from "path";
+import crypto7 from "crypto";
+import fs4 from "fs";
+import path4 from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv2 from "dotenv";
 
@@ -1310,18 +1764,22 @@ var getSupabaseUrl = () => {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://bitxmpjuetvfbhdyfvok.supabase.co";
   return url.trim();
 };
+var cachedPublicServerClient = null;
+var cachedPrivilegedServerClient = null;
 var getAdminSupabaseServerClient = () => {
   try {
     const privilegedKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
     if (privilegedKey && privilegedKey.trim()) {
-      const supabaseUrl = getSupabaseUrl();
-      const client = createSupabaseClient(supabaseUrl, privilegedKey.trim(), {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false
-        }
-      });
-      return { client, error: null, isServiceRole: true };
+      if (!cachedPrivilegedServerClient) {
+        const supabaseUrl2 = getSupabaseUrl();
+        cachedPrivilegedServerClient = createSupabaseClient(supabaseUrl2, privilegedKey.trim(), {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false
+          }
+        });
+      }
+      return { client: cachedPrivilegedServerClient, error: null, isServiceRole: true };
     }
   } catch (err) {
     console.warn("Notice: Service role client initialization deferred:", err?.message);
@@ -1334,17 +1792,35 @@ var getAdminSupabaseServerClient = () => {
   };
 };
 var getPublicSupabaseServerClient = () => {
-  const supabaseUrl = getSupabaseUrl();
-  const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
-  return createSupabaseClient(supabaseUrl, publicKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    }
-  });
+  if (!cachedPublicServerClient) {
+    const supabaseUrl2 = getSupabaseUrl();
+    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+    cachedPublicServerClient = createSupabaseClient(supabaseUrl2, publicKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false
+      }
+    });
+  }
+  return cachedPublicServerClient;
 };
 var createServerClient = () => {
   return getPublicSupabaseServerClient();
+};
+var createUserScopedSupabaseClient = (accessToken) => {
+  const supabaseUrl2 = getSupabaseUrl();
+  const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+  return createSupabaseClient(supabaseUrl2, publicKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  });
 };
 var checkServerSupabaseDiagnostics = async () => {
   const url = getSupabaseUrl();
@@ -1595,12 +2071,239 @@ import crypto4 from "crypto";
 
 // lib/auth-utils.ts
 import crypto2 from "crypto";
+import fs from "fs";
+import path from "path";
 var AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || "9063692135";
 var ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || "2135";
 var SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || process.env.SUPABASE_SECRET_KEY || "nuvvo_production_secure_secret_chirala_2026";
 var OTP_EXPIRY_MS = 5 * 60 * 1e3;
 var fallbackCustomerAccounts = /* @__PURE__ */ new Map();
 var fallbackUsernamesRegistry = /* @__PURE__ */ new Map();
+var customerAuthRateStore = /* @__PURE__ */ new Map();
+function getClientIp(req) {
+  try {
+    const xff = req?.headers?.["x-forwarded-for"] || req?.headers?.["X-Forwarded-For"];
+    if (typeof xff === "string" && xff.trim()) {
+      return xff.split(",")[0].trim();
+    }
+    const realIp = req?.headers?.["x-real-ip"] || req?.headers?.["X-Real-IP"];
+    if (typeof realIp === "string" && realIp.trim()) {
+      return realIp.trim();
+    }
+    return String(req?.ip || req?.socket?.remoteAddress || "unknown").trim();
+  } catch {
+    return "unknown";
+  }
+}
+function checkCustomerAuthRateLimit(bucket, key, options) {
+  const maxAttempts = options?.maxAttempts ?? (bucket === "login" || bucket === "change_password" ? 5 : bucket === "register" ? 6 : 3);
+  const windowMs = options?.windowMs ?? 15 * 60 * 1e3;
+  const blockMs = options?.blockMs ?? 15 * 60 * 1e3;
+  const storeKey = `${bucket}:${key.toLowerCase()}`;
+  const now = Date.now();
+  let rec = customerAuthRateStore.get(storeKey);
+  if (rec && rec.blockedUntil > now) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((rec.blockedUntil - now) / 1e3));
+    const mins = Math.ceil(retryAfterSeconds / 60);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: 0,
+      error: `Too many attempts. Please wait ${mins} minute${mins === 1 ? "" : "s"} before trying again.`
+    };
+  }
+  if (!rec || now - rec.windowStart > windowMs) {
+    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+  }
+  if (options?.incrementOnCheck) {
+    rec.count += 1;
+    if (rec.count > maxAttempts) {
+      rec.blockedUntil = now + blockMs;
+      customerAuthRateStore.set(storeKey, rec);
+      const retryAfterSeconds = Math.ceil(blockMs / 1e3);
+      const mins = Math.ceil(retryAfterSeconds / 60);
+      return {
+        allowed: false,
+        retryAfterSeconds,
+        remaining: 0,
+        error: `Too many requests. Please wait ${mins} minute${mins === 1 ? "" : "s"} before trying again.`
+      };
+    }
+  } else if (rec.count >= maxAttempts) {
+    rec.blockedUntil = now + blockMs;
+    customerAuthRateStore.set(storeKey, rec);
+    const retryAfterSeconds = Math.ceil(blockMs / 1e3);
+    const mins = Math.ceil(retryAfterSeconds / 60);
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: 0,
+      error: `Too many failed attempts. Please wait ${mins} minute${mins === 1 ? "" : "s"} before trying again.`
+    };
+  }
+  customerAuthRateStore.set(storeKey, rec);
+  return {
+    allowed: true,
+    remaining: Math.max(0, maxAttempts - rec.count)
+  };
+}
+function recordCustomerAuthFailure(bucket, key, options) {
+  const maxAttempts = options?.maxAttempts ?? 5;
+  const windowMs = options?.windowMs ?? 15 * 60 * 1e3;
+  const blockMs = options?.blockMs ?? 15 * 60 * 1e3;
+  const storeKey = `${bucket}:${key.toLowerCase()}`;
+  const now = Date.now();
+  let rec = customerAuthRateStore.get(storeKey);
+  if (!rec || now - rec.windowStart > windowMs) {
+    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+  }
+  rec.count += 1;
+  const remainingAttempts = Math.max(0, maxAttempts - rec.count);
+  if (rec.count >= maxAttempts) {
+    rec.blockedUntil = now + blockMs;
+    customerAuthRateStore.set(storeKey, rec);
+    return {
+      blocked: true,
+      remainingAttempts: 0,
+      retryAfterSeconds: Math.ceil(blockMs / 1e3)
+    };
+  }
+  customerAuthRateStore.set(storeKey, rec);
+  return { blocked: false, remainingAttempts };
+}
+function clearCustomerAuthRateLimit(bucket, key) {
+  customerAuthRateStore.delete(`${bucket}:${key.toLowerCase()}`);
+}
+var CUSTOMER_INDEX_FILE = path.join(process.cwd(), ".server_customer_profiles.json");
+function loadCustomerIndexFile() {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(CUSTOMER_INDEX_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(CUSTOMER_INDEX_FILE, "utf8"));
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+  } catch {
+  }
+  return {};
+}
+function saveCustomerIndexFile(recordsById) {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(CUSTOMER_INDEX_FILE, JSON.stringify(recordsById, null, 2), "utf8");
+  } catch {
+  }
+}
+function upsertLocalCustomerProfileIndex(profile) {
+  const cleanEmail = String(profile.email || "").trim().toLowerCase();
+  const displayUsername = String(profile.username || "").trim();
+  const cleanUsername = displayUsername.toLowerCase();
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const existingById = fallbackCustomerAccounts.get(`id:${profile.id}`) || loadCustomerIndexFile()[profile.id] || {};
+  const merged = {
+    ...existingById,
+    id: profile.id,
+    fullName: String(profile.fullName ?? existingById.fullName ?? displayUsername).trim(),
+    username: displayUsername || existingById.username || "",
+    usernameLower: cleanUsername || existingById.usernameLower || "",
+    email: cleanEmail || existingById.email || "",
+    mobile: String(profile.mobile ?? existingById.mobile ?? "").trim(),
+    location: String(profile.location ?? existingById.location ?? "").trim(),
+    deliveryAddress: String(profile.deliveryAddress ?? existingById.deliveryAddress ?? "").trim(),
+    addresses: Array.isArray(profile.addresses) ? profile.addresses : existingById.addresses || [],
+    whatsappNumber: profile.whatsappNumber !== void 0 ? profile.whatsappNumber : existingById.whatsappNumber,
+    whatsappOptIn: profile.whatsappOptIn !== void 0 ? Boolean(profile.whatsappOptIn) : Boolean(existingById.whatsappOptIn),
+    whatsappOptInAt: profile.whatsappOptInAt !== void 0 ? profile.whatsappOptInAt : existingById.whatsappOptInAt,
+    whatsappOptInSource: profile.whatsappOptInSource !== void 0 ? profile.whatsappOptInSource : existingById.whatsappOptInSource,
+    preferredLanguage: profile.preferredLanguage || existingById.preferredLanguage || "te",
+    avatar: profile.avatar !== void 0 ? profile.avatar : existingById.avatar,
+    role: "Customer",
+    // Strictly immutable customer role
+    createdAt: existingById.createdAt || profile.createdAt || nowIso,
+    updatedAt: nowIso
+  };
+  if (cleanUsername) fallbackUsernamesRegistry.set(cleanUsername, cleanEmail);
+  fallbackCustomerAccounts.set(`id:${merged.id}`, merged);
+  fallbackCustomerAccounts.set(cleanEmail, merged);
+  const fileRecords = loadCustomerIndexFile();
+  fileRecords[merged.id] = merged;
+  saveCustomerIndexFile(fileRecords);
+  return merged;
+}
+function findLocalCustomerByUsername(username) {
+  const lower = String(username || "").trim().toLowerCase();
+  if (!lower) return null;
+  const emailFromMem = fallbackUsernamesRegistry.get(lower);
+  if (emailFromMem && fallbackCustomerAccounts.has(emailFromMem)) {
+    const rec = fallbackCustomerAccounts.get(emailFromMem);
+    if (rec && !rec.password_hash) return rec;
+  }
+  const fileRecords = loadCustomerIndexFile();
+  for (const rec of Object.values(fileRecords)) {
+    if ((rec.usernameLower || String(rec.username || "").toLowerCase()) === lower) {
+      return rec;
+    }
+  }
+  return null;
+}
+function findLocalCustomerByEmail(email) {
+  const lower = String(email || "").trim().toLowerCase();
+  if (!lower) return null;
+  const mem = fallbackCustomerAccounts.get(lower);
+  if (mem && !mem.password_hash) return mem;
+  const fileRecords = loadCustomerIndexFile();
+  for (const rec of Object.values(fileRecords)) {
+    if (String(rec.email || "").toLowerCase() === lower) {
+      return rec;
+    }
+  }
+  return null;
+}
+function findLocalCustomerById(id) {
+  if (!id) return null;
+  const mem = fallbackCustomerAccounts.get(`id:${id}`);
+  if (mem) return mem;
+  const fileRecords = loadCustomerIndexFile();
+  return fileRecords[id] || null;
+}
+function getAppRedirectOrigin(req, explicitRedirect) {
+  const headerOriginRaw = req?.headers?.origin || req?.headers?.Origin;
+  const hostRaw = String(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").split(",")[0].trim();
+  const protoRaw = String(
+    req?.headers?.["x-forwarded-proto"] || (hostRaw.includes("localhost") || hostRaw.startsWith("127.") ? "http" : "https")
+  ).split(",")[0].trim();
+  const trustedOrigins = /* @__PURE__ */ new Set();
+  const addOrigin = (candidate) => {
+    if (!candidate || typeof candidate !== "string") return;
+    try {
+      const parsed = new URL(candidate.trim());
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        trustedOrigins.add(parsed.origin);
+      }
+    } catch {
+    }
+  };
+  if (typeof headerOriginRaw === "string") addOrigin(headerOriginRaw);
+  if (hostRaw) addOrigin(`${protoRaw}://${hostRaw}`);
+  if (process.env.APP_URL) addOrigin(process.env.APP_URL);
+  if (explicitRedirect && typeof explicitRedirect === "string") {
+    try {
+      const parsedExplicit = new URL(explicitRedirect.trim());
+      if ((parsedExplicit.protocol === "http:" || parsedExplicit.protocol === "https:") && (trustedOrigins.size === 0 || trustedOrigins.has(parsedExplicit.origin))) {
+        return parsedExplicit.origin;
+      }
+    } catch {
+    }
+  }
+  if (hostRaw) {
+    return `${protoRaw}://${hostRaw}`;
+  }
+  if (typeof headerOriginRaw === "string" && /^https?:\/\//i.test(headerOriginRaw)) {
+    return headerOriginRaw.replace(/\/+$/, "");
+  }
+  if (process.env.APP_URL && /^https?:\/\//i.test(process.env.APP_URL)) {
+    return process.env.APP_URL.replace(/\/+$/, "");
+  }
+  return "http://localhost:3000";
+}
 async function parseRequestBody(req) {
   if (req.body && typeof req.body === "object") {
     return req.body;
@@ -1711,8 +2414,8 @@ function checkEmailOtpSendRateLimit(email) {
     return { allowed: true };
   }
   const elapsedSeconds = Math.floor((now - entry.lastSentAt) / 1e3);
-  if (elapsedSeconds < 60) {
-    const wait = 60 - elapsedSeconds;
+  if (elapsedSeconds < 30) {
+    const wait = 30 - elapsedSeconds;
     return {
       allowed: false,
       waitSeconds: wait,
@@ -1723,7 +2426,7 @@ function checkEmailOtpSendRateLimit(email) {
     emailOtpSendHistory.set(cleanEmail, { lastSentAt: now, count: 1, windowStart: now });
     return { allowed: true };
   }
-  if (entry.count >= 5) {
+  if (entry.count >= 8) {
     const resetInMins = Math.ceil((entry.windowStart + 15 * 60 * 1e3 - now) / 6e4);
     return {
       allowed: false,
@@ -1914,170 +2617,271 @@ function verifySignedSessionJwt(token) {
     return { valid: false };
   }
 }
-
-// lib/email-service.ts
-import nodemailer from "nodemailer";
-function isSmtpConfigured() {
-  const user = process.env.EMAIL_USER || process.env.SMTP_USER;
-  const pass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
-  return Boolean(user && pass);
-}
-function createEmailTransporter() {
-  const user = process.env.EMAIL_USER || process.env.SMTP_USER;
-  const pass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
-  if (!user || !pass) {
-    return null;
+function extractBearerToken(req) {
+  const authHeader = req?.headers?.authorization || req?.headers?.Authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
   }
-  const host = (process.env.SMTP_HOST || "smtp.gmail.com").trim();
-  const port = Number(process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
-  const secure = port === 465;
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: {
-      user: user.trim(),
-      pass: pass.trim().replace(/\s+/g, "")
-      // Strip spaces if Gmail App Password was copied with spaces
-    },
-    tls: {
-      rejectUnauthorized: false
-      // Avoid self-signed or proxy TLS handshake rejections in cloud environments
-    },
-    connectionTimeout: 1e4,
-    greetingTimeout: 1e4
+  return "";
+}
+async function resolveCallerIdentity(req) {
+  const unauth = {
+    authenticated: false,
+    authType: "none",
+    token: "",
+    userId: "",
+    email: "",
+    phone: "",
+    role: "Customer",
+    isAdmin: false
+  };
+  const token = extractBearerToken(req);
+  if (!token) return unauth;
+  if (token.startsWith("nuvvo_jwt_")) {
+    const verified = verifySignedSessionJwt(token);
+    if (!verified.valid || !verified.role) return unauth;
+    const cleanPhone = normalizePhone(verified.phone || verified.payload?.phone || "");
+    const userId = String(
+      verified.payload?.sub || (cleanPhone ? `user_${cleanPhone}` : "")
+    ).trim();
+    const isAdmin = verified.role === "admin" || verified.role === "super_admin";
+    return {
+      authenticated: true,
+      authType: "nuvvo_jwt",
+      token,
+      userId,
+      email: String(verified.payload?.email || "").trim().toLowerCase(),
+      phone: cleanPhone,
+      role: verified.role,
+      isAdmin
+    };
+  }
+  try {
+    const publicSupabase = getPublicSupabaseServerClient();
+    const { data, error } = await publicSupabase.auth.getUser(token);
+    if (error || !data?.user?.id) {
+      return unauth;
+    }
+    const authUser = data.user;
+    const authUserId = String(authUser.id).trim();
+    const meta = authUser.user_metadata || {};
+    const localIdx = findLocalCustomerById(authUserId);
+    const resolvedPhone = normalizePhone(
+      String(meta.mobile || localIdx?.mobile || authUser.phone || "")
+    );
+    return {
+      authenticated: true,
+      authType: "supabase",
+      token,
+      userId: authUserId,
+      email: String(authUser.email || "").trim().toLowerCase(),
+      phone: resolvedPhone,
+      role: "Customer",
+      // Never promote a customer JWT to Admin
+      isAdmin: false
+    };
+  } catch {
+    return unauth;
+  }
+}
+function isOrderOwnedByCaller(order, caller) {
+  if (!caller.authenticated) return false;
+  if (caller.isAdmin) return true;
+  if (!order || typeof order !== "object") return false;
+  const orderCustomerId = String(order.customer_id || order.customerId || "").trim();
+  if (orderCustomerId) {
+    return orderCustomerId === caller.userId;
+  }
+  const checkoutData = order.address && typeof order.address === "object" && order.address.checkout_data || {};
+  const orderEmail = String(order.customer_email || order.customerEmail || checkoutData.customerEmail || "").trim().toLowerCase();
+  if (caller.email && orderEmail && caller.email === orderEmail) {
+    return true;
+  }
+  const orderPhone = normalizePhone(String(order.customer_phone || order.customerPhone || ""));
+  const callerPhone = normalizePhone(caller.phone);
+  if (callerPhone && callerPhone.length >= 10 && orderPhone && orderPhone === callerPhone) {
+    return true;
+  }
+  return false;
+}
+
+// api/auth/send-email-otp.ts
+init_email_service();
+
+// src/utils/supabase/client.ts
+import { createClient as createSupabaseClient2 } from "@supabase/supabase-js";
+var supabaseUrl = typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_URL || typeof import.meta !== "undefined" && import.meta.env?.NEXT_PUBLIC_SUPABASE_URL || typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_SUPABASE_URL || process.env?.VITE_SUPABASE_URL || process.env?.SUPABASE_URL) || "https://bitxmpjuetvfbhdyfvok.supabase.co";
+var supabaseKey = typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_ANON_KEY || typeof import.meta !== "undefined" && import.meta.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY || typeof import.meta !== "undefined" && import.meta.env?.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || typeof import.meta !== "undefined" && import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY || typeof process !== "undefined" && (process.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env?.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env?.VITE_SUPABASE_ANON_KEY || process.env?.SUPABASE_ANON_KEY) || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+var REMEMBER_ME_PREF_KEY = "nuvvo_auth_remember_me";
+function getAuthPersistencePreference() {
+  if (typeof window === "undefined") return true;
+  try {
+    const val = window.localStorage.getItem(REMEMBER_ME_PREF_KEY);
+    if (val === "false") return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+var adaptiveSupabaseStorage = {
+  getItem: (key) => {
+    if (typeof window === "undefined") return null;
+    try {
+      const remember = getAuthPersistencePreference();
+      return remember ? window.localStorage.getItem(key) : window.sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key, value) => {
+    if (typeof window === "undefined") return;
+    try {
+      const remember = getAuthPersistencePreference();
+      if (remember) {
+        window.localStorage.setItem(key, value);
+        window.sessionStorage.removeItem(key);
+      } else {
+        window.sessionStorage.setItem(key, value);
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+    }
+  },
+  removeItem: (key) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(key);
+      window.sessionStorage.removeItem(key);
+    } catch {
+    }
+  }
+};
+var capturedRedirectState = (() => {
+  if (typeof window === "undefined") {
+    return { isRecoveryRedirect: false, authErrorDescription: null };
+  }
+  try {
+    const hashRaw = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+    const hashParams = new URLSearchParams(hashRaw);
+    const searchParams = new URLSearchParams(window.location.search);
+    const isRecoveryRedirect = hashParams.get("type") === "recovery" || searchParams.get("type") === "recovery" || window.location.hash.includes("type=recovery");
+    const rawErrorDesc = hashParams.get("error_description") || searchParams.get("error_description") || hashParams.get("error") || searchParams.get("error");
+    return {
+      isRecoveryRedirect,
+      authErrorDescription: rawErrorDesc ? rawErrorDesc.trim() : null
+    };
+  } catch {
+    return { isRecoveryRedirect: false, authErrorDescription: null };
+  }
+})();
+var earlyRecoveryEventDetected = false;
+var createClient = () => createSupabaseClient2(supabaseUrl, supabaseKey, {
+  auth: {
+    storage: typeof window !== "undefined" ? adaptiveSupabaseStorage : void 0,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+});
+var supabase = createClient();
+if (typeof window !== "undefined") {
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === "PASSWORD_RECOVERY") {
+      earlyRecoveryEventDetected = true;
+    }
   });
 }
-async function testSmtpConnection() {
-  if (!isSmtpConfigured()) {
-    return {
-      success: false,
-      configured: false,
-      error: "EMAIL_USER and EMAIL_PASS (or SMTP_USER and SMTP_PASS) are not set in environment variables."
-    };
-  }
-  const transporter = createEmailTransporter();
-  if (!transporter) {
-    return {
-      success: false,
-      configured: false,
-      error: "Failed to initialize email transporter."
-    };
-  }
-  try {
-    await transporter.verify();
-    return {
-      success: true,
-      configured: true,
-      message: `SMTP connection established successfully to ${process.env.SMTP_HOST || "smtp.gmail.com"}.`
-    };
-  } catch (err) {
-    return {
-      success: false,
-      configured: true,
-      error: `SMTP verification failed: ${err?.message || err}. Please verify your email and app password.`
-    };
-  }
+
+// src/services/supabaseEmailLogs.ts
+var MAX_BUFFERED_LOGS = 100;
+var memoryLogs = [];
+var supabasePausedUntil = 0;
+var tableMissingWarned = false;
+function normalizeEmail2(email) {
+  return String(email || "").trim().toLowerCase();
 }
-async function sendEmailOtp(recipientEmail, otpCode, userName) {
-  const transporter = createEmailTransporter();
-  if (!transporter) {
-    return {
-      success: false,
-      configured: false,
-      provider: "not_configured",
-      error: "Email delivery credentials (EMAIL_USER & EMAIL_PASS) are not configured in Vercel/Environment. Please configure Gmail App Password or custom SMTP."
-    };
-  }
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "no-reply@nuvvo.delivery";
-  const greetingName = userName ? `Hello ${userName},` : "Hello,";
-  const mailOptions = {
-    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
-    to: recipientEmail,
-    subject: `Your Nuvvo Verification Code: ${otpCode}`,
-    text: `${greetingName}
-
-Your 6-digit verification code for Nuvvo registration is: ${otpCode}
-
-This code is valid for 10 minutes. Please do not share this code with anyone.
-
-Thank you,
-Nuvvo Team`,
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nuvvo Verification Code</title>
-      </head>
-      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 30px 15px;">
-          <tr>
-            <td align="center">
-              <table width="100%" max-width="500" border="0" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-                <!-- Header -->
-                <tr>
-                  <td align="center" style="background: linear-gradient(135deg, #ea580c, #f97316); padding: 28px 20px; color: #ffffff;">
-                    <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">NUVVO</h1>
-                    <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.9;">Food Delivery & Cloud Kitchen</p>
-                  </td>
-                </tr>
-                <!-- Body -->
-                <tr>
-                  <td style="padding: 32px 28px;">
-                    <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 18px; font-weight: 700;">Email Verification</h2>
-                    <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.5;">
-                      ${greetingName} Thank you for joining Nuvvo. Please use the verification pass code below to complete your registration:
-                    </p>
-                    
-                    <div style="background-color: #fff7ed; border: 2px dashed #fdba74; border-radius: 12px; padding: 18px; text-align: center; margin: 24px 0;">
-                      <span style="font-family: monospace; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #ea580c;">
-                        ${otpCode}
-                      </span>
-                    </div>
-
-                    <p style="margin: 0 0 8px 0; color: #64748b; font-size: 12px;">
-                      \u23F1\uFE0F <strong>Validity:</strong> This code is valid for <strong>10 minutes</strong>.
-                    </p>
-                    <p style="margin: 0; color: #94a3b8; font-size: 11px;">
-                      \u{1F512} If you did not request this verification code, you can safely ignore this email.
-                    </p>
-                  </td>
-                </tr>
-                <!-- Footer -->
-                <tr>
-                  <td style="background-color: #f1f5f9; padding: 16px 20px; text-align: center; border-top: 1px solid #e2e8f0;">
-                    <p style="margin: 0; color: #64748b; font-size: 11px;">
-                      &copy; ${(/* @__PURE__ */ new Date()).getFullYear()} Nuvvo Food Delivery. All rights reserved.
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `
+async function logEmailOtpAttempt(entry) {
+  const cleanRecipient = normalizeEmail2(entry.recipient);
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const formattedError = entry.error_details ? typeof entry.error_details === "string" ? entry.error_details.slice(0, 500) : (entry.error_details.message || String(entry.error_details)).slice(0, 500) : null;
+  const record = {
+    id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    recipient: cleanRecipient,
+    flow: entry.flow,
+    status: entry.status,
+    provider: entry.provider || "supabase_auth",
+    error_details: formattedError,
+    metadata: entry.metadata || {},
+    created_at: nowIso
   };
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    return {
-      success: true,
-      configured: true,
-      provider: "nodemailer_smtp",
-      messageId: info.messageId
-    };
-  } catch (err) {
-    console.error("[Nodemailer Error] Failed to send email:", err?.message || err);
-    return {
-      success: false,
-      configured: true,
-      provider: "nodemailer_smtp",
-      error: `SMTP delivery failed: ${err?.message || "Unknown error"}. Check EMAIL_USER and EMAIL_PASS.`
-    };
+  memoryLogs.unshift(record);
+  if (memoryLogs.length > MAX_BUFFERED_LOGS) {
+    memoryLogs.pop();
   }
+  if (Date.now() >= supabasePausedUntil) {
+    const activeClient = entry.client || supabase;
+    (async () => {
+      try {
+        const payload = {
+          recipient: record.recipient,
+          flow: record.flow,
+          status: record.status,
+          provider: record.provider,
+          error_details: record.error_details,
+          metadata: record.metadata,
+          created_at: record.created_at
+        };
+        const { error } = await activeClient.from("email_logs").insert([payload]);
+        if (error) {
+          const isTableMissing = error.code === "PGRST205" || error.code === "42P01" || String(error.message || "").includes("email_logs");
+          if (isTableMissing) {
+            supabasePausedUntil = Date.now() + 5 * 60 * 1e3;
+            if (!tableMissingWarned) {
+              console.warn(
+                '[Supabase email_logs Notice]: Table "public.email_logs" is pending migration in Supabase project. Logs are safely stored in-memory buffer.'
+              );
+              tableMissingWarned = true;
+            }
+          } else {
+            console.warn("[email_logs insert notice]:", error.message);
+          }
+        }
+      } catch (err) {
+        supabasePausedUntil = Date.now() + 60 * 1e3;
+      }
+    })().catch(() => {
+    });
+  }
+  return record;
+}
+async function getRecentEmailLogs(options) {
+  const limit = Math.min(options?.limit || 50, 100);
+  const activeClient = options?.client || supabase;
+  const filterRecipient = options?.recipient ? normalizeEmail2(options.recipient) : null;
+  if (Date.now() >= supabasePausedUntil) {
+    try {
+      let query = activeClient.from("email_logs").select("*").order("created_at", { ascending: false }).limit(limit);
+      if (filterRecipient) {
+        query = query.eq("recipient", filterRecipient);
+      }
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        return {
+          logs: data,
+          source: "supabase",
+          count: data.length
+        };
+      }
+    } catch {
+    }
+  }
+  const filtered = filterRecipient ? memoryLogs.filter((l) => l.recipient === filterRecipient) : memoryLogs;
+  const sliced = filtered.slice(0, limit);
+  return {
+    logs: sliced,
+    source: "memory",
+    count: sliced.length
+  };
 }
 
 // api/auth/send-email-otp.ts
@@ -2114,8 +2918,18 @@ async function handler2(req, res) {
         error: "Please provide your location / delivery area."
       });
     }
+    const clientRetryCount = typeof body?.retry_count === "number" ? body.retry_count : typeof body?.retryCount === "number" ? body.retryCount : 0;
+    const retry_count = clientRetryCount > 0 ? clientRetryCount : (emailOtpSendHistory.get(cleanEmail)?.count || 1) - 1;
     const rateCheck = checkEmailOtpSendRateLimit(cleanEmail);
     if (!rateCheck.allowed) {
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: "signInWithOtp",
+        status: "rate_limited",
+        provider: "supabase_auth",
+        error_details: rateCheck.error || "Rate limit exceeded",
+        metadata: { retry_count }
+      });
       return sendJsonResponse(res, 429, {
         success: false,
         error: rateCheck.error || "Too many OTP requests. Please wait before requesting another code."
@@ -2135,7 +2949,8 @@ async function handler2(req, res) {
         expiresInSeconds: 300,
         metadata: {
           fullName: String(fullName).trim(),
-          location: String(location).trim()
+          location: String(location).trim(),
+          retry_count
         }
       });
     } catch (storeErr) {
@@ -2157,13 +2972,69 @@ async function handler2(req, res) {
       });
       if (!sbError) {
         emailDelivered = true;
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: "signInWithOtp",
+          status: "sent",
+          provider: "supabase_auth",
+          metadata: { fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+        });
       } else {
-        deliveryError = sbError.message;
-        console.warn(`[Supabase Auth Notice] signInWithOtp message: ${sbError.message} (status: ${sbError.status})`);
+        console.warn(`[Supabase Auth Notice] signInWithOtp message: ${sbError.message} (status: ${sbError.status}). Activating Supabase Auth registration confirmation pipeline...`);
+        const tempPassword = `NuvvoAuth#${crypto4.randomBytes(8).toString("hex")}!`;
+        const { data: signUpData, error: signUpError } = await publicSupabase.auth.signUp({
+          email: cleanEmail,
+          password: tempPassword,
+          options: {
+            data: {
+              fullName: String(fullName).trim(),
+              location: String(location).trim()
+            }
+          }
+        });
+        const isNewUser = Boolean(!signUpError && signUpData?.user?.identities && signUpData.user.identities.length > 0);
+        if (isNewUser) {
+          emailDelivered = true;
+          deliveryError = "";
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: "signInWithOtp",
+            status: "sent",
+            provider: "supabase_auth",
+            metadata: { method: "signUp", fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+          });
+        } else {
+          const { error: resendError } = await publicSupabase.auth.resend({
+            type: "signup",
+            email: cleanEmail
+          });
+          if (!resendError) {
+            emailDelivered = true;
+            deliveryError = "";
+            logEmailOtpAttempt({
+              recipient: cleanEmail,
+              flow: "signInWithOtp",
+              status: "sent",
+              provider: "supabase_auth",
+              metadata: { method: "resend_signup", fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+            });
+          } else {
+            deliveryError = resendError.message || signUpError?.message || sbError.message;
+            console.warn(`[Supabase Auth Resend Notice]: ${resendError.message}`);
+          }
+        }
       }
     } catch (sbEx) {
       deliveryError = sbEx?.message || "Supabase connection error";
       console.warn(`[Supabase Auth Exception]:`, deliveryError);
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: "signInWithOtp",
+        status: "failed",
+        provider: "supabase_auth",
+        error_details: deliveryError,
+        metadata: { retry_count }
+      });
     }
     if (!emailDelivered && isSmtpConfigured()) {
       try {
@@ -2171,13 +3042,36 @@ async function handler2(req, res) {
         if (emailResult.success) {
           emailDelivered = true;
           deliveryError = "";
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: "signInWithOtp",
+            status: "sent",
+            provider: "smtp",
+            metadata: { fullName: String(fullName).trim(), location: String(location).trim(), retry_count }
+          });
         } else {
           deliveryError = emailResult.error || "SMTP delivery failed";
           console.warn(`[SMTP Warning] Custom SMTP delivery failed: ${emailResult.error}`);
+          logEmailOtpAttempt({
+            recipient: cleanEmail,
+            flow: "signInWithOtp",
+            status: "failed",
+            provider: "smtp",
+            error_details: deliveryError,
+            metadata: { retry_count }
+          });
         }
       } catch (smtpErr) {
         deliveryError = smtpErr?.message || "SMTP error";
         console.warn(`[SMTP Error]:`, deliveryError);
+        logEmailOtpAttempt({
+          recipient: cleanEmail,
+          flow: "signInWithOtp",
+          status: "failed",
+          provider: "smtp",
+          error_details: deliveryError,
+          metadata: { retry_count }
+        });
       }
     }
     if (emailDelivered) {
@@ -2188,13 +3082,26 @@ async function handler2(req, res) {
         expiresInSeconds: 300
       });
     }
-    const errorMessage = deliveryError.toLowerCase().includes("rate limit") ? "Email sending limit reached on free-tier mailer (3/hr). Please configure Custom SMTP in your Supabase Dashboard or add EMAIL_USER and EMAIL_PASS to your Vercel Project Settings." : "Email delivery service is currently unavailable. Please ensure Custom SMTP is enabled in Supabase or EMAIL_USER/EMAIL_PASS are set in your Vercel environment.";
-    return sendJsonResponse(res, 503, {
+    const finalErr = deliveryError ? `Email delivery failed: ${deliveryError}. Please verify your email address or retry.` : "Failed to dispatch verification email. Please check your email and try again.";
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: "signInWithOtp",
+      status: "failed",
+      error_details: finalErr,
+      metadata: { retry_count }
+    });
+    return sendJsonResponse(res, 400, {
       success: false,
-      error: errorMessage
+      error: finalErr
     });
   } catch (err) {
     console.error("[Email OTP Serverless Error]:", err?.message || err);
+    logEmailOtpAttempt({
+      recipient: req?.body?.email || "unknown",
+      flow: "signInWithOtp",
+      status: "failed",
+      error_details: err?.message || "Server error during OTP send"
+    });
     return sendJsonResponse(res, 500, {
       success: false,
       error: "An unexpected error occurred while dispatching verification email. Please try again."
@@ -2226,6 +3133,12 @@ async function handler3(req, res) {
     }
     const attemptCheck = recordEmailOtpVerifyAttempt(cleanEmail, false);
     if (!attemptCheck.allowed && attemptCheck.locked) {
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: "verifyOtp",
+        status: "rate_limited",
+        error_details: attemptCheck.error || "Too many failed attempts. Verification temporarily locked."
+      });
       return sendJsonResponse(res, 429, {
         success: false,
         error: attemptCheck.error || "Too many failed attempts. Verification temporarily locked."
@@ -2233,17 +3146,30 @@ async function handler3(req, res) {
     }
     let isVerified = false;
     let isExpired = false;
+    let verifiedProvider = "supabase_auth";
     let supabaseUserId = "";
     let registrationMeta = {};
     try {
       const publicSupabase = getPublicSupabaseServerClient();
-      const { data: sbData, error: sbError } = await publicSupabase.auth.verifyOtp({
+      let { data: sbData, error: sbError } = await publicSupabase.auth.verifyOtp({
         email: cleanEmail,
         token: inputCode,
-        type: "email"
+        type: "signup"
       });
+      if (sbError || !sbData?.user) {
+        const emailAttempt = await publicSupabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: inputCode,
+          type: "email"
+        });
+        if (!emailAttempt.error && emailAttempt.data?.user) {
+          sbData = emailAttempt.data;
+          sbError = null;
+        }
+      }
       if (!sbError && sbData?.user) {
         isVerified = true;
+        verifiedProvider = "supabase_auth";
         supabaseUserId = sbData.user.id;
         if (sbData.user.user_metadata) {
           registrationMeta = {
@@ -2263,6 +3189,7 @@ async function handler3(req, res) {
         isExpired = true;
       } else if (challengeCheck.verified) {
         isVerified = true;
+        verifiedProvider = "hmac_challenge";
         if (challengeCheck.payload) {
           registrationMeta = {
             fullName: challengeCheck.payload.fullName || registrationMeta.fullName,
@@ -2281,6 +3208,7 @@ async function handler3(req, res) {
         });
         if (dbCheck.valid) {
           isVerified = true;
+          verifiedProvider = "user_otps";
           if (dbCheck.metadata) {
             registrationMeta = {
               fullName: dbCheck.metadata.fullName || registrationMeta.fullName,
@@ -2295,18 +3223,42 @@ async function handler3(req, res) {
       }
     }
     if (isExpired) {
+      const expErr = "The verification code has expired (5-minute validity). Please request a fresh OTP.";
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: "verifyOtp",
+        status: "expired",
+        error_details: expErr
+      });
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "The verification code has expired (5-minute validity). Please request a fresh OTP."
+        error: expErr
       });
     }
     if (!isVerified) {
+      const invErr = attemptCheck.error || "Incorrect verification code. Please check your email and enter the valid 6-digit code.";
+      logEmailOtpAttempt({
+        recipient: cleanEmail,
+        flow: "verifyOtp",
+        status: "failed",
+        error_details: invErr
+      });
       return sendJsonResponse(res, 400, {
         success: false,
-        error: attemptCheck.error || "Incorrect verification code. Please check your email and enter the valid 6-digit code."
+        error: invErr
       });
     }
     recordEmailOtpVerifyAttempt(cleanEmail, true);
+    logEmailOtpAttempt({
+      recipient: cleanEmail,
+      flow: "verifyOtp",
+      status: "verified",
+      provider: verifiedProvider,
+      metadata: {
+        supabaseUserId: supabaseUserId || void 0,
+        fullName: registrationMeta.fullName
+      }
+    });
     const customerId = supabaseUserId || `usr_${cleanEmail.replace(/[^a-z0-9]/g, "_")}`;
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     const profileRecord = {
@@ -2431,6 +3383,1487 @@ async function handler4(req, res) {
   }
 }
 
+// src/lib/whatsapp.ts
+import crypto5 from "crypto";
+import fs3 from "fs";
+import path3 from "path";
+var FIXED_ADMIN_WHATSAPP_RAW = "9063692135";
+var FIXED_ADMIN_WHATSAPP_E164 = "+919063692135";
+var FIXED_ADMIN_WHATSAPP_DIGITS = "919063692135";
+var WHATSAPP_TEMPLATE_DEFINITIONS = [
+  {
+    key: "admin_new_order",
+    label: "Admin New Order Notification",
+    recipientRole: "admin",
+    templateName: process.env.WHATSAPP_TEMPLATE_ADMIN_NEW_ORDER || "nuvvo_admin_new_order",
+    category: "UTILITY",
+    language: "en",
+    description: "Sent automatically to +919063692135 whenever a new order is placed.",
+    parameterLabels: [
+      "Order ID",
+      "Customer Name",
+      "Customer Phone",
+      "Customer Email",
+      "Restaurant Name",
+      "Food Items & Quantities & Item Prices",
+      "Total Amount",
+      "Payment Method & Payment Status",
+      "Delivery Address",
+      "Order Time"
+    ]
+  },
+  {
+    key: "customer_order_confirmation",
+    label: "Customer Order Confirmation",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_CUSTOMER_CONFIRMATION || "nuvvo_customer_order_confirmation",
+    category: "UTILITY",
+    language: "en",
+    description: "Sent automatically to opted-in customers upon successful order placement.",
+    parameterLabels: [
+      "Customer Name",
+      "Order ID",
+      "Restaurant Name",
+      "Ordered Food Items & Quantities",
+      "Total Amount",
+      "Payment Method & Payment Status",
+      "Delivery Address",
+      "Current Order Status"
+    ]
+  },
+  {
+    key: "order_accepted",
+    label: "Order Accepted",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_ORDER_ACCEPTED || "nuvvo_order_accepted",
+    category: "UTILITY",
+    language: "en",
+    description: "Notifies opted-in customer when the restaurant accepts the order.",
+    parameterLabels: ["Customer Name", "Order ID", "Restaurant Name", "Current Order Status"]
+  },
+  {
+    key: "order_preparing",
+    label: "Preparing",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_ORDER_PREPARING || "nuvvo_order_preparing",
+    category: "UTILITY",
+    language: "en",
+    description: "Notifies opted-in customer when kitchen starts preparing food.",
+    parameterLabels: ["Customer Name", "Order ID", "Restaurant Name", "Ordered Food Items"]
+  },
+  {
+    key: "order_out_for_delivery",
+    label: "Out for Delivery",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_ORDER_OUT_FOR_DELIVERY || "nuvvo_order_out_for_delivery",
+    category: "UTILITY",
+    language: "en",
+    description: "Notifies opted-in customer when rider picks up and is en route.",
+    parameterLabels: ["Customer Name", "Order ID", "Delivery Partner & Phone", "Delivery Address"]
+  },
+  {
+    key: "order_delivered",
+    label: "Delivered",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_ORDER_DELIVERED || "nuvvo_order_delivered",
+    category: "UTILITY",
+    language: "en",
+    description: "Notifies opted-in customer when order is delivered.",
+    parameterLabels: ["Customer Name", "Order ID", "Restaurant Name", "Total Amount"]
+  },
+  {
+    key: "order_cancelled",
+    label: "Cancelled",
+    recipientRole: "customer",
+    templateName: process.env.WHATSAPP_TEMPLATE_ORDER_CANCELLED || "nuvvo_order_cancelled",
+    category: "UTILITY",
+    language: "en",
+    description: "Notifies opted-in customer when order is cancelled.",
+    parameterLabels: ["Customer Name", "Order ID", "Payment Status / Refund Info"]
+  }
+];
+var OUTBOX_FILE = path3.join(process.cwd(), ".server_whatsapp_outbox.json");
+var CONSENTS_FILE = path3.join(process.cwd(), ".server_whatsapp_consents.json");
+var WEBHOOK_EVENTS_FILE = path3.join(process.cwd(), ".server_whatsapp_webhook_events.json");
+var inMemoryOutbox = /* @__PURE__ */ new Map();
+var inMemoryConsents = /* @__PURE__ */ new Map();
+var inMemoryWebhookEvents = /* @__PURE__ */ new Map();
+var inFlightIdempotencyKeys = /* @__PURE__ */ new Set();
+var cachedMetaTemplates = null;
+function loadLocalStores() {
+  if (inMemoryOutbox.size === 0) {
+    try {
+      if (fs3.existsSync(OUTBOX_FILE)) {
+        const arr = JSON.parse(fs3.readFileSync(OUTBOX_FILE, "utf8"));
+        if (Array.isArray(arr)) {
+          for (const rec of arr) {
+            if (rec?.id) inMemoryOutbox.set(rec.id, rec);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  if (inMemoryConsents.size === 0) {
+    try {
+      if (fs3.existsSync(CONSENTS_FILE)) {
+        const arr = JSON.parse(fs3.readFileSync(CONSENTS_FILE, "utf8"));
+        if (Array.isArray(arr)) {
+          for (const rec of arr) {
+            if (rec?.id) inMemoryConsents.set(rec.id, rec);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  if (inMemoryWebhookEvents.size === 0) {
+    try {
+      if (fs3.existsSync(WEBHOOK_EVENTS_FILE)) {
+        const arr = JSON.parse(fs3.readFileSync(WEBHOOK_EVENTS_FILE, "utf8"));
+        if (Array.isArray(arr)) {
+          for (const rec of arr) {
+            if (rec?.id) inMemoryWebhookEvents.set(rec.id, rec);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+}
+function persistLocalOutbox() {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(inMemoryOutbox.values()).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 500);
+    fs3.writeFileSync(OUTBOX_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch {
+  }
+}
+function persistLocalConsents() {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(inMemoryConsents.values());
+    fs3.writeFileSync(CONSENTS_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch {
+  }
+}
+function persistLocalWebhookEvents() {
+  try {
+    if (process.env.VERCEL) return;
+    const arr = Array.from(inMemoryWebhookEvents.values()).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()).slice(0, 100);
+    fs3.writeFileSync(WEBHOOK_EVENTS_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch {
+  }
+}
+loadLocalStores();
+function parseValidWhatsAppPhone(input) {
+  if (!input || typeof input !== "string") {
+    return { valid: false, e164: "", digits: "", local10: "", reason: "No WhatsApp mobile number provided." };
+  }
+  const trimmed = input.trim();
+  if (trimmed.includes("@")) {
+    return { valid: false, e164: "", digits: "", local10: "", reason: "Email address cannot be used as a WhatsApp number." };
+  }
+  const digitsOnly = trimmed.replace(/\D/g, "");
+  if (!digitsOnly) {
+    return { valid: false, e164: "", digits: "", local10: "", reason: "WhatsApp number must contain digits." };
+  }
+  const normalizedInput = digitsOnly.length === 11 && digitsOnly.startsWith("0") ? digitsOnly.slice(1) : digitsOnly;
+  if (normalizedInput.length === 10) {
+    if (!/^[6-9]\d{9}$/.test(normalizedInput)) {
+      return { valid: false, e164: "", digits: "", local10: "", reason: "Invalid 10-digit Indian mobile number." };
+    }
+    return {
+      valid: true,
+      e164: `+91${normalizedInput}`,
+      digits: `91${normalizedInput}`,
+      local10: normalizedInput
+    };
+  }
+  if (normalizedInput.length === 12 && normalizedInput.startsWith("91")) {
+    const local10 = normalizedInput.slice(2);
+    if (!/^[6-9]\d{9}$/.test(local10)) {
+      return { valid: false, e164: "", digits: "", local10: "", reason: "Invalid Indian mobile number with +91 prefix." };
+    }
+    return {
+      valid: true,
+      e164: `+${normalizedInput}`,
+      digits: normalizedInput,
+      local10
+    };
+  }
+  if (normalizedInput.length >= 10 && normalizedInput.length <= 15) {
+    return {
+      valid: true,
+      e164: `+${normalizedInput}`,
+      digits: normalizedInput,
+      local10: normalizedInput.slice(-10)
+    };
+  }
+  return {
+    valid: false,
+    e164: "",
+    digits: "",
+    local10: "",
+    reason: "WhatsApp number must be a valid 10-digit mobile or E.164 international number."
+  };
+}
+function getWhatsAppConfigStatus() {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || "").trim();
+  const phoneId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const businessAccountId = (process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "").trim();
+  const verifyToken = (process.env.WHATSAPP_VERIFY_TOKEN || "").trim();
+  const explicitVersion = (process.env.WHATSAPP_GRAPH_API_VERSION || "").trim();
+  const graphApiVersion = explicitVersion || "v21.0";
+  const missing = [];
+  if (!token) missing.push("WHATSAPP_ACCESS_TOKEN");
+  if (!phoneId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
+  if (!businessAccountId) missing.push("WHATSAPP_BUSINESS_ACCOUNT_ID");
+  if (!verifyToken) missing.push("WHATSAPP_VERIFY_TOKEN");
+  const maskId = (val) => {
+    if (!val || val.length <= 4) return val ? "\u2022\u2022\u2022\u2022" : "Not configured";
+    return `${val.slice(0, 4)}\u2022\u2022\u2022\u2022${val.slice(-4)}`;
+  };
+  const requiredSetupSteps = [];
+  if (!token || !phoneId || !businessAccountId) {
+    requiredSetupSteps.push(
+      "Create/verify Meta Business Portfolio and WhatsApp Business Account (WABA) in Meta Business Suite.",
+      "Register and verify a business phone number in WhatsApp Manager and copy WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_BUSINESS_ACCOUNT_ID.",
+      "Create a Permanent System User Access Token with whatsapp_business_messaging and whatsapp_business_management permissions and set WHATSAPP_ACCESS_TOKEN."
+    );
+  }
+  if (!verifyToken) {
+    requiredSetupSteps.push(
+      'Set WHATSAPP_VERIFY_TOKEN and register https://<your-domain>/api/webhooks/whatsapp in Meta Developer App -> WhatsApp -> Configuration (subscribe to "messages").'
+    );
+  }
+  requiredSetupSteps.push(
+    "Submit and obtain Meta APPROVED status for the 7 UTILITY templates (nuvvo_admin_new_order, nuvvo_customer_order_confirmation, nuvvo_order_accepted, nuvvo_order_preparing, nuvvo_order_out_for_delivery, nuvvo_order_delivered, nuvvo_order_cancelled)."
+  );
+  return {
+    isConfigured: Boolean(token && phoneId && businessAccountId && verifyToken),
+    hasAccessToken: Boolean(token),
+    hasPhoneNumberId: Boolean(phoneId),
+    hasBusinessAccountId: Boolean(businessAccountId),
+    hasVerifyToken: Boolean(verifyToken),
+    graphApiVersion,
+    hasExplicitGraphVersion: Boolean(explicitVersion),
+    adminWhatsappNumber: FIXED_ADMIN_WHATSAPP_E164,
+    businessRecipientMasked: "+91 \u2022\u2022\u2022\u2022\u2022\u20222135",
+    phoneNumberIdMasked: maskId(phoneId),
+    businessAccountIdMasked: maskId(businessAccountId),
+    missingVars: missing,
+    requiredSetupSteps
+  };
+}
+async function getWhatsAppTemplatesStatus(forceRefresh = false) {
+  const token = (process.env.WHATSAPP_ACCESS_TOKEN || "").trim();
+  const wabaId = (process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "").trim();
+  const version = (process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0").trim();
+  if (!token || !wabaId) {
+    return WHATSAPP_TEMPLATE_DEFINITIONS.map((def) => ({
+      ...def,
+      approvalStatus: "NOT_CONFIGURED",
+      source: "local_definition"
+    }));
+  }
+  const cacheFresh = cachedMetaTemplates && Date.now() - cachedMetaTemplates.fetchedAt < 6e4;
+  let metaMap = cacheFresh ? cachedMetaTemplates.items : null;
+  if (!metaMap || forceRefresh) {
+    metaMap = /* @__PURE__ */ new Map();
+    try {
+      const url = `https://graph.facebook.com/${version}/${wabaId}/message_templates?fields=id,name,status,rejected_reason&limit=100`;
+      const resp = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const json = await resp.json().catch(() => null);
+      if (resp.ok && Array.isArray(json?.data)) {
+        for (const tpl of json.data) {
+          if (tpl?.name) {
+            metaMap.set(String(tpl.name), {
+              id: tpl.id ? String(tpl.id) : void 0,
+              status: String(tpl.status || "PENDING").toUpperCase(),
+              rejected_reason: tpl.rejected_reason ? String(tpl.rejected_reason) : void 0
+            });
+          }
+        }
+        cachedMetaTemplates = { fetchedAt: Date.now(), items: metaMap };
+      }
+    } catch (err) {
+      console.warn("[WhatsApp Templates] Meta Graph API template check warning:", err?.message);
+    }
+  }
+  return WHATSAPP_TEMPLATE_DEFINITIONS.map((def) => {
+    const found = metaMap?.get(def.templateName);
+    if (!found) {
+      return {
+        ...def,
+        approvalStatus: metaMap && metaMap.size > 0 ? "MISSING_ON_META" : "NOT_CONFIGURED",
+        source: metaMap && metaMap.size > 0 ? "meta_graph_api" : "local_definition"
+      };
+    }
+    const normalizedStatus = ["APPROVED", "PENDING", "REJECTED", "PAUSED", "DISABLED"].includes(found.status) ? found.status : "PENDING";
+    return {
+      ...def,
+      approvalStatus: normalizedStatus,
+      metaTemplateId: found.id,
+      rejectedReason: found.rejected_reason,
+      source: "meta_graph_api"
+    };
+  });
+}
+function formatOrderDateTimeIST(dateString) {
+  try {
+    const d = dateString ? new Date(dateString) : /* @__PURE__ */ new Date();
+    return new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      dateStyle: "medium",
+      timeStyle: "short",
+      hour12: true
+    }).format(d);
+  } catch {
+    return (/* @__PURE__ */ new Date()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  }
+}
+function sanitizeTemplateParam(val, maxLen = 900) {
+  const str = String(val ?? "N/A").replace(/[\r\n\t]+/g, ", ").replace(/\s{4,}/g, " ").trim();
+  if (!str) return "N/A";
+  return str.length > maxLen ? `${str.slice(0, maxLen - 3)}...` : str;
+}
+function formatPaymentStatusLabel(order) {
+  const method = String(order.paymentMethod || order.payment_method || "UPI").toUpperCase();
+  const status = String(order.paymentStatus || order.payment_status || "pending").toUpperCase();
+  if (status === "CONFIRMED" || status === "SUCCESS" || status === "PAID") {
+    return "PAID (Confirmed)";
+  }
+  if (method.includes("COD") || method.includes("DELIVERY")) {
+    return status === "CANCELLED" ? "Cancelled" : "Pending (Pay on Delivery)";
+  }
+  if (status === "FAILED") return "Payment Failed";
+  if (status === "REFUND_INITIATED") return "Refund Initiated";
+  if (status === "AWAITING_CONFIRMATION") return "Awaiting Verification";
+  return status || "Pending";
+}
+function formatOrderStatusLabel(status) {
+  const s = String(status || "accepted").toLowerCase();
+  if (s === "accepted") return "Order Accepted";
+  if (s === "preparing") return "Preparing in Kitchen";
+  if (s === "picked" || s === "on_the_way") return "Out for Delivery";
+  if (s === "delivered") return "Delivered";
+  if (s === "cancelled") return "Cancelled";
+  return s.toUpperCase();
+}
+function extractAddressString(order) {
+  if (!order?.address) return "Chirala Regional Delivery";
+  if (typeof order.address === "string") return order.address;
+  const a = order.address;
+  if (a.fullAddress && String(a.fullAddress).trim()) return String(a.fullAddress).trim();
+  const parts = [
+    a.houseNumber || a.flatNo,
+    a.streetName || a.street,
+    a.locality || a.area,
+    a.landmark ? `Near ${a.landmark}` : "",
+    a.city || "Chirala",
+    a.pincode || ""
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : a.formatted || "Chirala Delivery";
+}
+function extractOrderContext(order) {
+  const orderId = String(order.id || "");
+  const shortOrderId = orderId.replace(/^order_/, "").slice(-10).toUpperCase() || orderId;
+  const customerName = String(order.customerName || order.customer_name || "Customer").trim();
+  const customerPhone = String(order.customerPhone || order.customer_phone || "Not provided").trim();
+  const customerEmail = String(
+    order.customerEmail || order.customer_email || order.address?.checkout_data?.customerEmail || "Not provided"
+  ).trim();
+  const items = Array.isArray(order.items) ? order.items : [];
+  const restaurantName = String(
+    order.restaurantName || order.restaurant_name || items[0]?.foodItem?.restaurantName || items[0]?.restaurantName || order.address?.checkout_data?.restaurantName || "Nuvvo Kitchen Partner"
+  ).trim();
+  const adminItemsSummary = items.map((it, idx) => {
+    const name = it.foodItem?.name || it.name || `Item ${idx + 1}`;
+    const qty = Number(it.quantity || 1);
+    const unitPrice = Number(it.foodItem?.discountPrice || it.foodItem?.price || it.price || 0);
+    const lineTotal = unitPrice * qty;
+    return `${qty}x ${name} @ \u20B9${unitPrice} = \u20B9${lineTotal}`;
+  }).join(" | ") || "Standard Menu Order";
+  const customerItemsSummary = items.map((it, idx) => {
+    const name = it.foodItem?.name || it.name || `Item ${idx + 1}`;
+    const qty = Number(it.quantity || 1);
+    return `${qty}x ${name}`;
+  }).join(", ") || "Standard Menu Order";
+  const finalAmount = Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount || 0);
+  const paymentMethod = String(order.paymentMethod || order.payment_method || "UPI");
+  const paymentStatus = formatPaymentStatusLabel(order);
+  const deliveryAddress = extractAddressString(order);
+  const orderTime = `${formatOrderDateTimeIST(order.date || order.created_at)} IST`;
+  const currentStatusLabel = formatOrderStatusLabel(order.status);
+  return {
+    orderId,
+    shortOrderId,
+    customerName,
+    customerPhone,
+    customerEmail,
+    restaurantName,
+    adminItemsSummary,
+    customerItemsSummary,
+    totalAmountFormatted: `\u20B9${finalAmount}`,
+    paymentMethod,
+    paymentStatus,
+    deliveryAddress,
+    orderTime,
+    currentStatusLabel
+  };
+}
+function buildAdminOrderNotificationSummary(order) {
+  const ctx = extractOrderContext(order);
+  return [
+    "New Nuvvo Order Received",
+    `Order ID: ${ctx.orderId}`,
+    `Customer Name: ${ctx.customerName}`,
+    `Customer Phone: ${ctx.customerPhone}`,
+    `Customer Email: ${ctx.customerEmail}`,
+    `Restaurant Name: ${ctx.restaurantName}`,
+    `Food Items, Quantities & Item Prices: ${ctx.adminItemsSummary}`,
+    `Total Amount: ${ctx.totalAmountFormatted}`,
+    `Payment Method: ${ctx.paymentMethod}`,
+    `Payment Status: ${ctx.paymentStatus}`,
+    `Delivery Address: ${ctx.deliveryAddress}`,
+    `Order Time: ${ctx.orderTime}`
+  ].join("\n");
+}
+function buildCustomerOrderConfirmationSummary(order) {
+  const ctx = extractOrderContext(order);
+  return [
+    "Nuvvo Order Confirmation",
+    `Customer Name: ${ctx.customerName}`,
+    `Order ID: ${ctx.orderId}`,
+    `Restaurant Name: ${ctx.restaurantName}`,
+    `Ordered Food Items & Quantities: ${ctx.customerItemsSummary}`,
+    `Total Amount: ${ctx.totalAmountFormatted}`,
+    `Payment Method: ${ctx.paymentMethod}`,
+    `Payment Status: ${ctx.paymentStatus}`,
+    `Delivery Address: ${ctx.deliveryAddress}`,
+    `Current Order Status: ${ctx.currentStatusLabel}`
+  ].join("\n");
+}
+function buildMetaTemplateRequestPayload(recipientDigits, notificationType, order) {
+  const def = WHATSAPP_TEMPLATE_DEFINITIONS.find((t) => t.key === notificationType);
+  const ctx = extractOrderContext(order);
+  let bodyParams = [];
+  if (notificationType === "admin_new_order") {
+    bodyParams = [
+      ctx.orderId,
+      ctx.customerName,
+      ctx.customerPhone,
+      ctx.customerEmail,
+      ctx.restaurantName,
+      ctx.adminItemsSummary,
+      ctx.totalAmountFormatted,
+      `${ctx.paymentMethod} (${ctx.paymentStatus})`,
+      ctx.deliveryAddress,
+      ctx.orderTime
+    ];
+  } else if (notificationType === "customer_order_confirmation") {
+    bodyParams = [
+      ctx.customerName,
+      ctx.orderId,
+      ctx.restaurantName,
+      ctx.customerItemsSummary,
+      ctx.totalAmountFormatted,
+      `${ctx.paymentMethod} (${ctx.paymentStatus})`,
+      ctx.deliveryAddress,
+      ctx.currentStatusLabel
+    ];
+  } else if (notificationType === "order_accepted") {
+    bodyParams = [ctx.customerName, ctx.orderId, ctx.restaurantName, "Order Accepted"];
+  } else if (notificationType === "order_preparing") {
+    bodyParams = [ctx.customerName, ctx.orderId, ctx.restaurantName, ctx.customerItemsSummary];
+  } else if (notificationType === "order_out_for_delivery") {
+    const riderInfo = order.deliveryPartnerName ? `${order.deliveryPartnerName}${order.deliveryPartnerPhone ? ` (+91 ${order.deliveryPartnerPhone})` : ""}` : "Assigned Nuvvo Delivery Partner";
+    bodyParams = [ctx.customerName, ctx.orderId, riderInfo, ctx.deliveryAddress];
+  } else if (notificationType === "order_delivered") {
+    bodyParams = [ctx.customerName, ctx.orderId, ctx.restaurantName, ctx.totalAmountFormatted];
+  } else {
+    bodyParams = [ctx.customerName, ctx.orderId, ctx.paymentStatus];
+  }
+  return {
+    templateName: def.templateName,
+    requestBody: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipientDigits,
+      type: "template",
+      template: {
+        name: def.templateName,
+        language: { code: def.language },
+        components: [
+          {
+            type: "body",
+            parameters: bodyParams.map((val) => ({
+              type: "text",
+              text: sanitizeTemplateParam(val)
+            }))
+          }
+        ]
+      }
+    }
+  };
+}
+async function saveOutboxRecord(record) {
+  inMemoryOutbox.set(record.id, record);
+  persistLocalOutbox();
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (!client) return;
+    const fullRow = {
+      id: record.id,
+      order_id: record.order_id,
+      channel: "whatsapp",
+      recipient: record.recipient,
+      recipient_role: record.recipient_role,
+      notification_type: record.notification_type,
+      template_name: record.template_name,
+      status: record.status,
+      idempotency_key: record.idempotency_key,
+      attempt_count: record.attempt_count,
+      consent_verified: record.consent_verified,
+      message_id: record.message_id,
+      payload: record.payload,
+      response_payload: record.response_payload,
+      webhook_events: record.webhook_events,
+      error_message: record.error_message,
+      submitted_at: record.submitted_at,
+      sent_at: record.sent_at,
+      delivered_at: record.delivered_at,
+      read_at: record.read_at,
+      failed_at: record.failed_at,
+      created_at: record.created_at,
+      updated_at: record.updated_at
+    };
+    const { error } = await client.from("order_notifications").upsert([fullRow], { onConflict: "id" });
+    if (error && (error.message?.includes("column") || error.code === "PGRST204")) {
+      await client.from("order_notifications").upsert([{
+        id: record.id,
+        order_id: record.order_id,
+        channel: "whatsapp",
+        recipient: record.recipient,
+        status: record.status,
+        message_id: record.message_id,
+        payload: {
+          ...record.payload || {},
+          recipient_role: record.recipient_role,
+          notification_type: record.notification_type,
+          template_name: record.template_name,
+          idempotency_key: record.idempotency_key,
+          attempt_count: record.attempt_count,
+          consent_verified: record.consent_verified
+        },
+        response_payload: record.response_payload,
+        error_message: record.error_message,
+        created_at: record.created_at,
+        updated_at: record.updated_at
+      }], { onConflict: "id" });
+    }
+  } catch (err) {
+    console.warn("[WhatsApp Outbox] Supabase persistence notice:", err?.message);
+  }
+}
+async function findExistingByIdempotencyKey(idempotencyKey) {
+  for (const rec of inMemoryOutbox.values()) {
+    if (rec.idempotency_key === idempotencyKey) {
+      return rec;
+    }
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { data, error } = await client.from("order_notifications").select("*").eq("idempotency_key", idempotencyKey).limit(1);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const row = data[0];
+        inMemoryOutbox.set(row.id, row);
+        return row;
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+async function saveCustomerWhatsAppConsent(input) {
+  const parsed = parseValidWhatsAppPhone(input.whatsappNumber);
+  if (!parsed.valid) {
+    return { success: false, error: parsed.reason || "Invalid WhatsApp mobile number." };
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const cleanEmail = input.customerEmail && input.customerEmail.includes("@") ? input.customerEmail.trim().toLowerCase() : null;
+  const cleanPhone = input.customerPhone ? parseValidWhatsAppPhone(input.customerPhone).local10 || input.customerPhone.replace(/\D/g, "") : null;
+  const existingMatch = await getCustomerWhatsAppConsent({
+    customerId: input.customerId,
+    customerEmail: cleanEmail || void 0,
+    customerPhone: cleanPhone || void 0,
+    whatsappNumber: parsed.e164
+  });
+  const prefId = existingMatch?.id || (input.customerId ? `wa_pref_${String(input.customerId).replace(/[^a-zA-Z0-9_-]/g, "_")}` : cleanEmail ? `wa_pref_${cleanEmail.replace(/[^a-z0-9]/g, "_")}` : `wa_pref_${parsed.digits}`);
+  const record = {
+    id: prefId,
+    customer_id: input.customerId ? String(input.customerId) : existingMatch?.customer_id || null,
+    customer_email: cleanEmail || existingMatch?.customer_email || null,
+    customer_phone: cleanPhone || existingMatch?.customer_phone || null,
+    whatsapp_number: parsed.e164,
+    consent_granted: Boolean(input.consentGranted),
+    consent_source: input.consentSource || "checkout",
+    consent_timestamp: input.consentGranted ? now : existingMatch?.consent_timestamp || null,
+    opt_out_timestamp: !input.consentGranted ? now : null,
+    verified: Boolean(input.consentGranted),
+    created_at: existingMatch?.created_at || inMemoryConsents.get(prefId)?.created_at || now,
+    updated_at: now
+  };
+  inMemoryConsents.set(prefId, record);
+  if (!input.consentGranted) {
+    for (const [k, rec] of inMemoryConsents.entries()) {
+      if (rec.whatsapp_number === parsed.e164 || cleanPhone && rec.customer_phone === cleanPhone) {
+        inMemoryConsents.set(k, {
+          ...rec,
+          consent_granted: false,
+          consent_source: input.consentSource || "webhook_opt_out",
+          opt_out_timestamp: now,
+          updated_at: now
+        });
+      }
+    }
+  }
+  persistLocalConsents();
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { error } = await client.from("customer_whatsapp_preferences").upsert([record], { onConflict: "id" });
+      if (error && error.code !== "PGRST205") {
+        console.warn("[WhatsApp Consent] Supabase upsert notice:", error.message);
+      }
+    }
+  } catch (err) {
+    console.warn("[WhatsApp Consent] Exception:", err?.message);
+  }
+  return { success: true, record };
+}
+async function getCustomerWhatsAppConsent(lookup) {
+  const emailNorm = lookup.customerEmail?.trim().toLowerCase();
+  const parsedWa = lookup.whatsappNumber ? parseValidWhatsAppPhone(lookup.whatsappNumber) : null;
+  const parsedPhone = lookup.customerPhone ? parseValidWhatsAppPhone(lookup.customerPhone) : null;
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const filters = [];
+      if (lookup.customerId) filters.push(`customer_id.eq.${lookup.customerId}`);
+      if (emailNorm) filters.push(`customer_email.eq.${emailNorm}`);
+      if (parsedWa?.valid) filters.push(`whatsapp_number.eq.${parsedWa.e164}`);
+      if (parsedPhone?.valid) filters.push(`customer_phone.eq.${parsedPhone.local10}`);
+      if (filters.length > 0) {
+        const { data, error } = await client.from("customer_whatsapp_preferences").select("*").or(filters.join(",")).order("updated_at", { ascending: false }).limit(1);
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const row = data[0];
+          inMemoryConsents.set(row.id, row);
+          return row;
+        }
+      }
+    }
+  } catch {
+  }
+  loadLocalStores();
+  const sortedLocal = Array.from(inMemoryConsents.values()).sort(
+    (a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+  );
+  for (const rec of sortedLocal) {
+    if (lookup.customerId && rec.customer_id === lookup.customerId) return rec;
+    if (emailNorm && rec.customer_email === emailNorm) return rec;
+    if (parsedWa?.valid && rec.whatsapp_number === parsedWa.e164) return rec;
+    if (parsedPhone?.valid && rec.customer_phone === parsedPhone.local10) return rec;
+  }
+  return null;
+}
+async function resolveConsentedCustomerRecipient(order) {
+  const explicitWa = order.customerWhatsappNumber || order.customer_whatsapp || order.address?.whatsappNumber;
+  const explicitConsent = order.whatsappOptIn !== void 0 ? order.whatsappOptIn : order.whatsapp_consent;
+  const savedPref = await getCustomerWhatsAppConsent({
+    customerId: order.customerId || order.customer_id,
+    customerEmail: order.customerEmail || order.customer_email,
+    customerPhone: order.customerPhone || order.customer_phone,
+    whatsappNumber: explicitWa
+  });
+  if (explicitConsent === false) {
+    return {
+      eligible: false,
+      reason: "Customer did not grant WhatsApp notification consent during checkout."
+    };
+  }
+  if (savedPref && savedPref.consent_granted === false && explicitConsent !== true) {
+    return {
+      eligible: false,
+      reason: "Customer opted out of WhatsApp order notifications."
+    };
+  }
+  const isConsented = explicitConsent === true || savedPref?.consent_granted === true;
+  if (!isConsented) {
+    return {
+      eligible: false,
+      reason: "Customer WhatsApp opt-in consent has not been granted. Entering a phone number alone does not grant messaging consent."
+    };
+  }
+  const candidateNumber = explicitWa || savedPref?.whatsapp_number;
+  const parsed = parseValidWhatsAppPhone(candidateNumber);
+  if (!parsed.valid) {
+    return {
+      eligible: false,
+      reason: parsed.reason || "Customer WhatsApp mobile number is missing or invalid."
+    };
+  }
+  return {
+    eligible: true,
+    e164: parsed.e164,
+    digits: parsed.digits
+  };
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isTransientMetaError(httpStatus, responseJson) {
+  if (httpStatus >= 500 || httpStatus === 429) return true;
+  const code = Number(responseJson?.error?.code || 0);
+  return [1, 2, 4, 17, 130429, 131016, 131048, 131056].includes(code);
+}
+async function executeSingleOutboxNotification(params) {
+  const {
+    order,
+    recipientRole,
+    recipientE164,
+    recipientDigits,
+    notificationType,
+    consentVerified,
+    existingRecordToRetry
+  } = params;
+  const orderId = String(order.id || "");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const idempotencyKey = existingRecordToRetry?.idempotency_key || `${orderId}::${notificationType}::${recipientRole}::${recipientDigits}`;
+  if (inFlightIdempotencyKeys.has(idempotencyKey)) {
+    return {
+      success: true,
+      status: "duplicate_skipped",
+      orderId,
+      recipientRole,
+      recipient: recipientE164,
+      timestamp: now
+    };
+  }
+  if (!existingRecordToRetry) {
+    const existing = await findExistingByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      return {
+        success: ["pending", "submitted", "sent", "delivered", "read"].includes(existing.status),
+        status: "duplicate_skipped",
+        deduplicated: true,
+        notificationId: existing.id,
+        messageId: existing.message_id || void 0,
+        orderId,
+        recipientRole,
+        recipient: recipientE164,
+        templateName: existing.template_name,
+        error: existing.error_message || void 0,
+        timestamp: now
+      };
+    }
+  }
+  inFlightIdempotencyKeys.add(idempotencyKey);
+  try {
+    const { templateName, requestBody } = buildMetaTemplateRequestPayload(
+      recipientDigits,
+      notificationType,
+      order
+    );
+    const recordId = existingRecordToRetry?.id || `wa_${recipientRole}_${Date.now()}_${crypto5.randomBytes(3).toString("hex")}`;
+    const record = existingRecordToRetry ? {
+      ...existingRecordToRetry,
+      status: "pending",
+      attempt_count: (existingRecordToRetry.attempt_count || 1) + 1,
+      error_message: null,
+      updated_at: now
+    } : {
+      id: recordId,
+      order_id: orderId,
+      channel: "whatsapp",
+      recipient: recipientE164,
+      recipient_role: recipientRole,
+      notification_type: notificationType,
+      template_name: templateName,
+      status: "pending",
+      idempotency_key: idempotencyKey,
+      attempt_count: 1,
+      consent_verified: consentVerified,
+      message_id: null,
+      payload: {
+        templateName,
+        recipientE164,
+        previewText: recipientRole === "admin" ? buildAdminOrderNotificationSummary(order) : buildCustomerOrderConfirmationSummary(order),
+        requestBody
+      },
+      response_payload: null,
+      webhook_events: [],
+      error_message: null,
+      submitted_at: null,
+      sent_at: null,
+      delivered_at: null,
+      read_at: null,
+      failed_at: null,
+      created_at: now,
+      updated_at: now
+    };
+    await saveOutboxRecord(record);
+    const token = (process.env.WHATSAPP_ACCESS_TOKEN || "").trim();
+    const phoneId = (process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+    const version = (process.env.WHATSAPP_GRAPH_API_VERSION || "v21.0").trim();
+    if (!token || !phoneId) {
+      const missing = [];
+      if (!token) missing.push("WHATSAPP_ACCESS_TOKEN");
+      if (!phoneId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
+      if (!(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "").trim()) {
+        missing.push("WHATSAPP_BUSINESS_ACCOUNT_ID");
+      }
+      const errMsg = `Meta WhatsApp Cloud API is not configured (${missing.join(", ")} missing). Notification marked Failed \u2014 configure credentials in server environment variables.`;
+      record.status = "failed";
+      record.error_message = errMsg;
+      record.failed_at = (/* @__PURE__ */ new Date()).toISOString();
+      record.updated_at = record.failed_at;
+      await saveOutboxRecord(record);
+      return {
+        success: false,
+        status: "failed",
+        notificationId: record.id,
+        orderId,
+        recipientRole,
+        recipient: recipientE164,
+        templateName,
+        error: errMsg,
+        timestamp: record.failed_at
+      };
+    }
+    const graphUrl = `https://graph.facebook.com/${version}/${phoneId}/messages`;
+    const maxAttempts = 3;
+    let lastError = "Unknown WhatsApp Cloud API error";
+    let lastResponseJson = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        record.attempt_count = (existingRecordToRetry?.attempt_count || 0) + attempt;
+        await sleep(attempt === 2 ? 600 : 1500);
+      }
+      try {
+        const resp = await fetch(graphUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(requestBody)
+        });
+        const respJson = await resp.json().catch(() => null);
+        lastResponseJson = respJson;
+        if (resp.ok && respJson?.messages?.[0]?.id) {
+          const wamid = String(respJson.messages[0].id);
+          const submittedAt = (/* @__PURE__ */ new Date()).toISOString();
+          record.status = "submitted";
+          record.message_id = wamid;
+          record.response_payload = respJson;
+          record.error_message = null;
+          record.submitted_at = submittedAt;
+          record.updated_at = submittedAt;
+          await saveOutboxRecord(record);
+          console.log(`[WhatsApp Cloud API] ${recipientRole.toUpperCase()} notification submitted for order ${orderId} to ${recipientE164}. WAMID: ${wamid}`);
+          return {
+            success: true,
+            status: "submitted",
+            notificationId: record.id,
+            messageId: wamid,
+            orderId,
+            recipientRole,
+            recipient: recipientE164,
+            templateName,
+            timestamp: submittedAt
+          };
+        }
+        const errDetail = respJson?.error?.message || respJson?.message || `HTTP ${resp.status} ${resp.statusText}`;
+        const errCode = respJson?.error?.code ? ` (Code ${respJson.error.code})` : "";
+        lastError = `Meta API error${errCode}: ${errDetail}`;
+        if (!isTransientMetaError(resp.status, respJson)) {
+          break;
+        }
+      } catch (netErr) {
+        lastError = `Network error contacting Meta Graph API: ${netErr?.message || netErr}`;
+      }
+    }
+    const failedAt = (/* @__PURE__ */ new Date()).toISOString();
+    record.status = "failed";
+    record.response_payload = lastResponseJson;
+    record.error_message = lastError;
+    record.failed_at = failedAt;
+    record.updated_at = failedAt;
+    await saveOutboxRecord(record);
+    console.error(`[WhatsApp Cloud API] Failed ${recipientRole} notification for order ${orderId}: ${lastError}`);
+    return {
+      success: false,
+      status: "failed",
+      notificationId: record.id,
+      orderId,
+      recipientRole,
+      recipient: recipientE164,
+      templateName,
+      error: lastError,
+      timestamp: failedAt
+    };
+  } finally {
+    inFlightIdempotencyKeys.delete(idempotencyKey);
+  }
+}
+async function dispatchOrderWhatsAppNotifications(order) {
+  const orderId = String(order?.id || "");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const adminRecipientRaw = (process.env.WHATSAPP_BUSINESS_RECIPIENT || process.env.ADMIN_PHONE || FIXED_ADMIN_WHATSAPP_RAW).trim();
+  const parsedAdmin = parseValidWhatsAppPhone(adminRecipientRaw);
+  const adminDigits = parsedAdmin.valid ? parsedAdmin.digits : FIXED_ADMIN_WHATSAPP_DIGITS;
+  const adminE164 = parsedAdmin.valid ? parsedAdmin.e164 : FIXED_ADMIN_WHATSAPP_E164;
+  const adminPromise = executeSingleOutboxNotification({
+    order,
+    recipientRole: "admin",
+    recipientE164: adminE164,
+    recipientDigits: adminDigits,
+    notificationType: "admin_new_order",
+    consentVerified: true
+  });
+  const customerPromise = (async () => {
+    const eligibility = await resolveConsentedCustomerRecipient(order);
+    if (!eligibility.eligible || !eligibility.digits || !eligibility.e164) {
+      const skipIdempotency = `${orderId}::customer_order_confirmation::customer::consent_missing`;
+      const existingSkip = await findExistingByIdempotencyKey(skipIdempotency);
+      if (!existingSkip) {
+        const skipRecord = {
+          id: `wa_cust_skip_${Date.now()}_${crypto5.randomBytes(2).toString("hex")}`,
+          order_id: orderId,
+          channel: "whatsapp",
+          recipient: order.customerWhatsappNumber || order.customer_whatsapp || "Not Consented",
+          recipient_role: "customer",
+          notification_type: "customer_order_confirmation",
+          template_name: "nuvvo_customer_order_confirmation",
+          status: "skipped_no_consent",
+          idempotency_key: skipIdempotency,
+          attempt_count: 1,
+          consent_verified: false,
+          message_id: null,
+          payload: { reason: eligibility.reason },
+          response_payload: null,
+          webhook_events: [],
+          error_message: eligibility.reason || "Consent not granted.",
+          submitted_at: null,
+          sent_at: null,
+          delivered_at: null,
+          read_at: null,
+          failed_at: null,
+          created_at: now,
+          updated_at: now
+        };
+        await saveOutboxRecord(skipRecord);
+      }
+      return {
+        success: false,
+        status: "skipped_no_consent",
+        orderId,
+        recipientRole: "customer",
+        error: eligibility.reason,
+        timestamp: now
+      };
+    }
+    return executeSingleOutboxNotification({
+      order,
+      recipientRole: "customer",
+      recipientE164: eligibility.e164,
+      recipientDigits: eligibility.digits,
+      notificationType: "customer_order_confirmation",
+      consentVerified: true
+    });
+  })();
+  const [adminSettled, customerSettled] = await Promise.allSettled([adminPromise, customerPromise]);
+  const adminResult = adminSettled.status === "fulfilled" ? adminSettled.value : {
+    success: false,
+    status: "failed",
+    orderId,
+    recipientRole: "admin",
+    recipient: adminE164,
+    error: adminSettled.reason?.message || "Unexpected admin dispatch failure",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const customerResult = customerSettled.status === "fulfilled" ? customerSettled.value : {
+    success: false,
+    status: "failed",
+    orderId,
+    recipientRole: "customer",
+    error: customerSettled.reason?.message || "Unexpected customer dispatch failure",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  return {
+    orderId,
+    adminNotification: adminResult,
+    customerNotification: customerResult,
+    overallSuccess: adminResult.success || customerResult.success,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+async function dispatchOrderStatusWhatsAppNotification(order, newStatus) {
+  const s = String(newStatus || "").toLowerCase();
+  let notificationType = null;
+  if (s === "accepted") notificationType = "order_accepted";
+  else if (s === "preparing") notificationType = "order_preparing";
+  else if (s === "picked" || s === "on_the_way") notificationType = "order_out_for_delivery";
+  else if (s === "delivered") notificationType = "order_delivered";
+  else if (s === "cancelled") notificationType = "order_cancelled";
+  if (!notificationType) return null;
+  const eligibility = await resolveConsentedCustomerRecipient(order);
+  if (!eligibility.eligible || !eligibility.digits || !eligibility.e164) {
+    return {
+      success: false,
+      status: "skipped_no_consent",
+      orderId: String(order.id || ""),
+      recipientRole: "customer",
+      error: eligibility.reason,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  return executeSingleOutboxNotification({
+    order,
+    recipientRole: "customer",
+    recipientE164: eligibility.e164,
+    recipientDigits: eligibility.digits,
+    notificationType,
+    consentVerified: true
+  });
+}
+function verifyWhatsAppWebhookSubscription(query) {
+  const mode = String(query["hub.mode"] || "");
+  const token = String(query["hub.verify_token"] || "");
+  const challenge = String(query["hub.challenge"] || "");
+  const configuredToken = (process.env.WHATSAPP_VERIFY_TOKEN || "").trim();
+  if (!configuredToken) {
+    return { ok: false, statusCode: 503, error: "WHATSAPP_VERIFY_TOKEN is not configured on the server." };
+  }
+  if (mode === "subscribe" && token === configuredToken && challenge) {
+    return { ok: true, statusCode: 200, challenge };
+  }
+  return { ok: false, statusCode: 403, error: "Webhook verification token mismatch." };
+}
+function verifyMetaWebhookSignature(rawBody, signatureHeader) {
+  const appSecret = (process.env.WHATSAPP_APP_SECRET || "").trim();
+  if (!appSecret) return true;
+  if (!rawBody || !signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
+  const expected = "sha256=" + crypto5.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+  const a = Buffer.from(signatureHeader);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto5.timingSafeEqual(a, b);
+}
+async function saveRawWebhookEventRecord(record) {
+  inMemoryWebhookEvents.set(record.id, record);
+  if (inMemoryWebhookEvents.size > 100) {
+    const oldest = Array.from(inMemoryWebhookEvents.values()).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime());
+    for (let i = 0; i < oldest.length - 100; i++) {
+      inMemoryWebhookEvents.delete(oldest[i].id);
+    }
+  }
+  persistLocalWebhookEvents();
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (!client) return;
+    const { error } = await client.from("whatsapp_webhook_events").upsert([record], { onConflict: "id" });
+    if (error && error.code !== "PGRST205") {
+      console.warn("[WhatsApp Webhook Log] Supabase upsert notice:", error.message);
+    }
+  } catch (err) {
+    console.warn("[WhatsApp Webhook Log] Exception saving raw webhook event:", err?.message);
+  }
+}
+async function recordRawWebhookEvent(params) {
+  const payload = params.payload && typeof params.payload === "object" ? params.payload : { raw: params.payload ?? null };
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  let hasStatuses = false;
+  let hasMessages = false;
+  let firstWamid = null;
+  let firstPhoneId = null;
+  let firstPeer = null;
+  const statusesList = [];
+  const errorsList = [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const value = change?.value || {};
+      if (!firstPhoneId && value?.metadata?.phone_number_id) {
+        firstPhoneId = String(value.metadata.phone_number_id);
+      }
+      const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+      if (statuses.length > 0) hasStatuses = true;
+      for (const st of statuses) {
+        if (!firstWamid && st?.id) firstWamid = String(st.id);
+        if (!firstPeer && st?.recipient_id) firstPeer = String(st.recipient_id);
+        if (st?.status) statusesList.push(String(st.status).toLowerCase());
+        if (Array.isArray(st?.errors)) {
+          for (const e of st.errors) {
+            errorsList.push(`[${e?.code || "ERR"}] ${e?.title || e?.message || "Delivery failed"}`);
+          }
+        }
+      }
+      const messages = Array.isArray(value.messages) ? value.messages : [];
+      if (messages.length > 0) hasMessages = true;
+      for (const msg of messages) {
+        if (!firstWamid && msg?.id) firstWamid = String(msg.id);
+        if (!firstPeer && msg?.from) firstPeer = String(msg.from);
+      }
+    }
+  }
+  let detectedType = params.forceEventType || "unknown";
+  if (!params.forceEventType) {
+    if (hasStatuses && hasMessages) detectedType = "mixed";
+    else if (hasStatuses) detectedType = "status";
+    else if (hasMessages) detectedType = "message";
+  }
+  const record = {
+    id: `wh_${Date.now()}_${crypto5.randomBytes(3).toString("hex")}`,
+    received_at: (/* @__PURE__ */ new Date()).toISOString(),
+    event_type: detectedType,
+    signature_valid: params.signatureValid,
+    wamid: firstWamid,
+    status_summary: statusesList.length > 0 ? Array.from(new Set(statusesList)).join(", ") : hasMessages ? "inbound_message" : null,
+    phone_number_id: firstPhoneId,
+    recipient_or_sender: firstPeer,
+    matched_notification_id: null,
+    matched_order_id: null,
+    processed_statuses: 0,
+    processed_opt_outs: 0,
+    error_summary: params.errorSummary || (errorsList.length > 0 ? errorsList.join("; ") : null),
+    raw_headers: params.headers || {},
+    raw_payload: payload
+  };
+  await saveRawWebhookEventRecord(record);
+  return record;
+}
+function extractWebhookPayloadWamids(payload) {
+  const wamids = [];
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const value = change?.value || {};
+      const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+      for (const st of statuses) {
+        if (st?.id) wamids.push(String(st.id));
+      }
+      const messages = Array.isArray(value.messages) ? value.messages : [];
+      for (const msg of messages) {
+        if (msg?.id) wamids.push(String(msg.id));
+      }
+    }
+  }
+  return wamids;
+}
+function matchesWebhookEventSearch(ev, query, searchBy = "all") {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const wamidCandidates = [
+    ev.wamid || "",
+    ...extractWebhookPayloadWamids(ev.raw_payload)
+  ].filter(Boolean).map((v) => v.toLowerCase());
+  const orderIdVal = (ev.matched_order_id || "").toLowerCase();
+  const matchesWamid = wamidCandidates.some((w) => w.includes(q));
+  const matchesOrderId = orderIdVal.includes(q);
+  if (searchBy === "wamid") {
+    return matchesWamid;
+  }
+  if (searchBy === "matched_order_id") {
+    return matchesOrderId;
+  }
+  if (matchesWamid || matchesOrderId) return true;
+  return [
+    ev.id,
+    ev.matched_notification_id || "",
+    ev.recipient_or_sender || "",
+    ev.status_summary || "",
+    ev.error_summary || ""
+  ].join(" ").toLowerCase().includes(q);
+}
+async function listRecentWebhookEvents(limit = 50, options) {
+  loadLocalStores();
+  const capped = Math.min(Math.max(1, Number(limit) || 50), 50);
+  const query = String(options?.query || "").trim();
+  const searchBy = options?.searchBy === "wamid" || options?.searchBy === "matched_order_id" ? options.searchBy : "all";
+  const merged = /* @__PURE__ */ new Map();
+  for (const rec of inMemoryWebhookEvents.values()) {
+    merged.set(rec.id, rec);
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      if (query) {
+        const escapedPattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+        const queries = [];
+        if (searchBy === "all" || searchBy === "wamid") {
+          queries.push(
+            Promise.resolve(
+              client.from("whatsapp_webhook_events").select("*").ilike("wamid", escapedPattern).order("received_at", { ascending: false }).limit(capped)
+            )
+          );
+        }
+        if (searchBy === "all" || searchBy === "matched_order_id") {
+          queries.push(
+            Promise.resolve(
+              client.from("whatsapp_webhook_events").select("*").ilike("matched_order_id", escapedPattern).order("received_at", { ascending: false }).limit(capped)
+            )
+          );
+        }
+        if (searchBy === "all") {
+          queries.push(
+            Promise.resolve(
+              client.from("whatsapp_webhook_events").select("*").order("received_at", { ascending: false }).limit(capped)
+            )
+          );
+        }
+        const results = await Promise.all(queries);
+        for (const res of results) {
+          if (!res?.error && Array.isArray(res?.data)) {
+            for (const row of res.data) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+      } else {
+        const { data, error } = await client.from("whatsapp_webhook_events").select("*").order("received_at", { ascending: false }).limit(capped);
+        if (!error && Array.isArray(data)) {
+          for (const row of data) {
+            merged.set(row.id, row);
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  const allSorted = Array.from(merged.values()).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime());
+  const filtered = query ? allSorted.filter((ev) => matchesWebhookEventSearch(ev, query, searchBy)) : allSorted;
+  return filtered.slice(0, capped);
+}
+async function processWhatsAppWebhookEvent(payload, context) {
+  const rawRecord = await recordRawWebhookEvent({
+    payload,
+    headers: context?.headers,
+    signatureValid: context?.signatureValid ?? null
+  });
+  let processedStatuses = 0;
+  let processedOptOuts = 0;
+  let matchedNotificationId = null;
+  let matchedOrderId = null;
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      const value = change?.value || {};
+      const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+      for (const st of statuses) {
+        const wamid = st?.id ? String(st.id) : "";
+        const newStatus = String(st?.status || "").toLowerCase();
+        if (!wamid || !["sent", "delivered", "read", "failed"].includes(newStatus)) continue;
+        const eventTs = st.timestamp ? new Date(Number(st.timestamp) * 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+        const webhookErrMsg = Array.isArray(st.errors) && st.errors.length > 0 ? st.errors.map((e) => `[${e.code || "ERR"}] ${e.title || e.message || "Delivery failed"}`).join("; ") : null;
+        let target;
+        for (const rec of inMemoryOutbox.values()) {
+          if (rec.message_id === wamid) {
+            target = rec;
+            break;
+          }
+        }
+        if (!target) {
+          try {
+            const { client } = getAdminSupabaseServerClient();
+            if (client) {
+              const { data } = await client.from("order_notifications").select("*").eq("message_id", wamid).limit(1);
+              if (Array.isArray(data) && data.length > 0) {
+                target = data[0];
+              }
+            }
+          } catch {
+          }
+        }
+        if (target) {
+          if (!matchedNotificationId) matchedNotificationId = target.id;
+          if (!matchedOrderId) matchedOrderId = target.order_id;
+          const rank = {
+            pending: 0,
+            submitted: 1,
+            sent: 2,
+            delivered: 3,
+            read: 4,
+            failed: 5
+          };
+          const currentRank = rank[target.status] ?? 0;
+          const nextRank = rank[newStatus] ?? 0;
+          if (newStatus === "failed" || nextRank >= currentRank) {
+            target.status = newStatus;
+          }
+          if (newStatus === "sent" && !target.sent_at) target.sent_at = eventTs;
+          if (newStatus === "delivered" && !target.delivered_at) target.delivered_at = eventTs;
+          if (newStatus === "read" && !target.read_at) target.read_at = eventTs;
+          if (newStatus === "failed") {
+            target.failed_at = eventTs;
+            if (webhookErrMsg) target.error_message = webhookErrMsg;
+          }
+          target.webhook_events = [
+            ...Array.isArray(target.webhook_events) ? target.webhook_events : [],
+            { status: newStatus, timestamp: eventTs, errors: st.errors || null }
+          ];
+          target.updated_at = (/* @__PURE__ */ new Date()).toISOString();
+          await saveOutboxRecord(target);
+          processedStatuses++;
+        }
+      }
+      const messages = Array.isArray(value.messages) ? value.messages : [];
+      for (const msg of messages) {
+        const from = msg?.from ? String(msg.from) : "";
+        const textBody = String(msg?.text?.body || "").trim().toUpperCase();
+        if (from && ["STOP", "UNSUBSCRIBE", "OPTOUT", "OPT OUT", "CANCEL ALERTS"].includes(textBody)) {
+          const parsed = parseValidWhatsAppPhone(from);
+          if (parsed.valid) {
+            await saveCustomerWhatsAppConsent({
+              whatsappNumber: parsed.e164,
+              customerPhone: parsed.local10,
+              consentGranted: false,
+              consentSource: "webhook_opt_out"
+            });
+            processedOptOuts++;
+          }
+        }
+      }
+    }
+  }
+  if (processedStatuses > 0 || processedOptOuts > 0 || matchedNotificationId) {
+    rawRecord.processed_statuses = processedStatuses;
+    rawRecord.processed_opt_outs = processedOptOuts;
+    rawRecord.matched_notification_id = matchedNotificationId;
+    rawRecord.matched_order_id = matchedOrderId;
+    if (processedOptOuts > 0) {
+      rawRecord.event_type = rawRecord.event_type === "status" ? "mixed" : "opt_out";
+      rawRecord.status_summary = rawRecord.status_summary ? `${rawRecord.status_summary}, opt_out` : "opt_out";
+    }
+    await saveRawWebhookEventRecord(rawRecord);
+  }
+  return { processedStatuses, processedOptOuts, webhookEventId: rawRecord.id };
+}
+async function retryFailedNotification(notificationId, orderResolver) {
+  let target = inMemoryOutbox.get(notificationId);
+  if (!target) {
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client) {
+        const { data } = await client.from("order_notifications").select("*").eq("id", notificationId).maybeSingle();
+        if (data) target = data;
+      }
+    } catch {
+    }
+  }
+  if (!target) {
+    return {
+      success: false,
+      status: "failed",
+      orderId: "",
+      recipientRole: "admin",
+      error: "Notification record not found.",
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  if (["submitted", "sent", "delivered", "read"].includes(target.status)) {
+    return {
+      success: true,
+      status: "duplicate_skipped",
+      notificationId: target.id,
+      messageId: target.message_id || void 0,
+      orderId: target.order_id,
+      recipientRole: target.recipient_role,
+      recipient: target.recipient,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  const order = await orderResolver(target.order_id);
+  if (!order) {
+    return {
+      success: false,
+      status: "failed",
+      notificationId: target.id,
+      orderId: target.order_id,
+      recipientRole: target.recipient_role,
+      error: `Order ${target.order_id} could not be resolved for retry.`,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  const parsed = parseValidWhatsAppPhone(target.recipient);
+  if (!parsed.valid) {
+    return {
+      success: false,
+      status: "failed",
+      notificationId: target.id,
+      orderId: target.order_id,
+      recipientRole: target.recipient_role,
+      error: parsed.reason || "Recipient phone number is invalid.",
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  return executeSingleOutboxNotification({
+    order,
+    recipientRole: target.recipient_role,
+    recipientE164: parsed.e164,
+    recipientDigits: parsed.digits,
+    notificationType: target.notification_type,
+    consentVerified: target.consent_verified,
+    existingRecordToRetry: target
+  });
+}
+async function listOrderNotifications(options) {
+  const limit = options?.limit || 100;
+  const merged = /* @__PURE__ */ new Map();
+  for (const rec of inMemoryOutbox.values()) {
+    if (!options?.orderId || rec.order_id === options.orderId) {
+      merged.set(rec.id, rec);
+    }
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      let query = client.from("order_notifications").select("*").order("created_at", { ascending: false }).limit(limit);
+      if (options?.orderId) {
+        query = query.eq("order_id", String(options.orderId));
+      }
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          const normalized = {
+            ...row,
+            recipient_role: row.recipient_role || row.payload?.recipient_role || (String(row.recipient || "").includes("9063692135") ? "admin" : "customer"),
+            notification_type: row.notification_type || row.payload?.notification_type || "admin_new_order",
+            template_name: row.template_name || row.payload?.template_name || "nuvvo_admin_new_order",
+            attempt_count: row.attempt_count || row.payload?.attempt_count || 1,
+            consent_verified: Boolean(row.consent_verified ?? row.payload?.consent_verified ?? false),
+            webhook_events: Array.isArray(row.webhook_events) ? row.webhook_events : []
+          };
+          merged.set(normalized.id, normalized);
+        }
+      }
+    }
+  } catch {
+  }
+  return Array.from(merged.values()).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, limit);
+}
+async function sendOrderConfirmationWhatsApp(order) {
+  return dispatchOrderWhatsAppNotifications(order);
+}
+
 // api/auth/setup-profile.ts
 async function handler5(req, res) {
   if (req.method === "OPTIONS") {
@@ -2445,6 +4878,8 @@ async function handler5(req, res) {
       password,
       confirmPassword,
       mobile,
+      whatsappNumber,
+      whatsappOptIn,
       location,
       address,
       landmark
@@ -2486,6 +4921,31 @@ async function handler5(req, res) {
         error: "Please enter a valid 10-digit mobile number."
       });
     }
+    const rawWa = String(whatsappNumber || "").trim();
+    if (rawWa.includes("@")) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Email address cannot be used as a WhatsApp number. Enter a valid 10-digit mobile number."
+      });
+    }
+    let validatedWhatsappE164 = "";
+    if (rawWa) {
+      const waCheck = parseValidWhatsAppPhone(rawWa);
+      if (!waCheck.valid) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: waCheck.reason || "Please enter a valid 10-digit WhatsApp mobile number."
+        });
+      }
+      validatedWhatsappE164 = waCheck.e164;
+    }
+    const explicitOptIn = Boolean(whatsappOptIn);
+    if (explicitOptIn && !validatedWhatsappE164) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter a valid WhatsApp mobile number to enable WhatsApp order notifications."
+      });
+    }
     const passwordHash = hashPassword(cleanPassword);
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
     let tokenSupabaseId = "";
@@ -2496,6 +4956,7 @@ async function handler5(req, res) {
       }
     }
     const userId = body.supabaseUserId || tokenSupabaseId || `usr_${cleanEmail.replace(/[^a-z0-9]/g, "_")}`;
+    const consentTimestamp = explicitOptIn ? (/* @__PURE__ */ new Date()).toISOString() : void 0;
     const userProfile = {
       id: userId,
       supabaseUserId: body.supabaseUserId || tokenSupabaseId || void 0,
@@ -2503,6 +4964,10 @@ async function handler5(req, res) {
       username: cleanUsername,
       email: cleanEmail,
       phone: cleanMobile,
+      whatsappNumber: validatedWhatsappE164 || void 0,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp,
+      whatsappOptInSource: validatedWhatsappE164 ? "registration" : void 0,
       password_hash: passwordHash,
       role: "Customer",
       isProfileComplete: true,
@@ -2539,7 +5004,6 @@ async function handler5(req, res) {
           description: "Username to email registry for protected account lookups",
           updated_at: (/* @__PURE__ */ new Date()).toISOString()
         }], { onConflict: "key" });
-        const { data: accountsSettings } = await adminClient.from("app_settings").select("value").eq("key", `account_${cleanEmail}`).maybeSingle();
         await adminClient.from("app_settings").upsert([{
           key: `account_${cleanEmail}`,
           value: userProfile,
@@ -2549,6 +5013,17 @@ async function handler5(req, res) {
       }
     } catch (dbErr) {
       console.warn("[Profile Setup Database Notice]:", dbErr?.message);
+    }
+    if (validatedWhatsappE164) {
+      await saveCustomerWhatsAppConsent({
+        customerId: userId,
+        customerEmail: cleanEmail,
+        customerPhone: cleanMobile,
+        whatsappNumber: validatedWhatsappE164,
+        consentGranted: explicitOptIn,
+        consentSource: "registration"
+      }).catch(() => {
+      });
     }
     fallbackCustomerAccounts.set(cleanEmail, userProfile);
     fallbackUsernamesRegistry.set(cleanUsername, cleanEmail);
@@ -2574,10 +5049,370 @@ async function handler5(req, res) {
   }
 }
 
-// api/auth/customer-login.ts
+// api/auth/customer-register.ts
 async function handler6(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
+  }
+  if (req.method !== "POST") {
+    return sendJsonResponse(res, 405, { success: false, error: "Method not allowed." });
+  }
+  try {
+    const clientIp = getClientIp(req);
+    const rateCheck = checkCustomerAuthRateLimit("register", clientIp, {
+      maxAttempts: 6,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3,
+      incrementOnCheck: true
+    });
+    if (!rateCheck.allowed) {
+      if (rateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(rateCheck.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: rateCheck.error || "Too many registration attempts. Please wait a few minutes and try again."
+      });
+    }
+    const body = await parseRequestBody(req);
+    const {
+      fullName,
+      username,
+      email,
+      mobile,
+      location,
+      deliveryAddress,
+      landmark,
+      city,
+      password,
+      confirmPassword,
+      whatsappNumber,
+      whatsappOptIn,
+      redirectTo
+    } = body || {};
+    const cleanFullName = String(fullName || "").trim();
+    if (!cleanFullName || cleanFullName.length < 2) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Full Name is required (at least 2 characters)."
+      });
+    }
+    const rawUsername = String(username || "").trim();
+    const cleanUsernameLower = rawUsername.toLowerCase();
+    if (!rawUsername || cleanUsernameLower.length < 3 || cleanUsernameLower.length > 30) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Username must be between 3 and 30 characters."
+      });
+    }
+    if (!/^[a-z0-9_.-]+$/.test(cleanUsernameLower)) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Username can only contain letters, numbers, underscores (_), dots (.), and hyphens (-)."
+      });
+    }
+    const cleanEmail = normalizeEmail(email);
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter a valid email address."
+      });
+    }
+    const cleanMobile = normalizePhone(mobile);
+    if (cleanMobile.length !== 10) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter a valid 10-digit mobile number."
+      });
+    }
+    const cleanLocation = String(location || "").trim();
+    if (!cleanLocation || cleanLocation.length < 2) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Location / Area is required."
+      });
+    }
+    const cleanDeliveryAddress = String(deliveryAddress || "").trim();
+    if (!cleanDeliveryAddress || cleanDeliveryAddress.length < 5) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Full Delivery Address is required."
+      });
+    }
+    const cleanPassword = String(password || "");
+    if (!cleanPassword || cleanPassword.length < 6) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Password must be at least 6 characters long."
+      });
+    }
+    if (confirmPassword === void 0 || cleanPassword !== String(confirmPassword)) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Password and Confirm Password do not match."
+      });
+    }
+    const rawWa = String(whatsappNumber || "").trim();
+    if (rawWa.includes("@")) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Email address cannot be used as a WhatsApp number. Enter a valid 10-digit mobile number."
+      });
+    }
+    let validatedWhatsappE164 = "";
+    if (rawWa) {
+      const waCheck = parseValidWhatsAppPhone(rawWa);
+      if (!waCheck.valid) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: waCheck.reason || "Please enter a valid 10-digit WhatsApp mobile number."
+        });
+      }
+      validatedWhatsappE164 = waCheck.e164;
+    }
+    const explicitOptIn = Boolean(whatsappOptIn);
+    if (explicitOptIn && !validatedWhatsappE164) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter a valid WhatsApp mobile number to enable WhatsApp order updates."
+      });
+    }
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (adminClient && isServiceRole) {
+      try {
+        const { data: existingUsernameRow } = await adminClient.from("customer_profiles").select("id, email, username").ilike("username", cleanUsernameLower).maybeSingle();
+        if (existingUsernameRow) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            error: `The username "${rawUsername}" is already taken. Please choose another username.`
+          });
+        }
+        const { data: existingEmailRow } = await adminClient.from("customer_profiles").select("id, email").ilike("email", cleanEmail).maybeSingle();
+        if (existingEmailRow) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            error: "An account with this email address already exists. Please sign in instead."
+          });
+        }
+      } catch {
+      }
+      try {
+        const { data: settingsRow } = await adminClient.from("app_settings").select("value").eq("key", "customer_usernames").maybeSingle();
+        const legacyMap = settingsRow?.value || {};
+        if (legacyMap[cleanUsernameLower] && legacyMap[cleanUsernameLower].toLowerCase() !== cleanEmail) {
+          return sendJsonResponse(res, 409, {
+            success: false,
+            error: `The username "${rawUsername}" is already taken. Please choose another username.`
+          });
+        }
+      } catch {
+      }
+    }
+    const localByUsername = findLocalCustomerByUsername(cleanUsernameLower);
+    if (localByUsername && localByUsername.email.toLowerCase() !== cleanEmail) {
+      return sendJsonResponse(res, 409, {
+        success: false,
+        error: `The username "${rawUsername}" is already taken. Please choose another username.`
+      });
+    }
+    const localByEmail = findLocalCustomerByEmail(cleanEmail);
+    if (localByEmail) {
+      return sendJsonResponse(res, 409, {
+        success: false,
+        error: "An account with this email address already exists. Please sign in instead."
+      });
+    }
+    const publicSupabase = getPublicSupabaseServerClient();
+    const cleanCity = String(city || "").trim() || "Chirala";
+    const cleanLandmark = String(landmark || "").trim();
+    const consentTimestamp = explicitOptIn ? (/* @__PURE__ */ new Date()).toISOString() : null;
+    const primaryAddress = {
+      id: `addr_${Date.now()}`,
+      type: "Home",
+      flatNo: cleanDeliveryAddress,
+      area: cleanLocation,
+      landmark: cleanLandmark,
+      city: cleanCity,
+      fullAddress: cleanDeliveryAddress,
+      isDefault: true,
+      gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+    };
+    const emailRedirectTo = getAppRedirectOrigin(req, redirectTo);
+    const { data: signUpData, error: signUpError } = await publicSupabase.auth.signUp({
+      email: cleanEmail,
+      password: cleanPassword,
+      options: {
+        emailRedirectTo,
+        data: {
+          full_name: cleanFullName,
+          username: rawUsername,
+          username_lower: cleanUsernameLower,
+          mobile: cleanMobile,
+          location: cleanLocation,
+          delivery_address: cleanDeliveryAddress,
+          addresses: [primaryAddress],
+          whatsapp_number: validatedWhatsappE164 || null,
+          whatsapp_consent: explicitOptIn,
+          whatsapp_opt_in_at: consentTimestamp,
+          whatsapp_opt_in_source: validatedWhatsappE164 ? "registration" : null,
+          role: "Customer"
+          // Strictly Customer only
+        }
+      }
+    });
+    if (signUpError) {
+      const msg = signUpError.message || "Registration failed.";
+      const lowerMsg = msg.toLowerCase();
+      if (lowerMsg.includes("already registered") || lowerMsg.includes("already exists")) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: "An account with this email address already exists. Please sign in or reset your password."
+        });
+      }
+      if (signUpError.status === 429 || lowerMsg.includes("rate limit") || lowerMsg.includes("too many")) {
+        recordCustomerAuthFailure("register", clientIp);
+        return sendJsonResponse(res, 429, {
+          success: false,
+          error: "Too many registration requests right now. Please wait a minute and try again."
+        });
+      }
+      if (lowerMsg.includes("error sending confirmation email")) {
+        return sendJsonResponse(res, 502, {
+          success: false,
+          code: "SUPABASE_CONFIRMATION_EMAIL_FAILED",
+          error: "Supabase Auth could not send the confirmation email because SMTP delivery is failing or unconfigured. Configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings (or check Email Confirmation settings)."
+        });
+      }
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: msg
+      });
+    }
+    if (signUpData?.user && Array.isArray(signUpData.user.identities) && signUpData.user.identities.length === 0) {
+      return sendJsonResponse(res, 409, {
+        success: false,
+        error: "An account with this email address already exists. Please sign in or reset your password."
+      });
+    }
+    if (!signUpData?.user?.id) {
+      return sendJsonResponse(res, 500, {
+        success: false,
+        error: "Account creation did not return a valid user record. Please try again."
+      });
+    }
+    const userId = signUpData.user.id;
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    const emailVerified = Boolean(signUpData.user.email_confirmed_at);
+    const emailVerifiedAt = signUpData.user.email_confirmed_at || void 0;
+    const requiresEmailVerification = !signUpData.session;
+    const dbProfileRow = {
+      id: userId,
+      full_name: cleanFullName,
+      username: rawUsername,
+      email: cleanEmail,
+      mobile: cleanMobile,
+      location: cleanLocation,
+      delivery_address: cleanDeliveryAddress,
+      addresses: [primaryAddress],
+      whatsapp_number: validatedWhatsappE164 || null,
+      whatsapp_consent: explicitOptIn,
+      whatsapp_opt_in_at: consentTimestamp,
+      whatsapp_opt_in_source: validatedWhatsappE164 ? "registration" : null,
+      preferred_language: "te",
+      role: "Customer",
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+    const dbClient = isServiceRole && adminClient ? adminClient : signUpData.session?.access_token ? createUserScopedSupabaseClient(signUpData.session.access_token) : null;
+    if (dbClient) {
+      try {
+        const { error: profileErr } = await dbClient.from("customer_profiles").upsert([dbProfileRow], { onConflict: "id" });
+        if (profileErr) {
+          console.warn("[Customer Register] customer_profiles insert notice:", profileErr.message);
+        }
+      } catch (err) {
+        console.warn("[Customer Register] customer_profiles exception:", err?.message);
+      }
+    }
+    upsertLocalCustomerProfileIndex({
+      id: userId,
+      fullName: cleanFullName,
+      username: rawUsername,
+      usernameLower: cleanUsernameLower,
+      email: cleanEmail,
+      mobile: cleanMobile,
+      location: cleanLocation,
+      deliveryAddress: cleanDeliveryAddress,
+      addresses: [primaryAddress],
+      whatsappNumber: validatedWhatsappE164 || void 0,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp || void 0,
+      whatsappOptInSource: validatedWhatsappE164 ? "registration" : void 0,
+      preferredLanguage: "te",
+      role: "Customer",
+      createdAt: nowIso,
+      updatedAt: nowIso
+    });
+    if (validatedWhatsappE164) {
+      await saveCustomerWhatsAppConsent({
+        customerId: userId,
+        customerEmail: cleanEmail,
+        customerPhone: cleanMobile,
+        whatsappNumber: validatedWhatsappE164,
+        consentGranted: explicitOptIn,
+        consentSource: "registration"
+      }).catch(() => {
+      });
+    }
+    const mappedUser = {
+      id: userId,
+      name: cleanFullName,
+      username: rawUsername,
+      email: cleanEmail,
+      phone: cleanMobile,
+      location: cleanLocation,
+      addresses: [primaryAddress],
+      role: "Customer",
+      isProfileComplete: true,
+      isEmailVerified: emailVerified,
+      emailVerifiedAt,
+      whatsappNumber: validatedWhatsappE164 || void 0,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp || void 0,
+      whatsappOptInSource: validatedWhatsappE164 ? "registration" : void 0,
+      favoriteFoods: [],
+      favoriteRestaurants: [],
+      createdAt: nowIso
+    };
+    return sendJsonResponse(res, 201, {
+      success: true,
+      requiresEmailVerification,
+      emailVerified,
+      session: signUpData.session ? {
+        access_token: signUpData.session.access_token,
+        refresh_token: signUpData.session.refresh_token,
+        expires_at: signUpData.session.expires_at
+      } : null,
+      user: mappedUser,
+      message: requiresEmailVerification ? `Account created! Please check ${cleanEmail} and click the verification link before signing in.` : "Customer account created successfully."
+    });
+  } catch (err) {
+    console.error("[Customer Register Error]:", err?.message || err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "An unexpected error occurred during registration. Please try again."
+    });
+  }
+}
+
+// api/auth/customer-login.ts
+async function handler7(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
+  }
+  if (req.method !== "POST") {
+    return sendJsonResponse(res, 405, { success: false, error: "Method not allowed." });
   }
   try {
     const body = await parseRequestBody(req);
@@ -2585,79 +5420,275 @@ async function handler6(req, res) {
     if (!identifier || !password) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Username/Email and password are required."
+        error: "Username or Email and Password are required."
       });
     }
     const cleanInput = String(identifier).trim();
+    const cleanInputLower = cleanInput.toLowerCase();
     const cleanPassword = String(password);
+    const clientIp = getClientIp(req);
+    const ipLimit = checkCustomerAuthRateLimit("login", `ip:${clientIp}`, {
+      maxAttempts: 20,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3
+    });
+    if (!ipLimit.allowed) {
+      if (ipLimit.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(ipLimit.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: ipLimit.error || "Too many login attempts from your network. Please try again later."
+      });
+    }
+    const accountLimitKey = `id:${clientIp}:${cleanInputLower}`;
+    const accountLimit = checkCustomerAuthRateLimit("login", accountLimitKey, {
+      maxAttempts: 5,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3
+    });
+    if (!accountLimit.allowed) {
+      if (accountLimit.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(accountLimit.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: accountLimit.error || "Too many failed login attempts. Please wait 15 minutes before retrying."
+      });
+    }
     let targetEmail = "";
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
     if (cleanInput.includes("@")) {
       targetEmail = normalizeEmail(cleanInput);
     } else {
-      const cleanUsername = cleanInput.toLowerCase();
-      try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          const { data } = await adminClient.from("app_settings").select("value").eq("key", "customer_usernames").maybeSingle();
-          const usernamesMap = data?.value || {};
-          targetEmail = usernamesMap[cleanUsername] || "";
+      const cleanUsernameLower = cleanInputLower;
+      if (adminClient && isServiceRole) {
+        try {
+          const { data: profileMatch } = await adminClient.from("customer_profiles").select("email").ilike("username", cleanUsernameLower).maybeSingle();
+          if (profileMatch?.email) {
+            targetEmail = normalizeEmail(profileMatch.email);
+          }
+        } catch {
         }
-      } catch (err) {
-        console.warn("[Username Lookup Warning]:", err?.message);
+        if (!targetEmail) {
+          try {
+            const { data: settingsRow } = await adminClient.from("app_settings").select("value").eq("key", "customer_usernames").maybeSingle();
+            const usernamesMap = settingsRow?.value || {};
+            if (usernamesMap[cleanUsernameLower]) {
+              targetEmail = normalizeEmail(usernamesMap[cleanUsernameLower]);
+            }
+          } catch {
+          }
+        }
       }
       if (!targetEmail) {
-        targetEmail = fallbackUsernamesRegistry.get(cleanUsername) || "";
+        const localMatch = findLocalCustomerByUsername(cleanUsernameLower);
+        if (localMatch?.email) {
+          targetEmail = normalizeEmail(localMatch.email);
+        }
+      }
+      if (!targetEmail) {
+        targetEmail = fallbackUsernamesRegistry.get(cleanUsernameLower) || "";
       }
     }
     if (!targetEmail) {
+      recordCustomerAuthFailure("login", accountLimitKey, { maxAttempts: 5 });
+      recordCustomerAuthFailure("login", `ip:${clientIp}`, { maxAttempts: 20 });
       return sendJsonResponse(res, 401, {
         success: false,
-        error: "Invalid username/email or password. Please verify your credentials."
+        error: "Invalid username/email or password."
       });
     }
-    let accountRecord = null;
-    try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        const { data } = await adminClient.from("app_settings").select("value").eq("key", `account_${targetEmail}`).maybeSingle();
-        if (data && data.value) {
-          accountRecord = data.value;
+    const publicSupabase = getPublicSupabaseServerClient();
+    const { data: sbData, error: sbError } = await publicSupabase.auth.signInWithPassword({
+      email: targetEmail,
+      password: cleanPassword
+    });
+    if (!sbError && sbData?.user && sbData?.session) {
+      clearCustomerAuthRateLimit("login", accountLimitKey);
+      const authUser = sbData.user;
+      const meta = authUser.user_metadata || {};
+      const emailVerified = Boolean(authUser.email_confirmed_at);
+      const emailVerifiedAt = authUser.email_confirmed_at || void 0;
+      const userClient = createUserScopedSupabaseClient(sbData.session.access_token);
+      let dbProfile = null;
+      try {
+        const { data: profData } = await userClient.from("customer_profiles").select("*").eq("id", authUser.id).maybeSingle();
+        if (profData) dbProfile = profData;
+      } catch {
+      }
+      const localIdx = findLocalCustomerByUsername(meta.username || "") || null;
+      if (!dbProfile) {
+        const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+        const fallbackUsername = String(meta.username || localIdx?.username || targetEmail.split("@")[0]).trim();
+        const fallbackLocation = String(meta.location || localIdx?.location || "Chirala").trim();
+        const fallbackAddress = String(meta.delivery_address || localIdx?.deliveryAddress || "").trim();
+        const fallbackAddresses = Array.isArray(meta.addresses) && meta.addresses.length ? meta.addresses : localIdx?.addresses?.length ? localIdx.addresses : fallbackAddress ? [
+          {
+            id: `addr_${Date.now()}`,
+            type: "Home",
+            flatNo: fallbackAddress,
+            area: fallbackLocation || "Chirala",
+            city: "Chirala",
+            fullAddress: fallbackAddress,
+            isDefault: true
+          }
+        ] : [];
+        const newRow = {
+          id: authUser.id,
+          full_name: String(meta.full_name || localIdx?.fullName || fallbackUsername).trim(),
+          username: fallbackUsername,
+          email: targetEmail,
+          mobile: String(meta.mobile || localIdx?.mobile || "").trim(),
+          location: fallbackLocation,
+          delivery_address: fallbackAddress,
+          addresses: fallbackAddresses,
+          whatsapp_number: meta.whatsapp_number || localIdx?.whatsappNumber || null,
+          whatsapp_consent: Boolean(meta.whatsapp_consent ?? localIdx?.whatsappOptIn),
+          whatsapp_opt_in_at: meta.whatsapp_opt_in_at || localIdx?.whatsappOptInAt || null,
+          whatsapp_opt_in_source: meta.whatsapp_opt_in_source || localIdx?.whatsappOptInSource || null,
+          preferred_language: meta.preferred_language || localIdx?.preferredLanguage || "te",
+          role: "Customer",
+          updated_at: nowIso
+        };
+        try {
+          const writer = isServiceRole && adminClient ? adminClient : userClient;
+          const { data: inserted } = await writer.from("customer_profiles").upsert([newRow], { onConflict: "id" }).select("*").maybeSingle();
+          if (inserted) dbProfile = inserted;
+        } catch {
+        }
+        if (!dbProfile) {
+          dbProfile = newRow;
         }
       }
-    } catch {
-    }
-    if (!accountRecord) {
-      accountRecord = fallbackCustomerAccounts.get(targetEmail) || null;
-    }
-    if (!accountRecord || !accountRecord.password_hash) {
-      return sendJsonResponse(res, 401, {
-        success: false,
-        error: "Invalid username/email or password. Please verify your credentials."
+      const resolvedUsername = String(dbProfile.username || meta.username || targetEmail.split("@")[0]).trim();
+      const resolvedAddresses = Array.isArray(dbProfile.addresses) ? dbProfile.addresses : [];
+      upsertLocalCustomerProfileIndex({
+        id: authUser.id,
+        fullName: dbProfile.full_name || meta.full_name || resolvedUsername,
+        username: resolvedUsername,
+        usernameLower: resolvedUsername.toLowerCase(),
+        email: targetEmail,
+        mobile: dbProfile.mobile || meta.mobile || "",
+        location: dbProfile.location || meta.location || "",
+        deliveryAddress: dbProfile.delivery_address || meta.delivery_address || "",
+        addresses: resolvedAddresses,
+        whatsappNumber: dbProfile.whatsapp_number || void 0,
+        whatsappOptIn: Boolean(dbProfile.whatsapp_consent),
+        whatsappOptInAt: dbProfile.whatsapp_opt_in_at || void 0,
+        whatsappOptInSource: dbProfile.whatsapp_opt_in_source || void 0,
+        preferredLanguage: dbProfile.preferred_language || "te",
+        avatar: dbProfile.avatar || void 0,
+        role: "Customer"
+      });
+      const mappedUser = {
+        id: authUser.id,
+        name: dbProfile.full_name || meta.full_name || resolvedUsername,
+        username: resolvedUsername,
+        email: targetEmail,
+        phone: dbProfile.mobile || meta.mobile || "",
+        location: dbProfile.location || meta.location || "",
+        addresses: resolvedAddresses,
+        avatar: dbProfile.avatar || void 0,
+        preferredLanguage: dbProfile.preferred_language || "te",
+        role: "Customer",
+        // Strict: Customer login never grants Admin or Franchise
+        isProfileComplete: true,
+        isEmailVerified: emailVerified,
+        emailVerifiedAt,
+        whatsappNumber: dbProfile.whatsapp_number || void 0,
+        whatsappOptIn: Boolean(dbProfile.whatsapp_consent),
+        whatsappOptInAt: dbProfile.whatsapp_opt_in_at || void 0,
+        whatsappOptInSource: dbProfile.whatsapp_opt_in_source || void 0,
+        favoriteFoods: [],
+        favoriteRestaurants: [],
+        createdAt: dbProfile.created_at || authUser.created_at || (/* @__PURE__ */ new Date()).toISOString()
+      };
+      return sendJsonResponse(res, 200, {
+        success: true,
+        session: {
+          access_token: sbData.session.access_token,
+          refresh_token: sbData.session.refresh_token,
+          expires_at: sbData.session.expires_at
+        },
+        emailVerified,
+        emailVerifiedAt: emailVerifiedAt || null,
+        user: mappedUser,
+        role: "Customer",
+        message: "Login successful."
       });
     }
-    const isPasswordValid = verifyPassword(cleanPassword, accountRecord.password_hash);
-    if (!isPasswordValid) {
-      return sendJsonResponse(res, 401, {
+    const errMsg = String(sbError?.message || "");
+    if (errMsg.toLowerCase().includes("email not confirmed")) {
+      return sendJsonResponse(res, 403, {
         success: false,
-        error: "Invalid username/email or password. Please verify your credentials."
+        code: "EMAIL_NOT_CONFIRMED",
+        requiresEmailVerification: true,
+        email: targetEmail,
+        error: "Your email address is not verified yet. Please check your inbox and click the confirmation link before signing in."
       });
     }
-    const token = createSignedSessionJwt(accountRecord.id || targetEmail, "normal_user", {
-      email: targetEmail,
-      phone: accountRecord.phone,
-      username: accountRecord.username
-    });
-    const safeUser = { ...accountRecord };
-    delete safeUser.password_hash;
-    return sendJsonResponse(res, 200, {
-      success: true,
-      token,
-      user: safeUser,
-      role: safeUser.role || "Customer",
-      message: "Login successful."
+    if (adminClient && isServiceRole) {
+      try {
+        const { data: legacyAccRow } = await adminClient.from("app_settings").select("value").eq("key", `account_${targetEmail}`).maybeSingle();
+        const legacyRecord = legacyAccRow?.value;
+        if (legacyRecord?.password_hash && verifyPassword(cleanPassword, legacyRecord.password_hash)) {
+          clearCustomerAuthRateLimit("login", accountLimitKey);
+          const token = createSignedSessionJwt(legacyRecord.id || targetEmail, "normal_user", {
+            email: targetEmail,
+            phone: legacyRecord.phone,
+            username: legacyRecord.username
+          });
+          const safeLegacy = { ...legacyRecord, role: "Customer" };
+          delete safeLegacy.password_hash;
+          return sendJsonResponse(res, 200, {
+            success: true,
+            token,
+            emailVerified: Boolean(legacyRecord.isEmailVerified),
+            user: safeLegacy,
+            role: "Customer",
+            message: "Login successful."
+          });
+        }
+      } catch {
+      }
+    }
+    const legacyMem = fallbackCustomerAccounts.get(targetEmail);
+    if (legacyMem?.password_hash && verifyPassword(cleanPassword, legacyMem.password_hash)) {
+      clearCustomerAuthRateLimit("login", accountLimitKey);
+      const token = createSignedSessionJwt(legacyMem.id || targetEmail, "normal_user", {
+        email: targetEmail,
+        phone: legacyMem.phone,
+        username: legacyMem.username
+      });
+      const safeMem = { ...legacyMem, role: "Customer" };
+      delete safeMem.password_hash;
+      return sendJsonResponse(res, 200, {
+        success: true,
+        token,
+        emailVerified: Boolean(legacyMem.isEmailVerified),
+        user: safeMem,
+        role: "Customer",
+        message: "Login successful."
+      });
+    }
+    const failure = recordCustomerAuthFailure("login", accountLimitKey, { maxAttempts: 5 });
+    recordCustomerAuthFailure("login", `ip:${clientIp}`, { maxAttempts: 20 });
+    if (failure.blocked) {
+      if (failure.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(failure.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: "Too many failed login attempts. Your login has been temporarily locked for 15 minutes."
+      });
+    }
+    return sendJsonResponse(res, 401, {
+      success: false,
+      error: "Invalid username/email or password."
     });
   } catch (err) {
-    console.error("[Customer Login Serverless Error]:", err?.message || err);
+    console.error("[Customer Login Error]:", err?.message || err);
     return sendJsonResponse(res, 500, {
       success: false,
       error: "An unexpected error occurred during login. Please try again."
@@ -2665,8 +5696,463 @@ async function handler6(req, res) {
   }
 }
 
+// api/auth/customer-profile.ts
+function extractBearerToken2(req) {
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  return "";
+}
+async function handler8(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
+  }
+  try {
+    const token = extractBearerToken2(req);
+    if (!token) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: "Authentication required. Please sign in."
+      });
+    }
+    const publicSupabase = getPublicSupabaseServerClient();
+    const { data: userData, error: authErr } = await publicSupabase.auth.getUser(token);
+    if (authErr || !userData?.user?.id) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: "Your session has expired or is invalid. Please sign in again."
+      });
+    }
+    const authUser = userData.user;
+    const authUserId = authUser.id;
+    const emailVerified = Boolean(authUser.email_confirmed_at);
+    const emailVerifiedAt = authUser.email_confirmed_at || void 0;
+    const meta = authUser.user_metadata || {};
+    const queryTargetId = typeof req.query?.userId === "string" ? req.query.userId : typeof req.query?.id === "string" ? req.query.id : "";
+    if (queryTargetId && queryTargetId !== authUserId) {
+      return sendJsonResponse(res, 403, {
+        success: false,
+        error: "Forbidden: You cannot access another customer's profile."
+      });
+    }
+    const userClient = createUserScopedSupabaseClient(token);
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (req.method === "GET") {
+      let dbProfile = null;
+      try {
+        const { data } = await userClient.from("customer_profiles").select("*").eq("id", authUserId).maybeSingle();
+        if (data) dbProfile = data;
+      } catch {
+      }
+      const localIdx = findLocalCustomerById(authUserId);
+      const source = dbProfile || localIdx || {};
+      const resolvedAddresses = Array.isArray(source.addresses) ? source.addresses : Array.isArray(meta.addresses) ? meta.addresses : [];
+      const profile = {
+        id: authUserId,
+        name: source.full_name || source.fullName || meta.full_name || authUser.email?.split("@")[0] || "Customer",
+        username: source.username || meta.username || void 0,
+        email: authUser.email || source.email || "",
+        phone: source.mobile || meta.mobile || "",
+        location: source.location || meta.location || "",
+        deliveryAddress: source.delivery_address || source.deliveryAddress || meta.delivery_address || "",
+        addresses: resolvedAddresses,
+        avatar: source.avatar || void 0,
+        preferredLanguage: source.preferred_language || source.preferredLanguage || meta.preferred_language || "te",
+        role: "Customer",
+        isProfileComplete: true,
+        isEmailVerified: emailVerified,
+        emailVerifiedAt,
+        whatsappNumber: source.whatsapp_number || source.whatsappNumber || meta.whatsapp_number || void 0,
+        whatsappOptIn: Boolean(source.whatsapp_consent ?? source.whatsappOptIn ?? meta.whatsapp_consent),
+        whatsappOptInAt: source.whatsapp_opt_in_at || source.whatsappOptInAt || meta.whatsapp_opt_in_at || void 0,
+        whatsappOptInSource: source.whatsapp_opt_in_source || source.whatsappOptInSource || meta.whatsapp_opt_in_source || void 0,
+        createdAt: source.created_at || source.createdAt || authUser.created_at || (/* @__PURE__ */ new Date()).toISOString()
+      };
+      return sendJsonResponse(res, 200, {
+        success: true,
+        emailVerified,
+        user: profile
+      });
+    }
+    if (req.method === "PUT" || req.method === "PATCH" || req.method === "POST") {
+      const body = await parseRequestBody(req);
+      const requestedBodyId = body?.id || body?.userId || body?.customerId;
+      if (requestedBodyId && requestedBodyId !== authUserId) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Forbidden: You cannot modify another customer's profile."
+        });
+      }
+      let existingRow = null;
+      try {
+        const { data } = await userClient.from("customer_profiles").select("*").eq("id", authUserId).maybeSingle();
+        if (data) existingRow = data;
+      } catch {
+      }
+      const localIdx = findLocalCustomerById(authUserId);
+      const base = existingRow || localIdx || {};
+      const nextName = String(body?.name ?? body?.fullName ?? base.full_name ?? base.fullName ?? meta.full_name ?? "").trim();
+      if (!nextName || nextName.length < 2) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: "Full Name must be at least 2 characters."
+        });
+      }
+      let nextMobile = String(body?.phone ?? body?.mobile ?? base.mobile ?? meta.mobile ?? "").trim();
+      if (nextMobile) {
+        const cleanDigits = normalizePhone(nextMobile);
+        if (cleanDigits.length < 10) {
+          return sendJsonResponse(res, 400, {
+            success: false,
+            error: "Please provide a valid 10-digit mobile number."
+          });
+        }
+        nextMobile = cleanDigits;
+      }
+      const nextLocation = String(body?.location ?? base.location ?? meta.location ?? "").trim();
+      const nextAddresses = Array.isArray(body?.addresses) ? body.addresses : Array.isArray(base.addresses) ? base.addresses : Array.isArray(meta.addresses) ? meta.addresses : [];
+      const primaryAddr = nextAddresses.find((a) => a?.isDefault) || nextAddresses[0];
+      const nextDeliveryAddress = String(
+        body?.deliveryAddress ?? (primaryAddr ? `${primaryAddr.flatNo || ""}, ${primaryAddr.area || ""}, ${primaryAddr.city || ""}`.replace(/^,\s*|,\s*$/g, "") : "") ?? base.delivery_address ?? base.deliveryAddress ?? ""
+      ).trim();
+      let nextWhatsappNumber = base.whatsapp_number ?? base.whatsappNumber ?? meta.whatsapp_number ?? null;
+      let nextWhatsappConsent = Boolean(base.whatsapp_consent ?? base.whatsappOptIn ?? meta.whatsapp_consent);
+      let nextWhatsappOptInAt = base.whatsapp_opt_in_at ?? base.whatsappOptInAt ?? null;
+      let nextWhatsappSource = base.whatsapp_opt_in_source ?? base.whatsappOptInSource ?? null;
+      if (body?.whatsappNumber !== void 0) {
+        const rawWa = String(body.whatsappNumber || "").trim();
+        if (rawWa.includes("@")) {
+          return sendJsonResponse(res, 400, {
+            success: false,
+            error: "Email address cannot be used as a WhatsApp number."
+          });
+        }
+        if (rawWa) {
+          const check = parseValidWhatsAppPhone(rawWa);
+          if (!check.valid) {
+            return sendJsonResponse(res, 400, {
+              success: false,
+              error: check.reason || "Invalid WhatsApp number."
+            });
+          }
+          nextWhatsappNumber = check.e164;
+        } else {
+          nextWhatsappNumber = null;
+        }
+      }
+      if (body?.whatsappOptIn !== void 0) {
+        nextWhatsappConsent = Boolean(body.whatsappOptIn && nextWhatsappNumber);
+        nextWhatsappOptInAt = nextWhatsappConsent ? body?.whatsappOptInAt || (/* @__PURE__ */ new Date()).toISOString() : null;
+        nextWhatsappSource = body?.whatsappOptInSource || "profile";
+      }
+      const preservedUsername = String(base.username || meta.username || authUser.email?.split("@")[0] || "").trim();
+      const nextLanguage = body?.preferredLanguage || base.preferred_language || base.preferredLanguage || "te";
+      const nextAvatar = body?.avatar !== void 0 ? body.avatar : base.avatar || null;
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const updatePayload = {
+        id: authUserId,
+        full_name: nextName,
+        username: preservedUsername,
+        email: authUser.email || base.email || "",
+        mobile: nextMobile,
+        location: nextLocation,
+        delivery_address: nextDeliveryAddress,
+        addresses: nextAddresses,
+        whatsapp_number: nextWhatsappNumber,
+        whatsapp_consent: nextWhatsappConsent,
+        whatsapp_opt_in_at: nextWhatsappOptInAt,
+        whatsapp_opt_in_source: nextWhatsappSource,
+        preferred_language: nextLanguage,
+        avatar: nextAvatar,
+        role: "Customer",
+        // Strictly locked to Customer
+        updated_at: nowIso
+      };
+      let savedDb = false;
+      try {
+        const writer = isServiceRole && adminClient ? adminClient : userClient;
+        const { error: upsertErr } = await writer.from("customer_profiles").upsert([updatePayload], { onConflict: "id" });
+        if (!upsertErr) {
+          savedDb = true;
+        } else {
+          console.warn("[Customer Profile PUT notice]:", upsertErr.message);
+        }
+      } catch (err) {
+        console.warn("[Customer Profile PUT exception]:", err?.message);
+      }
+      try {
+        await userClient.auth.updateUser({
+          data: {
+            full_name: nextName,
+            mobile: nextMobile,
+            location: nextLocation,
+            delivery_address: nextDeliveryAddress,
+            addresses: nextAddresses,
+            whatsapp_number: nextWhatsappNumber,
+            whatsapp_consent: nextWhatsappConsent,
+            preferred_language: nextLanguage,
+            role: "Customer"
+          }
+        });
+      } catch {
+      }
+      upsertLocalCustomerProfileIndex({
+        id: authUserId,
+        fullName: nextName,
+        username: preservedUsername,
+        usernameLower: preservedUsername.toLowerCase(),
+        email: authUser.email || base.email || "",
+        mobile: nextMobile,
+        location: nextLocation,
+        deliveryAddress: nextDeliveryAddress,
+        addresses: nextAddresses,
+        whatsappNumber: nextWhatsappNumber || void 0,
+        whatsappOptIn: nextWhatsappConsent,
+        whatsappOptInAt: nextWhatsappOptInAt || void 0,
+        whatsappOptInSource: nextWhatsappSource || void 0,
+        preferredLanguage: nextLanguage,
+        avatar: nextAvatar || void 0,
+        role: "Customer"
+      });
+      if (nextWhatsappNumber) {
+        await saveCustomerWhatsAppConsent({
+          customerId: authUserId,
+          customerEmail: authUser.email || "",
+          customerPhone: nextMobile,
+          whatsappNumber: nextWhatsappNumber,
+          consentGranted: nextWhatsappConsent,
+          consentSource: "profile"
+        }).catch(() => {
+        });
+      }
+      return sendJsonResponse(res, 200, {
+        success: true,
+        savedToSupabaseTable: savedDb,
+        user: {
+          id: authUserId,
+          name: nextName,
+          username: preservedUsername,
+          email: authUser.email || base.email || "",
+          phone: nextMobile,
+          location: nextLocation,
+          deliveryAddress: nextDeliveryAddress,
+          addresses: nextAddresses,
+          avatar: nextAvatar || void 0,
+          preferredLanguage: nextLanguage,
+          role: "Customer",
+          isProfileComplete: true,
+          isEmailVerified: emailVerified,
+          emailVerifiedAt,
+          whatsappNumber: nextWhatsappNumber || void 0,
+          whatsappOptIn: nextWhatsappConsent,
+          whatsappOptInAt: nextWhatsappOptInAt || void 0,
+          whatsappOptInSource: nextWhatsappSource || void 0,
+          createdAt: base.created_at || base.createdAt || authUser.created_at || nowIso
+        },
+        message: "Profile updated successfully."
+      });
+    }
+    return sendJsonResponse(res, 405, { success: false, error: "Method not allowed." });
+  } catch (err) {
+    console.error("[Customer Profile API Error]:", err?.message || err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "Failed to process profile request. Please try again."
+    });
+  }
+}
+
+// api/auth/forgot-password.ts
+async function handler9(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
+  }
+  if (req.method !== "POST") {
+    return sendJsonResponse(res, 405, { success: false, error: "Method not allowed." });
+  }
+  try {
+    const body = await parseRequestBody(req);
+    const { identifier, email, redirectTo } = body || {};
+    const rawIdentifier = String(identifier || email || "").trim();
+    if (!rawIdentifier) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Please enter your registered Email Address or Username."
+      });
+    }
+    const clientIp = getClientIp(req);
+    const rateKey = `${clientIp}:${rawIdentifier.toLowerCase()}`;
+    const rateCheck = checkCustomerAuthRateLimit("forgot_password", rateKey, {
+      maxAttempts: 3,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3,
+      incrementOnCheck: true
+    });
+    if (!rateCheck.allowed) {
+      if (rateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(rateCheck.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: rateCheck.error || "Too many password reset requests. Please wait a few minutes and try again."
+      });
+    }
+    let resolvedEmail = "";
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (rawIdentifier.includes("@")) {
+      resolvedEmail = normalizeEmail(rawIdentifier);
+    } else {
+      const cleanUsername = rawIdentifier.toLowerCase();
+      if (adminClient && isServiceRole) {
+        try {
+          const { data } = await adminClient.from("customer_profiles").select("email").ilike("username", cleanUsername).maybeSingle();
+          if (data?.email) resolvedEmail = normalizeEmail(data.email);
+        } catch {
+        }
+        if (!resolvedEmail) {
+          try {
+            const { data } = await adminClient.from("app_settings").select("value").eq("key", "customer_usernames").maybeSingle();
+            const map = data?.value || {};
+            if (map[cleanUsername]) resolvedEmail = normalizeEmail(map[cleanUsername]);
+          } catch {
+          }
+        }
+      }
+      if (!resolvedEmail) {
+        const local = findLocalCustomerByUsername(cleanUsername);
+        if (local?.email) resolvedEmail = normalizeEmail(local.email);
+      }
+      if (!resolvedEmail) {
+        resolvedEmail = fallbackUsernamesRegistry.get(cleanUsername) || "";
+      }
+    }
+    if (resolvedEmail) {
+      const publicSupabase = getPublicSupabaseServerClient();
+      const targetRedirect = getAppRedirectOrigin(req, redirectTo);
+      const { error } = await publicSupabase.auth.resetPasswordForEmail(resolvedEmail, {
+        redirectTo: targetRedirect
+      });
+      if (error) {
+        const lowerErr = String(error.message || "").toLowerCase();
+        if (error.status === 429 || lowerErr.includes("rate limit")) {
+          return sendJsonResponse(res, 429, {
+            success: false,
+            error: "Email recovery rate limit reached. Please wait a few minutes before retrying."
+          });
+        }
+        if (lowerErr.includes("error sending")) {
+          return sendJsonResponse(res, 502, {
+            success: false,
+            error: "Supabase Auth could not send the recovery email. Please configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings."
+          });
+        }
+      }
+    }
+    return sendJsonResponse(res, 200, {
+      success: true,
+      message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+    });
+  } catch (err) {
+    console.error("[Forgot Password Error]:", err?.message || err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "Unable to process password reset right now. Please try again later."
+    });
+  }
+}
+
+// api/auth/resend-verification.ts
+async function handler10(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
+  }
+  if (req.method !== "POST") {
+    return sendJsonResponse(res, 405, { success: false, error: "Method not allowed." });
+  }
+  try {
+    const body = await parseRequestBody(req);
+    const { identifier, email, redirectTo } = body || {};
+    const rawIdentifier = String(email || identifier || "").trim();
+    if (!rawIdentifier) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Email address or Username is required."
+      });
+    }
+    const clientIp = getClientIp(req);
+    const rateCheck = checkCustomerAuthRateLimit("resend", `${clientIp}:${rawIdentifier.toLowerCase()}`, {
+      maxAttempts: 3,
+      windowMs: 10 * 60 * 1e3,
+      blockMs: 10 * 60 * 1e3,
+      incrementOnCheck: true
+    });
+    if (!rateCheck.allowed) {
+      if (rateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(rateCheck.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: rateCheck.error || "Please wait before requesting another verification email."
+      });
+    }
+    let resolvedEmail = "";
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (rawIdentifier.includes("@")) {
+      resolvedEmail = normalizeEmail(rawIdentifier);
+    } else {
+      const cleanUsername = rawIdentifier.toLowerCase();
+      if (adminClient && isServiceRole) {
+        try {
+          const { data } = await adminClient.from("customer_profiles").select("email").ilike("username", cleanUsername).maybeSingle();
+          if (data?.email) resolvedEmail = normalizeEmail(data.email);
+        } catch {
+        }
+      }
+      if (!resolvedEmail) {
+        const local = findLocalCustomerByUsername(cleanUsername);
+        if (local?.email) resolvedEmail = normalizeEmail(local.email);
+      }
+      if (!resolvedEmail) {
+        resolvedEmail = fallbackUsernamesRegistry.get(cleanUsername) || "";
+      }
+    }
+    if (resolvedEmail) {
+      const publicSupabase = getPublicSupabaseServerClient();
+      const targetRedirect = getAppRedirectOrigin(req, redirectTo);
+      const { error } = await publicSupabase.auth.resend({
+        type: "signup",
+        email: resolvedEmail,
+        options: { emailRedirectTo: targetRedirect }
+      });
+      if (error) {
+        if (error.status === 429 || String(error.message || "").toLowerCase().includes("rate limit")) {
+          return sendJsonResponse(res, 429, {
+            success: false,
+            error: "Too many verification email requests. Please wait a minute and check your spam folder."
+          });
+        }
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: error.message || "Unable to resend verification email."
+        });
+      }
+    }
+    return sendJsonResponse(res, 200, {
+      success: true,
+      message: "Verification email dispatched! Please check your inbox and spam folder."
+    });
+  } catch (err) {
+    console.error("[Resend Verification Error]:", err?.message || err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "Failed to resend verification email. Please try again."
+    });
+  }
+}
+
 // api/auth/reset-password.ts
-async function handler7(req, res) {
+async function handler11(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -2780,8 +6266,130 @@ async function handler7(req, res) {
   }
 }
 
+// api/auth/change-password.ts
+import { createClient as createSupabaseClient4 } from "@supabase/supabase-js";
+async function handler12(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
+  }
+  if (req.method !== "POST") {
+    return sendJsonResponse(res, 405, {
+      success: false,
+      error: "Method not allowed. Use POST."
+    });
+  }
+  try {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: "Authentication required. Please sign in again."
+      });
+    }
+    const publicSupabase = getPublicSupabaseServerClient();
+    const { data: userData, error: userErr } = await publicSupabase.auth.getUser(token);
+    if (userErr || !userData?.user?.id || !userData?.user?.email) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: "Your session has expired or is invalid. Please sign in again."
+      });
+    }
+    const authUser = userData.user;
+    const userEmail = String(authUser.email).trim().toLowerCase();
+    const clientIp = getClientIp(req);
+    const rateKey = `${authUser.id}:${clientIp}`;
+    const rateCheck = checkCustomerAuthRateLimit("change_password", rateKey, {
+      maxAttempts: 5,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3
+    });
+    if (!rateCheck.allowed) {
+      return sendJsonResponse(res, 429, {
+        success: false,
+        error: rateCheck.error || "Too many password change attempts. Please try again later.",
+        retryAfterSeconds: rateCheck.retryAfterSeconds
+      });
+    }
+    const body = await parseRequestBody(req);
+    const currentPassword = String(body?.currentPassword || "");
+    const newPassword = String(body?.newPassword || "");
+    const confirmPassword = String(body?.confirmPassword || "");
+    if (!currentPassword) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Current password is required."
+      });
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "New password must be at least 6 characters long."
+      });
+    }
+    if (confirmPassword !== newPassword) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "New password and confirmation do not match."
+      });
+    }
+    if (currentPassword === newPassword) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "New password must be different from your current password."
+      });
+    }
+    const supabaseUrl2 = getSupabaseUrl();
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+    const ephemeralClient = createSupabaseClient4(supabaseUrl2, anonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false
+      }
+    });
+    const { data: verifyData, error: verifyErr } = await ephemeralClient.auth.signInWithPassword({
+      email: userEmail,
+      password: currentPassword
+    });
+    if (verifyErr || !verifyData?.session || verifyData?.user?.id !== authUser.id) {
+      const failRes = recordCustomerAuthFailure("change_password", rateKey, { maxAttempts: 5 });
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: failRes.blocked ? "Too many incorrect password attempts. Please wait 15 minutes before trying again." : "Current password is incorrect."
+      });
+    }
+    const { error: updateErr } = await ephemeralClient.auth.updateUser({
+      password: newPassword
+    });
+    if (updateErr) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: updateErr.message || "Unable to update password. Please choose a stronger password."
+      });
+    }
+    const { data: latestSessionData } = await ephemeralClient.auth.getSession();
+    const freshSession = latestSessionData?.session || verifyData.session;
+    clearCustomerAuthRateLimit("change_password", rateKey);
+    return sendJsonResponse(res, 200, {
+      success: true,
+      message: "Password updated successfully.",
+      session: {
+        access_token: freshSession.access_token,
+        refresh_token: freshSession.refresh_token,
+        expires_at: freshSession.expires_at
+      }
+    });
+  } catch (err) {
+    console.error("[Change Password Exception]:", err?.message || err);
+    return sendJsonResponse(res, 500, {
+      success: false,
+      error: "Unable to change password right now. Please try again."
+    });
+  }
+}
+
 // api/auth/delete-account.ts
-async function handler8(req, res) {
+async function handler13(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -2795,11 +6403,17 @@ async function handler8(req, res) {
     }
     const token = authHeader.replace("Bearer ", "").trim();
     const verified = verifySignedSessionJwt(token);
+    let supabaseAuthUser = null;
     if (!verified.valid || !verified.payload) {
-      return sendJsonResponse(res, 401, {
-        success: false,
-        error: "Session has expired or is invalid. Please log in again."
-      });
+      const publicSupabase = getPublicSupabaseServerClient();
+      const { data: sbUserData } = await publicSupabase.auth.getUser(token);
+      if (!sbUserData?.user?.id) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Session has expired or is invalid. Please log in again."
+        });
+      }
+      supabaseAuthUser = sbUserData.user;
     }
     const body = await parseRequestBody(req);
     const { password } = body || {};
@@ -2807,6 +6421,29 @@ async function handler8(req, res) {
       return sendJsonResponse(res, 400, {
         success: false,
         error: "Your current account password is required to confirm account deletion."
+      });
+    }
+    if (supabaseAuthUser) {
+      const publicSupabase = getPublicSupabaseServerClient();
+      const { error: pwErr } = await publicSupabase.auth.signInWithPassword({
+        email: supabaseAuthUser.email,
+        password: String(password)
+      });
+      if (pwErr) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Incorrect password. Account deletion aborted for security."
+        });
+      }
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      if (adminClient && isServiceRole) {
+        await adminClient.from("customer_profiles").delete().eq("id", supabaseAuthUser.id);
+        await adminClient.auth.admin.deleteUser(supabaseAuthUser.id).catch(() => {
+        });
+      }
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: "Your customer account and profile data have been permanently deleted."
       });
     }
     const sessionEmail = normalizeEmail(verified.payload.email || "");
@@ -2889,7 +6526,7 @@ async function handler8(req, res) {
 }
 
 // api/auth/admin-check-phone.ts
-async function handler9(req, res) {
+async function handler14(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -2927,7 +6564,7 @@ async function handler9(req, res) {
 }
 
 // api/auth/admin-verify-pin.ts
-async function handler10(req, res) {
+async function handler15(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -2991,7 +6628,7 @@ async function handler10(req, res) {
 }
 
 // api/auth/admin-update-pin.ts
-async function handler11(req, res) {
+async function handler16(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -3075,11 +6712,12 @@ async function handler11(req, res) {
 }
 
 // api/auth/email-diagnostics.ts
-async function handler12(req, res) {
+init_email_service();
+async function handler17(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
-  const supabaseUrl = getSupabaseUrl();
+  const supabaseUrl2 = getSupabaseUrl();
   const rawAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "";
   const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER || "";
@@ -3147,7 +6785,7 @@ async function handler12(req, res) {
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
     environment: {
       supabase: {
-        url: supabaseUrl,
+        url: supabaseUrl2,
         anonKeyConfigured: Boolean(rawAnonKey),
         serviceRoleKeyConfigured: Boolean(serviceKey),
         authStatus: supabaseAuthStatus
@@ -3171,7 +6809,7 @@ async function handler12(req, res) {
 }
 
 // api/admin/verify.ts
-async function handler13(req, res) {
+async function handler18(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -3263,11 +6901,13 @@ async function handler13(req, res) {
 
 // api/verify-email.ts
 import nodemailer2 from "nodemailer";
-async function handler14(req, res) {
+init_email_service();
+async function handler19(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
   const smtpLogs = [];
+  let runtimeCustomPass = "";
   const addLog = (level, type, message, details) => {
     let cleanMessage = String(message || "");
     if (process.env.EMAIL_PASS) {
@@ -3275,6 +6915,9 @@ async function handler14(req, res) {
     }
     if (process.env.SMTP_PASS) {
       cleanMessage = cleanMessage.replace(new RegExp(process.env.SMTP_PASS.replace(/\s+/g, ""), "gi"), "[REDACTED_PASS]");
+    }
+    if (runtimeCustomPass) {
+      cleanMessage = cleanMessage.replace(new RegExp(runtimeCustomPass.replace(/\s+/g, ""), "gi"), "[REDACTED_PASS]");
     }
     const entry = {
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
@@ -3294,13 +6937,22 @@ async function handler14(req, res) {
   };
   try {
     addLog("info", "system", "Initiating /api/verify-email request inspection.");
-    const emailUser = (process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
-    const emailPass = (process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
-    const smtpHost = (process.env.SMTP_HOST || "smtp.gmail.com").trim();
-    const smtpPort = Number(process.env.SMTP_PORT) || (smtpHost.includes("gmail") ? 465 : 587);
-    const emailFrom = (process.env.EMAIL_FROM || emailUser || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+    const body = await parseRequestBody(req);
+    const query = req.query || {};
+    const currentCfg = loadSmtpConfig();
+    const emailUser = (body?.user || query?.user || currentCfg.user || process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
+    const emailPass = (body?.pass || query?.pass || currentCfg.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
+    const smtpHost = (body?.host || query?.host || currentCfg.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
+    const smtpPort = Number(body?.port || query?.port || currentCfg.port || process.env.SMTP_PORT) || (smtpHost.includes("gmail") ? 465 : 587);
+    const emailFrom = (body?.from || query?.from || currentCfg.from || process.env.EMAIL_FROM || emailUser || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+    if (emailPass) runtimeCustomPass = emailPass;
     const isSecure = smtpPort === 465;
+    if (body?.save && emailUser && emailPass) {
+      saveSmtpConfig({ user: emailUser, pass: emailPass, host: smtpHost, port: smtpPort, from: emailFrom });
+      addLog("info", "system", "Saved SMTP configuration persistently on server.");
+    }
     const isConfigured = Boolean(emailUser && emailPass);
+    const isOverridden = Boolean(body?.user || body?.pass || body?.host);
     const transportConfig = {
       host: smtpHost,
       port: smtpPort,
@@ -3309,23 +6961,24 @@ async function handler14(req, res) {
       authConfigured: isConfigured,
       userConfigured: Boolean(emailUser),
       passConfigured: Boolean(emailPass),
+      isOverride: isOverridden,
       maskedUser: emailUser ? emailUser.includes("@") ? `${emailUser[0]}***@${emailUser.split("@")[1]}` : `${emailUser.slice(0, 3)}***` : null,
       fromAddress: emailFrom
     };
     if (!isConfigured) {
       const missingVars = [];
-      if (!emailUser) missingVars.push("EMAIL_USER");
-      if (!emailPass) missingVars.push("EMAIL_PASS");
+      if (!emailUser) missingVars.push("EMAIL_USER / Username");
+      if (!emailPass) missingVars.push("EMAIL_PASS / Password");
       addLog("warn", "system", `SMTP credentials missing: ${missingVars.join(", ")}`);
       return sendJsonResponse(res, 200, {
         success: false,
         status: "unconfigured",
-        message: "Email provider credentials are not yet configured in environment variables.",
+        message: "Email provider credentials are not yet configured in environment variables or request.",
         details: {
           missingVariables: missingVars,
           requiredVariables: ["EMAIL_USER", "EMAIL_PASS", "SMTP_HOST (optional, defaults to smtp.gmail.com)", "SMTP_PORT (optional, defaults to 465)"],
           transport: transportConfig,
-          instructions: "To enable live email delivery, configure EMAIL_USER and EMAIL_PASS in your Vercel Project Settings or local .env file as documented in .env.example."
+          instructions: "To enable live email delivery, configure EMAIL_USER and EMAIL_PASS in your Vercel Project Settings or local environment variables as documented in .env.example, or specify test credentials directly in the admin tool."
         },
         logs: smtpLogs
       });
@@ -3403,9 +7056,7 @@ async function handler14(req, res) {
         logs: smtpLogs
       });
     }
-    const body = await parseRequestBody(req);
-    const query = req.query || {};
-    const requestedRecipient = body?.to || query?.to || query?.email || body?.email || "narendranath.kolamudi@gmail.com";
+    const requestedRecipient = body?.to || query?.to || query?.email || body?.email || "arjungorrepato@gmail.com";
     const recipient = String(requestedRecipient).trim();
     const shouldSendEmail = body?.send !== false && query?.send !== "false";
     let sendResult = null;
@@ -3565,298 +7216,239 @@ This confirms that customer registration and OTP verification emails will delive
   }
 }
 
-// src/lib/whatsapp.ts
-var inMemorySentOrderIds = /* @__PURE__ */ new Set();
-function normalizeWhatsAppPhoneNumber(phone) {
-  const digits = String(phone || "").replace(/\D/g, "");
-  if (digits.length === 10) {
-    return "91" + digits;
+// api/verify-smtp.ts
+import nodemailer3 from "nodemailer";
+init_email_service();
+async function handler20(req, res) {
+  if (req.method === "OPTIONS") {
+    return sendJsonResponse(res, 200, { ok: true });
   }
-  return digits;
-}
-function getWhatsAppConfigStatus() {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || "";
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-  const recipient = process.env.WHATSAPP_BUSINESS_RECIPIENT || process.env.ADMIN_PHONE || "9063692135";
-  const missing = [];
-  if (!token) missing.push("WHATSAPP_ACCESS_TOKEN");
-  if (!phoneId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
-  if (!recipient) missing.push("WHATSAPP_BUSINESS_RECIPIENT");
-  const maskPhone = (p) => {
-    const clean = p.replace(/\D/g, "");
-    if (clean.length <= 4) return "***";
-    return clean.slice(0, 2) + "\u2022\u2022\u2022\u2022" + clean.slice(-4);
-  };
-  const maskId = (id) => {
-    if (!id || id.length <= 4) return "Not configured";
-    return id.slice(0, 3) + "\u2022\u2022\u2022\u2022" + id.slice(-3);
-  };
-  return {
-    isConfigured: Boolean(token && phoneId && recipient),
-    hasAccessToken: Boolean(token),
-    hasPhoneNumberId: Boolean(phoneId),
-    hasBusinessRecipient: Boolean(recipient),
-    businessRecipientMasked: maskPhone(recipient),
-    phoneNumberIdMasked: maskId(phoneId),
-    missingVars: missing
-  };
-}
-function formatOrderDateTimeIST(dateString) {
-  try {
-    const d = dateString ? new Date(dateString) : /* @__PURE__ */ new Date();
-    return new Intl.DateTimeFormat("en-IN", {
-      timeZone: "Asia/Kolkata",
-      dateStyle: "medium",
-      timeStyle: "short",
-      hour12: true
-    }).format(d);
-  } catch {
-    return (/* @__PURE__ */ new Date()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  }
-}
-function buildStructuredOrderMessage(order) {
-  const orderId = String(order.id || "").replace(/^order_/, "");
-  const istTime = formatOrderDateTimeIST(order.date || order.created_at);
-  const customerName = order.customerName || order.customer_name || "Valued Customer";
-  const customerPhone = order.customerPhone || order.customer_phone || "N/A";
-  const items = Array.isArray(order.items) ? order.items : [];
-  const itemsList = items.map((it, idx) => {
-    const name = it.foodItem?.name || it.name || `Item ${idx + 1}`;
-    const qty = Number(it.quantity || 1);
-    const price = Number(it.foodItem?.price || it.price || 0);
-    const total = price * qty;
-    return `\u2022 ${qty}x ${name} \u2014 \u20B9${total}`;
-  }).join("\n") || "\u2022 Standard Menu Assortment";
-  let addressText = "Chirala Regional Delivery";
-  if (order.address) {
-    if (typeof order.address === "string") {
-      addressText = order.address;
-    } else if (typeof order.address === "object") {
-      const parts = [
-        order.address.houseNumber || order.address.flatNo,
-        order.address.streetName,
-        order.address.locality || order.address.area,
-        order.address.city || "Chirala"
-      ].filter(Boolean);
-      addressText = parts.length > 0 ? parts.join(", ") : order.address.formatted || "Chirala Delivery";
+  const logs = [];
+  const addLog = (level, message) => {
+    let cleanMessage = String(message || "");
+    if (process.env.EMAIL_PASS) {
+      cleanMessage = cleanMessage.replace(new RegExp(process.env.EMAIL_PASS.replace(/\s+/g, ""), "gi"), "[REDACTED]");
     }
-  }
-  const subtotal = Number(order.subtotal || 0);
-  const discount = Number(order.discount || 0);
-  const deliveryFee = Number(order.deliveryFee !== void 0 ? order.deliveryFee : order.delivery_fee || 0);
-  const packagingFee = Number(order.packagingFee !== void 0 ? order.packagingFee : order.packaging_fee || 0);
-  const tax = Number(order.tax || 0);
-  const tip = Number(order.tip || 0);
-  const finalAmount = Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount || 0);
-  const paymentMethod = String(order.paymentMethod || order.payment_method || "UPI").toUpperCase();
-  const paymentStatus = String(order.paymentStatus || order.payment_status || "pending").toUpperCase();
-  const isPaid = paymentStatus === "CONFIRMED" || paymentStatus === "SUCCESS";
-  const isCod = paymentMethod.includes("COD") || paymentMethod.includes("DELIVERY");
-  const paymentBadge = isPaid ? "\u2705 PAID (Confirmed)" : isCod ? "\u{1F4B5} COD (Pay on Delivery)" : "\u23F3 PAYMENT PENDING / AWAITING VERIFICATION";
-  let extraUpi = "";
-  if (order.upiDetails?.customerUtr || order.paymentDetails?.customerUtr) {
-    extraUpi = `
-\u2022 *Customer UTR:* ${order.upiDetails?.customerUtr || order.paymentDetails?.customerUtr}`;
-  }
-  let instructionsText = "";
-  if (order.instructions && String(order.instructions).trim()) {
-    instructionsText = `
-
-\u{1F4DD} *Kitchen Instructions:*
-_${String(order.instructions).trim()}_`;
-  }
-  return `\u{1F37D}\uFE0F *NUVVO \u2014 NEW ORDER ALERT* \u{1F37D}\uFE0F
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-*Order ID:* #${orderId}
-*Date & Time:* ${istTime} (IST)
-*Order Status:* ${(order.status || "Accepted").toUpperCase()}
-
-\u{1F464} *CUSTOMER DETAILS:*
-\u2022 *Name:* ${customerName}
-\u2022 *Phone:* ${customerPhone}
-\u2022 *Drop Location:* ${addressText}
-
-\u{1F4E6} *ORDER ITEMS (${items.length}):*
-${itemsList}
-
-\u{1F4B5} *BILL SUMMARY:*
-\u2022 Subtotal: \u20B9${subtotal}${discount > 0 ? `
-\u2022 Discount: -\u20B9${discount}` : ""}${deliveryFee > 0 ? `
-\u2022 Delivery Fee: \u20B9${deliveryFee}` : "\n\u2022 Delivery: FREE"}${packagingFee > 0 ? `
-\u2022 Packaging: \u20B9${packagingFee}` : ""}${tax > 0 ? `
-\u2022 GST / Tax: \u20B9${tax}` : ""}${tip > 0 ? `
-\u2022 Delivery Tip: \u20B9${tip}` : ""}
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-*FINAL TOTAL: \u20B9${finalAmount}*
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-\u{1F4B3} *PAYMENT INFORMATION:*
-\u2022 *Method:* ${paymentMethod}
-\u2022 *Status:* ${paymentBadge}${extraUpi}${instructionsText}
-
-_Powered by Nuvvo Real-time Food Delivery Platform_`;
-}
-async function logOrderNotification(record) {
-  try {
-    const { client } = getAdminSupabaseServerClient();
-    if (!client) return;
-    const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    await client.from("order_notifications").insert([{
-      id: notifId,
-      order_id: String(record.orderId),
-      channel: "whatsapp",
-      recipient: String(record.recipient),
-      status: record.status,
-      message_id: record.messageId || null,
-      payload: record.payload || null,
-      response_payload: record.response || null,
-      error_message: record.errorMessage || null,
-      created_at: (/* @__PURE__ */ new Date()).toISOString()
-    }]);
-  } catch (err) {
-    console.warn("[WhatsApp Log] Notice logging notification to Supabase:", err?.message);
-  }
-}
-async function hasOrderNotificationBeenSent(orderId) {
-  if (inMemorySentOrderIds.has(String(orderId))) {
-    return true;
-  }
-  try {
-    const { client } = getAdminSupabaseServerClient();
-    if (!client) return false;
-    const { data, error } = await client.from("order_notifications").select("id, status").eq("order_id", String(orderId)).eq("channel", "whatsapp").eq("status", "sent").limit(1);
-    if (!error && Array.isArray(data) && data.length > 0) {
-      inMemorySentOrderIds.add(String(orderId));
-      return true;
+    if (process.env.SMTP_PASS) {
+      cleanMessage = cleanMessage.replace(new RegExp(process.env.SMTP_PASS.replace(/\s+/g, ""), "gi"), "[REDACTED]");
     }
-  } catch (err) {
-    console.warn("[WhatsApp] Notice checking notification history:", err?.message);
-  }
-  return false;
-}
-async function sendOrderWhatsAppMessage(order, customRecipient) {
-  const orderId = String(order.id || `ord_${Date.now()}`);
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const alreadySent = await hasOrderNotificationBeenSent(orderId);
-  if (alreadySent) {
-    console.log(`[WhatsApp] Notification for order ${orderId} has already been sent. Skipping duplicate.`);
-    return {
-      success: true,
-      status: "duplicate_skipped",
-      orderId,
-      timestamp: now
-    };
-  }
-  const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_WHATSAPP_TOKEN || "";
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-  const rawRecipient = customRecipient || process.env.WHATSAPP_BUSINESS_RECIPIENT || process.env.ADMIN_PHONE || "9063692135";
-  const cleanRecipient = normalizeWhatsAppPhoneNumber(rawRecipient);
-  if (!token || !phoneId) {
-    const missing = [];
-    if (!token) missing.push("WHATSAPP_ACCESS_TOKEN");
-    if (!phoneId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
-    const warning = `WhatsApp Business Cloud API is not configured. Missing environment variable(s): ${missing.join(", ")}. Order #${orderId} was recorded successfully without WhatsApp alert.`;
-    console.warn(`[WhatsApp Notice] ${warning}`);
-    await logOrderNotification({
-      orderId,
-      recipient: cleanRecipient || "Not Configured",
-      status: "not_configured",
-      errorMessage: warning
+    logs.push({
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      level,
+      message: cleanMessage
     });
-    return {
-      success: false,
-      status: "not_configured",
-      orderId,
-      recipient: cleanRecipient,
-      error: warning,
-      timestamp: now
-    };
-  }
-  const messageBody = buildStructuredOrderMessage(order);
-  const requestPayload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to: cleanRecipient,
-    type: "text",
-    text: {
-      preview_url: false,
-      body: messageBody
-    }
   };
   try {
-    const url = `https://graph.facebook.com/v21.0/${phoneId}/messages`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(requestPayload)
-    });
-    const responseJson = await response.json();
-    if (response.ok && responseJson?.messages?.[0]?.id) {
-      const wamid = responseJson.messages[0].id;
-      console.log(`[WhatsApp Success] Order #${orderId} notification sent to ${cleanRecipient}. WAMID: ${wamid}`);
-      inMemorySentOrderIds.add(orderId);
-      await logOrderNotification({
-        orderId,
-        recipient: cleanRecipient,
-        status: "sent",
-        messageId: wamid,
-        payload: { to: cleanRecipient, length: messageBody.length },
-        response: responseJson
-      });
-      return {
-        success: true,
-        status: "sent",
-        messageId: wamid,
-        orderId,
-        recipient: cleanRecipient,
-        timestamp: (/* @__PURE__ */ new Date()).toISOString()
-      };
-    } else {
-      const errDetail = responseJson?.error?.message || responseJson?.message || `HTTP ${response.status} ${response.statusText}`;
-      const fullError = `WhatsApp Cloud API error: ${errDetail}`;
-      console.error(`[WhatsApp Error] Failed to send order #${orderId}:`, fullError);
-      await logOrderNotification({
-        orderId,
-        recipient: cleanRecipient,
-        status: "failed",
-        payload: { to: cleanRecipient },
-        response: responseJson,
-        errorMessage: fullError
-      });
-      return {
+    addLog("info", "Starting SMTP verification request on /api/verify-smtp.");
+    const body = await parseRequestBody(req);
+    const query = req.query || {};
+    const currentCfg = loadSmtpConfig();
+    const emailUser = (body?.user || query?.user || currentCfg.user || process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
+    const emailPass = (body?.pass || query?.pass || currentCfg.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
+    const smtpHost = (body?.host || query?.host || currentCfg.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
+    const smtpPort = Number(body?.port || query?.port || currentCfg.port || process.env.SMTP_PORT) || (smtpHost.includes("gmail") ? 465 : 587);
+    const emailFrom = (body?.from || query?.from || currentCfg.from || process.env.EMAIL_FROM || emailUser || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+    const isSecure = smtpPort === 465;
+    if (body?.save && emailUser && emailPass) {
+      saveSmtpConfig({ user: emailUser, pass: emailPass, host: smtpHost, port: smtpPort, from: emailFrom });
+      addLog("info", "Saved SMTP configuration persistently on server.");
+    }
+    const recipient = String(body?.to || query?.to || query?.email || body?.email || "arjungorrepato@gmail.com").trim();
+    const shouldSendEmail = body?.send !== false && query?.send !== "false";
+    const transportConfig = {
+      host: smtpHost,
+      port: smtpPort,
+      secure: isSecure,
+      configured: Boolean(emailUser && emailPass),
+      maskedUser: emailUser ? emailUser.includes("@") ? `${emailUser[0]}***@${emailUser.split("@")[1]}` : `${emailUser.slice(0, 3)}***` : null,
+      fromAddress: emailFrom
+    };
+    if (!emailUser || !emailPass) {
+      addLog("warn", "SMTP credentials missing in environment variables.");
+      return sendJsonResponse(res, 200, {
         success: false,
-        status: "failed",
-        orderId,
-        recipient: cleanRecipient,
-        error: fullError,
-        timestamp: (/* @__PURE__ */ new Date()).toISOString()
-      };
+        status: "unconfigured",
+        message: "SMTP credentials are not yet configured on the server.",
+        details: {
+          missingVariables: [
+            ...!emailUser ? ["EMAIL_USER"] : [],
+            ...!emailPass ? ["EMAIL_PASS"] : []
+          ],
+          requiredVariables: ["EMAIL_USER", "EMAIL_PASS", "SMTP_HOST", "SMTP_PORT"],
+          transport: transportConfig,
+          instructions: "Please configure EMAIL_USER and EMAIL_PASS in your Vercel Project Settings or local .env file."
+        },
+        logs
+      });
     }
-  } catch (err) {
-    const errorMsg = `Network or unexpected exception dispatching WhatsApp alert: ${err?.message || err}`;
-    console.error(`[WhatsApp Exception] Order #${orderId}:`, errorMsg);
-    await logOrderNotification({
-      orderId,
-      recipient: cleanRecipient,
-      status: "failed",
-      errorMessage: errorMsg
+    addLog("info", `Initializing Nodemailer transport for ${smtpHost}:${smtpPort} (secure=${isSecure}).`);
+    const cleanPass = emailPass.replace(/\s+/g, "");
+    const transporter = nodemailer3.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: isSecure,
+      auth: {
+        user: emailUser,
+        pass: cleanPass
+      },
+      tls: {
+        rejectUnauthorized: false
+      },
+      connectionTimeout: 15e3,
+      greetingTimeout: 15e3,
+      socketTimeout: 15e3
     });
-    return {
+    addLog("info", "Executing transporter.verify() connection handshake...");
+    try {
+      await transporter.verify();
+      addLog("info", `SMTP handshake and authentication succeeded with ${smtpHost}.`);
+    } catch (verifyError) {
+      addLog("error", `SMTP handshake failed: ${verifyError?.message || verifyError}`);
+      return sendJsonResponse(res, 502, {
+        success: false,
+        status: "connection_failed",
+        error: `SMTP connection failed: ${verifyError?.message || verifyError}`,
+        details: {
+          errorCode: verifyError?.code || "EAUTH",
+          command: verifyError?.command || null,
+          responseCode: verifyError?.responseCode || null,
+          smtpResponse: verifyError?.response || null,
+          transport: transportConfig,
+          recommendation: smtpHost.includes("gmail") ? "For Gmail, ensure 2-Step Verification is active and you are using a 16-character App Password (not your personal Google account password)." : "Please verify SMTP host, port, username, and password credentials."
+        },
+        logs
+      });
+    }
+    let sendResult = null;
+    if (shouldSendEmail && recipient) {
+      addLog("info", `Transmitting test email to ${recipient}...`);
+      const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+      const mailOptions = {
+        from: emailFrom,
+        to: recipient,
+        subject: `[Nuvvo] SMTP Test Email - Verification Successful (${(/* @__PURE__ */ new Date()).toLocaleTimeString()})`,
+        text: `Nuvvo SMTP Service Verification
+
+Your SMTP email service is functioning properly!
+
+Details:
+- Host: ${smtpHost}
+- Port: ${smtpPort}
+- Sender: ${emailFrom}
+- Recipient: ${recipient}
+- Timestamp: ${timestamp}
+
+Customer OTP registration emails and password reset verification codes will deliver reliably.`,
+        html: `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Nuvvo SMTP Test Email</title>
+          </head>
+          <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" style="padding: 30px 15px;">
+              <tr>
+                <td align="center">
+                  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 520px; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                    <tr>
+                      <td align="center" style="background: linear-gradient(135deg, #4f46e5, #6366f1); padding: 28px 20px; color: #ffffff;">
+                        <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">NUVVO</h1>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.95;">SMTP Verification Test</p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 32px 28px;">
+                        <div style="display: inline-block; background-color: #e0e7ff; color: #4338ca; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 9999px; margin-bottom: 16px;">
+                          \u2713 SMTP CONNECTIVITY VERIFIED
+                        </div>
+                        <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Test Email Delivery Succeeded</h2>
+                        <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.6;">
+                          This test email confirms that your Nodemailer transport is connected, authorized, and delivering emails through your configured SMTP server.
+                        </p>
+                        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px; margin: 20px 0;">
+                          <h3 style="margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b;">Verification Details</h3>
+                          <table width="100%" style="font-size: 13px; color: #334155; line-height: 1.8;">
+                            <tr><td style="font-weight: 600; width: 110px;">SMTP Host:</td><td style="font-family: monospace;">${smtpHost}:${smtpPort}</td></tr>
+                            <tr><td style="font-weight: 600;">Security:</td><td>${isSecure ? "SSL/TLS (Port 465)" : "STARTTLS (Port 587)"}</td></tr>
+                            <tr><td style="font-weight: 600;">Sender:</td><td style="font-family: monospace;">${emailFrom}</td></tr>
+                            <tr><td style="font-weight: 600;">Recipient:</td><td style="font-family: monospace;">${recipient}</td></tr>
+                            <tr><td style="font-weight: 600;">Timestamp:</td><td>${timestamp}</td></tr>
+                          </table>
+                        </div>
+                        <p style="margin: 0; color: #64748b; font-size: 12px; line-height: 1.5;">
+                          Your application is ready to send live customer registration OTPs and password reset verification codes.
+                        </p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background-color: #f1f5f9; padding: 16px 20px; text-align: center; border-top: 1px solid #e2e8f0;">
+                        <p style="margin: 0; color: #64748b; font-size: 11px;">
+                          &copy; ${(/* @__PURE__ */ new Date()).getFullYear()} Nuvvo Food Delivery. System Health & Diagnostics.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        `
+      };
+      try {
+        const info = await transporter.sendMail(mailOptions);
+        addLog("info", `Test email message accepted by SMTP server. Message ID: ${info.messageId}`);
+        sendResult = {
+          dispatched: true,
+          messageId: info.messageId,
+          recipient,
+          accepted: info.accepted || [recipient],
+          rejected: info.rejected || [],
+          response: info.response || "250 OK"
+        };
+      } catch (sendError) {
+        addLog("error", `Failed to send email message: ${sendError?.message || sendError}`);
+        return sendJsonResponse(res, 502, {
+          success: false,
+          status: "send_failed",
+          error: `SMTP connection established, but email dispatch failed: ${sendError?.message || sendError}`,
+          details: {
+            errorMessage: sendError?.message || String(sendError),
+            errorCode: sendError?.code || "SEND_FAILED",
+            command: sendError?.command || null,
+            responseCode: sendError?.responseCode || null,
+            smtpResponse: sendError?.response || null,
+            recipient,
+            transport: transportConfig
+          },
+          logs
+        });
+      }
+    }
+    addLog("info", "SMTP verification completed successfully.");
+    return sendJsonResponse(res, 200, {
+      success: true,
+      status: "verified",
+      message: sendResult?.dispatched ? `SMTP connection verified and test email sent successfully to ${recipient}.` : "SMTP connection verified successfully.",
+      transport: transportConfig,
+      delivery: sendResult,
+      logs
+    });
+  } catch (err) {
+    addLog("error", `Unhandled error during SMTP verification: ${err?.message || err}`);
+    return sendJsonResponse(res, 500, {
       success: false,
-      status: "failed",
-      orderId,
-      recipient: cleanRecipient,
-      error: errorMsg,
-      timestamp: (/* @__PURE__ */ new Date()).toISOString()
-    };
+      status: "server_error",
+      error: `An unexpected server error occurred: ${err?.message || err}`,
+      logs
+    });
   }
 }
-var sendOrderConfirmationWhatsApp = sendOrderWhatsAppMessage;
 
 // src/utils/phonepe.ts
-import crypto5 from "crypto";
+import crypto6 from "crypto";
 var PHONEPE_HOSTS = {
   SANDBOX: "https://api-preprod.phonepe.com/apis/pg-sandbox",
   PRODUCTION: "https://api.phonepe.com/apis/hermes"
@@ -3897,7 +7489,7 @@ function getPhonePeConfigStatus() {
 }
 function generatePhonePeChecksum(dataString, saltKey, saltIndex) {
   const stringToHash = dataString + saltKey;
-  const sha256 = crypto5.createHash("sha256").update(stringToHash, "utf8").digest("hex");
+  const sha256 = crypto6.createHash("sha256").update(stringToHash, "utf8").digest("hex");
   return `${sha256}###${saltIndex}`;
 }
 async function createPhonePePaymentRequest(orderId, amountInRupees, customerPhone, customerId, appBaseUrl) {
@@ -4080,7 +7672,7 @@ function verifyPhonePeCallbackChecksum(base64Response, receivedXVerifyHeader) {
   );
   const receivedBuf = Buffer.from(receivedXVerifyHeader);
   const expectedBuf = Buffer.from(expectedChecksum);
-  if (receivedBuf.length !== expectedBuf.length || !crypto5.timingSafeEqual(receivedBuf, expectedBuf)) {
+  if (receivedBuf.length !== expectedBuf.length || !crypto6.timingSafeEqual(receivedBuf, expectedBuf)) {
     return { isValid: false, error: "Checksum mismatch in X-VERIFY header." };
   }
   try {
@@ -4090,6 +7682,230 @@ function verifyPhonePeCallbackChecksum(base64Response, receivedXVerifyHeader) {
   } catch (parseErr) {
     return { isValid: false, error: `Invalid Base64 JSON payload: ${parseErr?.message}` };
   }
+}
+
+// src/middleware/apiMiddleware.ts
+var FIVE_MINUTE_CACHE_TTL_MS = 5 * 60 * 1e3;
+var getResponseCache = /* @__PURE__ */ new Map();
+var totalRequestsCount = 0;
+var totalErrorsCount = 0;
+var totalCacheHitsCount = 0;
+var totalDurationMs = 0;
+var recentApiLogs = [];
+var MAX_IN_MEMORY_LOGS = 200;
+var pendingSupabaseLogs = [];
+var BATCH_FLUSH_INTERVAL_MS = 3e4;
+var MAX_BATCH_SIZE = 25;
+var supabaseLogsPausedUntil = 0;
+var isFlushingLogs = false;
+var NON_CACHEABLE_PREFIXES = [
+  "/api/catalog/stream",
+  "/api/catalog/events",
+  "/api/catalog/live",
+  "/api/health",
+  "/api/admin/api-logs",
+  "/api/admin/diagnostics",
+  "/api/payment/phonepe/verify",
+  "/api/payment/phonepe/callback"
+];
+var CACHEABLE_GET_PREFIXES = [
+  "/api/dishes",
+  "/api/food-items",
+  "/api/restaurants",
+  "/api/hotels",
+  "/api/settings",
+  "/api/payment/phonepe/status"
+];
+function isCacheableGetRequest(req) {
+  if (req.method.toUpperCase() !== "GET") return false;
+  const path5 = req.path || req.originalUrl.split("?")[0];
+  if (req.query?.force === "true" || req.query?.refresh === "true" || req.query?.nocache === "true") {
+    return false;
+  }
+  for (const excluded of NON_CACHEABLE_PREFIXES) {
+    if (path5.startsWith(excluded)) return false;
+  }
+  for (const prefix of CACHEABLE_GET_PREFIXES) {
+    if (path5.startsWith(prefix)) return true;
+  }
+  return false;
+}
+function invalidateServerGetCache(mutatedPath) {
+  if (!mutatedPath) {
+    getResponseCache.clear();
+    return;
+  }
+  if (mutatedPath.includes("dish") || mutatedPath.includes("food")) {
+    for (const key of getResponseCache.keys()) {
+      if (key.includes("/api/dishes") || key.includes("/api/food-items")) {
+        getResponseCache.delete(key);
+      }
+    }
+  } else if (mutatedPath.includes("restaurant") || mutatedPath.includes("hotel")) {
+    for (const key of getResponseCache.keys()) {
+      if (key.includes("/api/restaurants") || key.includes("/api/hotels")) {
+        getResponseCache.delete(key);
+      }
+    }
+  } else if (mutatedPath.includes("order") || mutatedPath.includes("payment")) {
+    for (const key of getResponseCache.keys()) {
+      if (key.includes("/api/orders")) {
+        getResponseCache.delete(key);
+      }
+    }
+  } else if (mutatedPath.includes("setting")) {
+    for (const key of getResponseCache.keys()) {
+      if (key.includes("/api/settings")) {
+        getResponseCache.delete(key);
+      }
+    }
+  } else {
+    getResponseCache.clear();
+  }
+}
+async function flushApiLogsToSupabase() {
+  if (isFlushingLogs || pendingSupabaseLogs.length === 0) return;
+  if (Date.now() < supabaseLogsPausedUntil) {
+    pendingSupabaseLogs.length = 0;
+    return;
+  }
+  isFlushingLogs = true;
+  const batch = pendingSupabaseLogs.splice(0, MAX_BATCH_SIZE);
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (!client) return;
+    const { error } = await client.from("api_logs").insert(batch);
+    if (error) {
+      if (error.code === "PGRST205" || error.code === "42P01" || error.code === "42501" || String(error.message || "").includes("api_logs")) {
+        supabaseLogsPausedUntil = Date.now() + 10 * 60 * 1e3;
+      }
+    }
+  } catch {
+    supabaseLogsPausedUntil = Date.now() + 5 * 60 * 1e3;
+  } finally {
+    isFlushingLogs = false;
+  }
+}
+var flushInterval = setInterval(() => {
+  flushApiLogsToSupabase().catch(() => {
+  });
+}, BATCH_FLUSH_INTERVAL_MS);
+if (typeof flushInterval.unref === "function") {
+  flushInterval.unref();
+}
+function recordApiLog(entry) {
+  totalRequestsCount += 1;
+  if (entry.is_error) {
+    totalErrorsCount += 1;
+  }
+  if (entry.cache_hit) {
+    totalCacheHitsCount += 1;
+  }
+  totalDurationMs += entry.duration_ms;
+  const currentErrorRate = totalRequestsCount > 0 ? Number((totalErrorsCount / totalRequestsCount * 100).toFixed(2)) : 0;
+  const fullRecord = {
+    ...entry,
+    error_rate: currentErrorRate,
+    created_at: entry.created_at || (/* @__PURE__ */ new Date()).toISOString()
+  };
+  recentApiLogs.unshift(fullRecord);
+  if (recentApiLogs.length > MAX_IN_MEMORY_LOGS) {
+    recentApiLogs.pop();
+  }
+  if (Date.now() >= supabaseLogsPausedUntil) {
+    pendingSupabaseLogs.push(fullRecord);
+    if (pendingSupabaseLogs.length >= MAX_BATCH_SIZE) {
+      flushApiLogsToSupabase().catch(() => {
+      });
+    }
+  }
+}
+function getApiTelemetrySummary() {
+  const errorRate = totalRequestsCount > 0 ? Number((totalErrorsCount / totalRequestsCount * 100).toFixed(2)) : 0;
+  const avgResponseTimeMs = totalRequestsCount > 0 ? Number((totalDurationMs / totalRequestsCount).toFixed(2)) : 0;
+  const cacheHitRate = totalRequestsCount > 0 ? Number((totalCacheHitsCount / totalRequestsCount * 100).toFixed(2)) : 0;
+  return {
+    totalRequests: totalRequestsCount,
+    totalErrors: totalErrorsCount,
+    errorRatePercent: errorRate,
+    avgResponseTimeMs,
+    totalCacheHits: totalCacheHitsCount,
+    cacheHitRatePercent: cacheHitRate,
+    cachedEndpointsCount: getResponseCache.size,
+    cacheTtlMs: FIVE_MINUTE_CACHE_TTL_MS,
+    recentLogs: recentApiLogs.slice(0, 50)
+  };
+}
+function apiInterceptorMiddleware(req, res, next) {
+  const url = req.originalUrl || req.url || "";
+  if (!url.startsWith("/api")) {
+    return next();
+  }
+  const pathOnly = (req.path || url.split("?")[0]).replace(/\/+$/, "") || "/api";
+  for (const streamPrefix of ["/api/catalog/stream", "/api/catalog/events", "/api/catalog/live"]) {
+    if (pathOnly.startsWith(streamPrefix)) {
+      return next();
+    }
+  }
+  const startTime = Date.now();
+  const method = req.method.toUpperCase();
+  const cacheKey = `${method}:${url}`;
+  if (isCacheableGetRequest(req)) {
+    const cached = getResponseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < FIVE_MINUTE_CACHE_TTL_MS) {
+      const durationMs = Date.now() - startTime;
+      res.setHeader("X-Cache", "HIT");
+      res.setHeader("X-Cache-Age-Sec", String(Math.floor((Date.now() - cached.timestamp) / 1e3)));
+      if (!pathOnly.startsWith("/api/admin/api-logs")) {
+        recordApiLog({
+          method,
+          endpoint: pathOnly,
+          status_code: cached.statusCode,
+          duration_ms: durationMs,
+          is_error: false,
+          cache_hit: true,
+          client_ip: req.ip || null,
+          user_agent: String(req.headers["user-agent"] || "").slice(0, 120) || null
+        });
+      }
+      return res.status(cached.statusCode).json(cached.body);
+    }
+  }
+  const originalJson = res.json.bind(res);
+  let capturedBody = void 0;
+  res.json = function(body) {
+    capturedBody = body;
+    if (isCacheableGetRequest(req) && res.statusCode >= 200 && res.statusCode < 300) {
+      getResponseCache.set(cacheKey, {
+        statusCode: res.statusCode,
+        body,
+        timestamp: Date.now()
+      });
+      res.setHeader("X-Cache", "MISS");
+    } else if (method !== "GET" && method !== "OPTIONS" && res.statusCode >= 200 && res.statusCode < 400) {
+      invalidateServerGetCache(pathOnly);
+    }
+    return originalJson(body);
+  };
+  res.on("finish", () => {
+    if (pathOnly.startsWith("/api/admin/api-logs")) return;
+    const durationMs = Date.now() - startTime;
+    const statusCode = res.statusCode || 200;
+    const isError = statusCode >= 400;
+    const errorMsg = isError && capturedBody && typeof capturedBody === "object" ? String(capturedBody.error || capturedBody.message || `HTTP ${statusCode}`) : isError ? `HTTP ${statusCode}` : null;
+    recordApiLog({
+      method,
+      endpoint: pathOnly,
+      status_code: statusCode,
+      duration_ms: durationMs,
+      is_error: isError,
+      cache_hit: false,
+      error_message: errorMsg,
+      client_ip: req.ip || null,
+      user_agent: String(req.headers["user-agent"] || "").slice(0, 120) || null
+    });
+  });
+  next();
 }
 
 // server.ts
@@ -4106,12 +7922,12 @@ var SESSION_SECRET2 = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_
 if (!process.env.SESSION_SECRET && (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production")) {
   console.warn("[SECURITY NOTICE] SESSION_SECRET is not explicitly set in environment variables. For maximum cryptographic security, set SESSION_SECRET in your Vercel Project Settings.");
 }
-var SESSIONS_FILE = path.join(process.cwd(), ".server_sessions.json");
+var SESSIONS_FILE = path4.join(process.cwd(), ".server_sessions.json");
 function loadSessions() {
   const map = /* @__PURE__ */ new Map();
   try {
-    if (!process.env.VERCEL && fs.existsSync(SESSIONS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"));
+    if (!process.env.VERCEL && fs4.existsSync(SESSIONS_FILE)) {
+      const data = JSON.parse(fs4.readFileSync(SESSIONS_FILE, "utf8"));
       for (const [k, v] of Object.entries(data)) {
         map.set(k, v);
       }
@@ -4127,18 +7943,18 @@ function persistSessions(map) {
     for (const [k, v] of map.entries()) {
       obj[k] = v;
     }
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj), "utf8");
+    fs4.writeFileSync(SESSIONS_FILE, JSON.stringify(obj), "utf8");
   } catch {
   }
 }
 var serverSessions = loadSessions();
-var DISHES_FILE = path.join(process.cwd(), ".server_dishes.json");
-var DELETED_DISHES_FILE = path.join(process.cwd(), ".server_deleted_dishes.json");
+var DISHES_FILE = path4.join(process.cwd(), ".server_dishes.json");
+var DELETED_DISHES_FILE = path4.join(process.cwd(), ".server_deleted_dishes.json");
 function loadServerDeletedDishes() {
   const set = /* @__PURE__ */ new Set();
   try {
-    if (fs.existsSync(DELETED_DISHES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DELETED_DISHES_FILE, "utf8"));
+    if (fs4.existsSync(DELETED_DISHES_FILE)) {
+      const data = JSON.parse(fs4.readFileSync(DELETED_DISHES_FILE, "utf8"));
       if (Array.isArray(data)) {
         data.forEach((id) => set.add(String(id)));
       }
@@ -4150,7 +7966,7 @@ function loadServerDeletedDishes() {
 function persistServerDeletedDishes(set) {
   try {
     if (process.env.VERCEL) return;
-    fs.writeFileSync(DELETED_DISHES_FILE, JSON.stringify(Array.from(set)), "utf8");
+    fs4.writeFileSync(DELETED_DISHES_FILE, JSON.stringify(Array.from(set)), "utf8");
   } catch {
   }
 }
@@ -4158,8 +7974,8 @@ var serverDeletedDishes = loadServerDeletedDishes();
 function loadServerDishes() {
   const map = /* @__PURE__ */ new Map();
   try {
-    if (fs.existsSync(DISHES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DISHES_FILE, "utf8"));
+    if (fs4.existsSync(DISHES_FILE)) {
+      const data = JSON.parse(fs4.readFileSync(DISHES_FILE, "utf8"));
       if (Array.isArray(data)) {
         for (const item of data) {
           if (item && item.id && !serverDeletedDishes.has(String(item.id))) {
@@ -4183,7 +7999,7 @@ function loadServerDishes() {
     }
     try {
       if (!process.env.VERCEL) {
-        fs.writeFileSync(DISHES_FILE, JSON.stringify(Array.from(map.values()), null, 2), "utf8");
+        fs4.writeFileSync(DISHES_FILE, JSON.stringify(Array.from(map.values()), null, 2), "utf8");
       }
     } catch {
     }
@@ -4194,17 +8010,17 @@ function persistServerDishes(map) {
   try {
     if (process.env.VERCEL) return;
     const arr = Array.from(map.values());
-    fs.writeFileSync(DISHES_FILE, JSON.stringify(arr, null, 2), "utf8");
+    fs4.writeFileSync(DISHES_FILE, JSON.stringify(arr, null, 2), "utf8");
   } catch {
   }
 }
 var serverDishes = loadServerDishes();
-var ORDERS_FILE = path.join(process.cwd(), ".server_orders.json");
+var ORDERS_FILE = path4.join(process.cwd(), ".server_orders.json");
 function loadServerOrders() {
   const map = /* @__PURE__ */ new Map();
   try {
-    if (fs.existsSync(ORDERS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf8"));
+    if (fs4.existsSync(ORDERS_FILE)) {
+      const data = JSON.parse(fs4.readFileSync(ORDERS_FILE, "utf8"));
       if (Array.isArray(data)) {
         for (const item of data) {
           if (item && item.id) {
@@ -4221,7 +8037,7 @@ function persistServerOrders(map) {
   try {
     if (process.env.VERCEL) return;
     const arr = Array.from(map.values());
-    fs.writeFileSync(ORDERS_FILE, JSON.stringify(arr, null, 2), "utf8");
+    fs4.writeFileSync(ORDERS_FILE, JSON.stringify(arr, null, 2), "utf8");
   } catch {
   }
 }
@@ -4235,7 +8051,7 @@ function createSignedSessionToken(phone, role) {
     // 30 days validity
   };
   const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signature = crypto6.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
+  const signature = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
   const token = `nuvvo_jwt_${payloadStr}.${signature}`;
   serverSessions.set(token, { phone, role, createdAt: payload.createdAt });
   persistSessions(serverSessions);
@@ -4250,8 +8066,8 @@ function verifySignedSessionToken(token) {
       if (dotIndex === -1) return { valid: false };
       const payloadStr = raw.substring(0, dotIndex);
       const signature = raw.substring(dotIndex + 1);
-      const expectedSig = crypto6.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
-      if (signature.length !== expectedSig.length || !crypto6.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+      const expectedSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
+      if (signature.length !== expectedSig.length || !crypto7.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
         return { valid: false };
       }
       const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
@@ -4303,28 +8119,26 @@ var INITIAL_HOTELS = [
 ];
 var serverRestaurants = [...RESTAURANTS];
 var serverHotels = [...INITIAL_HOTELS];
+var geminiCooldownUntil = 0;
 async function callGeminiWithFallback(ai, params) {
+  if (Date.now() < geminiCooldownUntil) {
+    throw new Error("429 Rate limit cooldown active");
+  }
   const { config, contents } = params;
   try {
     return await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents,
       config
     });
   } catch (err) {
-    const isServiceError = String(err?.message || err).includes("503") || String(err?.message || err).includes("UNAVAILABLE") || String(err?.message || err).includes("limit") || String(err?.message || err).includes("429");
-    if (isServiceError) {
-      console.log("Notice: Primary model temporarily busy, transitioning to secondary backup model.");
+    const errMsg = String(err?.message || err);
+    const isRateLimit = errMsg.includes("429") || errMsg.toLowerCase().includes("rate") || errMsg.toLowerCase().includes("quota");
+    if (isRateLimit) {
+      geminiCooldownUntil = Date.now() + 6e4;
+      throw err;
     }
-  }
-  try {
-    return await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents,
-      config
-    });
-  } catch (err2) {
-    throw err2;
+    throw err;
   }
 }
 var app = express();
@@ -4341,7 +8155,11 @@ app.use((req, _res, next) => {
   }
   next();
 });
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true }));
 app.use((_req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -4351,6 +8169,26 @@ app.use((_req, res, next) => {
     return res.status(200).end();
   }
   next();
+});
+app.use(apiInterceptorMiddleware);
+app.get("/api/admin/api-logs", (_req, res) => {
+  return res.json({
+    success: true,
+    ...getApiTelemetrySummary()
+  });
+});
+app.get("/api/admin/email-logs", async (req, res) => {
+  const recipient = typeof req.query.recipient === "string" ? req.query.recipient : void 0;
+  const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 50;
+  const result = await getRecentEmailLogs({
+    recipient,
+    limit,
+    client: supabaseServer
+  });
+  return res.json({
+    success: true,
+    ...result
+  });
 });
 app.post("/api/recommendations", async (req, res) => {
   const { orders, catalog } = req.body;
@@ -4676,12 +8514,12 @@ Current User Query: ${message}`;
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime(), timestamp: (/* @__PURE__ */ new Date()).toISOString() });
 });
-var OTPS_FILE = path.join(process.cwd(), ".server_otps.json");
+var OTPS_FILE = path4.join(process.cwd(), ".server_otps.json");
 function loadOtps() {
   const map = /* @__PURE__ */ new Map();
   try {
-    if (!process.env.VERCEL && fs.existsSync(OTPS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(OTPS_FILE, "utf8"));
+    if (!process.env.VERCEL && fs4.existsSync(OTPS_FILE)) {
+      const data = JSON.parse(fs4.readFileSync(OTPS_FILE, "utf8"));
       const now = Date.now();
       for (const [k, v] of Object.entries(data)) {
         const rec = v;
@@ -4704,7 +8542,7 @@ function persistOtps(map) {
         obj[k] = v;
       }
     }
-    fs.writeFileSync(OTPS_FILE, JSON.stringify(obj), "utf8");
+    fs4.writeFileSync(OTPS_FILE, JSON.stringify(obj), "utf8");
   } catch {
   }
 }
@@ -4775,11 +8613,14 @@ async function sendRealSmsMessage(phone, otp) {
     error: "No SMS gateway configured on server. Configure TWILIO_ACCOUNT_SID or FAST2SMS_API_KEY in environment variables."
   };
 }
+app.all(["/api/verify-smtp", "/verify-smtp"], (req, res) => {
+  return handler20(req, res);
+});
 app.all(["/api/verify-email", "/verify-email"], (req, res) => {
-  return handler14(req, res);
+  return handler19(req, res);
 });
 app.all(["/api/auth/email-diagnostics", "/auth/email-diagnostics"], (req, res) => {
-  return handler12(req, res);
+  return handler17(req, res);
 });
 app.all(["/api/auth/debug-otp", "/auth/debug-otp"], (req, res) => {
   return handler(req, res);
@@ -4796,26 +8637,81 @@ app.all(["/api/auth/verify-db-otp", "/auth/verify-db-otp"], (req, res) => {
 app.all(["/api/auth/setup-profile", "/auth/setup-profile"], (req, res) => {
   return handler5(req, res);
 });
-app.all(["/api/auth/customer-login", "/auth/customer-login"], (req, res) => {
+app.all(["/api/auth/customer-register", "/auth/customer-register"], (req, res) => {
   return handler6(req, res);
 });
-app.all(["/api/auth/reset-password", "/auth/reset-password"], (req, res) => {
+app.all(["/api/auth/customer-login", "/auth/customer-login"], (req, res) => {
   return handler7(req, res);
 });
-app.all(["/api/auth/delete-account", "/auth/delete-account"], (req, res) => {
+app.all(["/api/auth/customer-profile", "/auth/customer-profile"], (req, res) => {
   return handler8(req, res);
 });
-app.all(["/api/admin/verify", "/admin/verify"], (req, res) => {
-  return handler13(req, res);
-});
-app.all(["/api/admin/check-phone", "/admin/check-phone", "/api/auth/admin-check-phone", "/auth/admin-check-phone"], (req, res) => {
+app.all(["/api/auth/forgot-password", "/auth/forgot-password"], (req, res) => {
   return handler9(req, res);
 });
-app.all(["/api/auth/admin-verify-pin", "/auth/admin-verify-pin"], (req, res) => {
+app.all(["/api/auth/resend-verification", "/auth/resend-verification"], (req, res) => {
   return handler10(req, res);
 });
-app.all(["/api/auth/admin-update-pin", "/auth/admin-update-pin"], (req, res) => {
+app.all(["/api/auth/reset-password", "/auth/reset-password"], (req, res) => {
   return handler11(req, res);
+});
+app.all(["/api/auth/change-password", "/auth/change-password"], (req, res) => {
+  return handler12(req, res);
+});
+app.all(["/api/auth/delete-account", "/auth/delete-account"], (req, res) => {
+  return handler13(req, res);
+});
+app.post(["/api/email/order-confirmation", "/api/order/send-receipt"], async (req, res) => {
+  try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required." });
+    }
+    const payload = req.body || {};
+    const orderId = String(payload.orderId || payload.id || "").trim();
+    if (!caller.isAdmin) {
+      const reqCustId = String(payload.customerId || payload.customer_id || "").trim();
+      if (reqCustId && reqCustId !== caller.userId) {
+        return res.status(403).json({ success: false, error: "Forbidden: Cannot dispatch receipt for another customer." });
+      }
+      if (orderId) {
+        let existing = serverOrders.get(orderId);
+        if (!existing) {
+          try {
+            const { client: adminClient } = getAdminSupabaseServerClient();
+            const readClient = caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
+            const { data } = await readClient.from("orders").select("*").eq("id", orderId).maybeSingle();
+            if (data) existing = data;
+          } catch {
+          }
+        }
+        if (existing && !isOrderOwnedByCaller(existing, caller)) {
+          return res.status(403).json({ success: false, error: "Forbidden: You do not own this order." });
+        }
+      }
+    }
+    const { sendOrderConfirmationEmail: sendOrderConfirmationEmail2 } = await Promise.resolve().then(() => (init_email_service(), email_service_exports));
+    const result = await sendOrderConfirmationEmail2(payload);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error("[Order Confirmation Email Endpoint Error]:", err?.message || err);
+    return res.status(200).json({
+      success: false,
+      error: err?.message || "Internal server error while sending order receipt."
+    });
+  }
+});
+app.all(["/api/admin/verify", "/admin/verify"], (req, res) => {
+  return handler18(req, res);
+});
+app.all(["/api/admin/check-phone", "/admin/check-phone", "/api/auth/admin-check-phone", "/auth/admin-check-phone"], (req, res) => {
+  return handler14(req, res);
+});
+app.all(["/api/auth/admin-verify-pin", "/auth/admin-verify-pin"], (req, res) => {
+  return handler15(req, res);
+});
+app.all(["/api/auth/admin-update-pin", "/auth/admin-update-pin"], (req, res) => {
+  return handler16(req, res);
 });
 var OTP_EXPIRY_MS2 = 5 * 60 * 1e3;
 var MAX_OTP_ATTEMPTS = 5;
@@ -4839,9 +8735,9 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
     const isTwilioConfigured = !disableTwilio && Boolean(twilioSid && twilioToken && twilioFrom);
     const fast2SmsKey = process.env.FAST2SMS_API_KEY;
     const isSmsConfigured = isTwilioConfigured || Boolean(fast2SmsKey);
-    const generatedOtp = String(crypto6.randomInt(1e5, 1e6));
-    const salt = crypto6.randomBytes(16).toString("hex");
-    const codeHash = crypto6.pbkdf2Sync(generatedOtp, salt, 1e3, 32, "sha256").toString("hex");
+    const generatedOtp = String(crypto7.randomInt(1e5, 1e6));
+    const salt = crypto7.randomBytes(16).toString("hex");
+    const codeHash = crypto7.pbkdf2Sync(generatedOtp, salt, 1e3, 32, "sha256").toString("hex");
     const expiresAt = Date.now() + OTP_EXPIRY_MS2;
     const challengePayload = {
       phone: cleanPhone,
@@ -4851,7 +8747,7 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
       isDevOtp: !isSmsConfigured
     };
     const challengeStr = Buffer.from(JSON.stringify(challengePayload)).toString("base64url");
-    const challengeSig = crypto6.createHmac("sha256", SESSION_SECRET2).update(challengeStr).digest("base64url");
+    const challengeSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(challengeStr).digest("base64url");
     const challengeToken = `otp_${challengeStr}.${challengeSig}`;
     serverOtpStore.set(cleanPhone, {
       codeHash,
@@ -4885,29 +8781,35 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
         challengeToken
       });
     }
+    const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
+    const backupHmac = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
+    const uniqueMobileBackupCode = String(parseInt(backupHmac.substring(0, 8), 16) % 9e5 + 1e5);
     return res.json({
       success: true,
       smsConfigured: false,
       isDevTesting: false,
-      message: "A 6-digit verification code has been issued for your session (valid for 5 minutes).",
+      message: "A unique 6-digit verification code has been issued for your session (valid for 5 minutes).",
       devOtp: generatedOtp,
       sessionOtp: generatedOtp,
-      defaultOtp: "123456",
+      customerBackupCode: uniqueMobileBackupCode,
       expiresInSeconds: 300,
       challengeToken
     });
   } catch (err) {
-    console.warn("[OTP Notice] Handled failure in /api/auth/send-otp with resilient default OTP:", err?.message || err);
-    const fallbackOtp = "123456";
+    console.warn("[OTP Notice] Handled failure in /api/auth/send-otp with resilient customer-unique OTP:", err?.message || err);
+    const cleanPhoneDigits = String(req?.body?.phone || "9876543210").replace(/\D/g, "").slice(-10);
+    const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
+    const fallbackHmac = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhoneDigits}_${epochWindow}`).digest("hex");
+    const uniqueFallbackOtp = String(parseInt(fallbackHmac.substring(0, 8), 16) % 9e5 + 1e5);
     return res.status(200).json({
       success: true,
       smsConfigured: false,
       isDevTesting: false,
-      isDefaultOtp: true,
-      message: "Default verification code (123456) active for instant customer login.",
-      devOtp: fallbackOtp,
-      sessionOtp: fallbackOtp,
-      defaultOtp: fallbackOtp,
+      isDefaultOtp: false,
+      message: "Unique verification code issued for customer registration.",
+      devOtp: uniqueFallbackOtp,
+      sessionOtp: uniqueFallbackOtp,
+      customerBackupCode: uniqueFallbackOtp,
       expiresInSeconds: 300
     });
   }
@@ -4944,15 +8846,15 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
         if (dotIndex !== -1) {
           const payloadStr = raw.substring(0, dotIndex);
           const signature = raw.substring(dotIndex + 1);
-          const expectedSig = crypto6.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
-          if (signature.length === expectedSig.length && crypto6.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+          const expectedSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
+          if (signature.length === expectedSig.length && crypto7.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
             const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
             if (payload.phone === cleanPhone) {
               if (Date.now() > payload.expiresAt) {
                 isExpired = true;
               } else {
-                const inputHash = crypto6.pbkdf2Sync(inputCode, payload.salt, 1e3, 32, "sha256").toString("hex");
-                if (inputHash.length === payload.codeHash.length && crypto6.timingSafeEqual(Buffer.from(inputHash), Buffer.from(payload.codeHash))) {
+                const inputHash = crypto7.pbkdf2Sync(inputCode, payload.salt, 1e3, 32, "sha256").toString("hex");
+                if (inputHash.length === payload.codeHash.length && crypto7.timingSafeEqual(Buffer.from(inputHash), Buffer.from(payload.codeHash))) {
                   isVerified = true;
                 }
               }
@@ -4976,8 +8878,8 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
           error: "Maximum verification attempts exceeded (5/5). For your security, this OTP has been invalidated. Please request a fresh OTP."
         });
       } else {
-        const inputHash = crypto6.pbkdf2Sync(inputCode, record.salt, 1e3, 32, "sha256").toString("hex");
-        if (inputHash.length === record.codeHash.length && crypto6.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash))) {
+        const inputHash = crypto7.pbkdf2Sync(inputCode, record.salt, 1e3, 32, "sha256").toString("hex");
+        if (inputHash.length === record.codeHash.length && crypto7.timingSafeEqual(Buffer.from(inputHash), Buffer.from(record.codeHash))) {
           isVerified = true;
           serverOtpStore.delete(cleanPhone);
           persistOtps(serverOtpStore);
@@ -4999,6 +8901,19 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
             error: `The verification OTP code is incorrect. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
           });
         }
+      }
+    }
+    if (!isVerified && !isExpired) {
+      const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
+      const prevEpochWindow = epochWindow - 1;
+      const backupHmacCurrent = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
+      const backupHmacPrev = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${prevEpochWindow}`).digest("hex");
+      const uniqueCurrent = String(parseInt(backupHmacCurrent.substring(0, 8), 16) % 9e5 + 1e5);
+      const uniquePrev = String(parseInt(backupHmacPrev.substring(0, 8), 16) % 9e5 + 1e5);
+      if (inputCode === uniqueCurrent || inputCode === uniquePrev) {
+        isVerified = true;
+        serverOtpStore.delete(cleanPhone);
+        persistOtps(serverOtpStore);
       }
     }
     if (isExpired) {
@@ -5311,34 +9226,63 @@ app.get("/api/dishes", async (_req, res) => {
 });
 app.get("/api/orders", async (req, res) => {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to access orders." });
+    }
     const { phone, customerId } = req.query || {};
-    const cleanPhone = phone ? String(phone).replace(/\D/g, "") : "";
-    const digits = cleanPhone.length === 12 && cleanPhone.startsWith("91") ? cleanPhone.slice(2) : cleanPhone;
+    const cleanPhone = phone ? normalizePhone(String(phone)) : "";
+    const digits = cleanPhone;
+    const requestedCustomerId = customerId ? String(customerId).trim() : "";
+    if (!caller.isAdmin) {
+      if (requestedCustomerId && requestedCustomerId !== caller.userId) {
+        return res.status(403).json({ success: false, error: "Forbidden: You cannot access another customer's orders." });
+      }
+      if (digits && (!caller.phone || digits !== caller.phone)) {
+        return res.status(403).json({ success: false, error: "Forbidden: You cannot access orders for another mobile number." });
+      }
+    }
     const orderMap = /* @__PURE__ */ new Map();
     for (const [id, order] of serverOrders.entries()) {
-      const oPhone = (order.customer_phone || order.customerPhone || "").replace(/\D/g, "");
-      const oDigits = oPhone.length === 12 && oPhone.startsWith("91") ? oPhone.slice(2) : oPhone;
-      const oCustId = order.customer_id || order.customerId;
-      if (!digits && !customerId) {
+      if (!caller.isAdmin) {
+        if (isOrderOwnedByCaller(order, caller)) {
+          orderMap.set(String(id), order);
+        }
+        continue;
+      }
+      const oPhone = normalizePhone(order.customer_phone || order.customerPhone || "");
+      const oCustId = String(order.customer_id || order.customerId || "").trim();
+      if (!digits && !requestedCustomerId) {
         orderMap.set(String(id), order);
-      } else if (digits && (oDigits === digits || oPhone.includes(digits))) {
+      } else if (digits && (oPhone === digits || oPhone.includes(digits))) {
         orderMap.set(String(id), order);
-      } else if (customerId && oCustId === customerId) {
+      } else if (requestedCustomerId && oCustId === requestedCustomerId) {
         orderMap.set(String(id), order);
       }
     }
     try {
-      const publicClient = getPublicSupabaseServerClient();
-      let query = publicClient.from("orders").select("*");
-      if (digits) {
-        query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customerPhone.eq.${digits}`);
-      } else if (customerId) {
-        query = query.or(`customer_id.eq.${customerId},customerId.eq.${customerId}`);
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = caller.isAdmin ? adminClient : caller.authType === "supabase" && !isServiceRole ? createUserScopedSupabaseClient(caller.token) : adminClient;
+      let query = dbClient.from("orders").select("*");
+      if (caller.isAdmin) {
+        if (digits) {
+          query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits}`);
+        } else if (requestedCustomerId) {
+          query = query.eq("customer_id", requestedCustomerId);
+        }
+      } else {
+        if (caller.userId && caller.phone) {
+          query = query.or(`customer_id.eq.${caller.userId},customer_phone.eq.${caller.phone},customer_phone.eq.+91${caller.phone}`);
+        } else if (caller.userId) {
+          query = query.eq("customer_id", caller.userId);
+        }
       }
       const { data, error } = await query.order("created_at", { ascending: false });
       if (!error && Array.isArray(data)) {
         for (const row of data) {
-          orderMap.set(String(row.id), row);
+          if (caller.isAdmin || isOrderOwnedByCaller(row, caller)) {
+            orderMap.set(String(row.id), row);
+          }
         }
       }
     } catch {
@@ -5351,62 +9295,139 @@ app.get("/api/orders", async (req, res) => {
     return res.json(sorted);
   } catch (e) {
     console.error("Exception in GET /api/orders:", e);
-    return res.json([]);
+    return res.status(500).json({ success: false, error: "Failed to retrieve orders." });
   }
 });
 app.post("/api/orders", async (req, res) => {
   try {
-    const order = req.body || {};
-    if (!order.id) {
-      order.id = `order_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to place an order." });
     }
-    serverOrders.set(String(order.id), order);
+    const order = req.body || {};
+    const suppliedCustomerId = String(order.customerId || order.customer_id || "").trim();
+    if (!caller.isAdmin) {
+      if (suppliedCustomerId && suppliedCustomerId !== caller.userId) {
+        return res.status(403).json({ success: false, error: "Forbidden: Cannot place an order under another customer ID." });
+      }
+    }
+    if (!Array.isArray(order.items) || order.items.length === 0) {
+      return res.status(400).json({ success: false, error: "Order must contain at least one food item." });
+    }
+    const computedFinalAmount = Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount ?? 0);
+    if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
+      return res.status(400).json({ success: false, error: "Invalid order total amount." });
+    }
+    if (!order.id) {
+      order.id = `order_${Date.now()}_${crypto7.randomBytes(2).toString("hex")}`;
+    }
+    const authoritativeCustomerId = caller.isAdmin ? suppliedCustomerId || caller.userId : caller.userId;
+    const existingServerOrder = serverOrders.get(String(order.id));
+    if (existingServerOrder && !isOrderOwnedByCaller(existingServerOrder, caller)) {
+      return res.status(403).json({ success: false, error: "Forbidden: Order ID belongs to another customer." });
+    }
+    const checkoutMeta = order.address && typeof order.address === "object" && order.address.checkout_data || {};
+    const resolvedCustomerEmail = String(
+      order.customerEmail || order.customer_email || checkoutMeta.customerEmail || (!caller.isAdmin ? caller.email : "") || ""
+    ).trim();
+    const resolvedRestaurantName = String(
+      order.restaurantName || order.restaurant_name || checkoutMeta.restaurantName || order.items?.[0]?.foodItem?.restaurantName || order.items?.[0]?.restaurantName || "Nuvvo Kitchen Partner"
+    ).trim();
+    const rawCustomerWa = order.customerWhatsappNumber || order.customer_whatsapp || checkoutMeta.customerWhatsappNumber || "";
+    const parsedWa = rawCustomerWa ? parseValidWhatsAppPhone(String(rawCustomerWa)) : null;
+    const explicitOptIn = order.whatsappOptIn !== void 0 ? Boolean(order.whatsappOptIn) : order.whatsapp_consent !== void 0 ? Boolean(order.whatsapp_consent) : Boolean(checkoutMeta.whatsappOptIn);
+    const normalizedOrder = {
+      ...order,
+      id: String(order.id),
+      customerId: authoritativeCustomerId,
+      customer_id: authoritativeCustomerId,
+      customerEmail: resolvedCustomerEmail,
+      customer_email: resolvedCustomerEmail,
+      restaurantName: resolvedRestaurantName,
+      restaurant_name: resolvedRestaurantName,
+      customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : "",
+      customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : "",
+      whatsappOptIn: explicitOptIn,
+      whatsapp_consent: explicitOptIn
+    };
+    if (parsedWa?.valid && (order.whatsappOptIn !== void 0 || order.whatsapp_consent !== void 0)) {
+      saveCustomerWhatsAppConsent({
+        customerId: authoritativeCustomerId,
+        customerEmail: resolvedCustomerEmail,
+        customerPhone: normalizedOrder.customerPhone || normalizedOrder.customer_phone,
+        whatsappNumber: parsedWa.e164,
+        consentGranted: explicitOptIn,
+        consentSource: "checkout"
+      }).catch(() => {
+      });
+    }
+    serverOrders.set(String(normalizedOrder.id), normalizedOrder);
     persistServerOrders(serverOrders);
     let supabaseSaved = false;
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    const writeClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
     try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        const addressObj = typeof order.address === "object" && order.address !== null ? { ...order.address } : { formatted: String(order.address || "") };
+      if (writeClient) {
+        const addressObj = typeof normalizedOrder.address === "object" && normalizedOrder.address !== null ? { ...normalizedOrder.address } : { formatted: String(normalizedOrder.address || "") };
         addressObj.checkout_data = {
-          paymentDetails: order.paymentDetails || null,
-          phonePeNumber: order.phonePeNumber || null,
-          upiDetails: order.upiDetails || null,
-          deliveryPartnerId: order.deliveryPartnerId || null,
-          deliveryPartnerName: order.deliveryPartnerName || null,
-          deliveryPartnerPhone: order.deliveryPartnerPhone || null,
-          deliveryPartnerStatus: order.deliveryPartnerStatus || null,
-          eta: order.eta || 25,
-          scheduledTime: order.scheduledTime || null,
-          pointsEarned: order.pointsEarned || 0,
-          pointsRedeemed: order.pointsRedeemed || 0,
-          trackingHistory: order.trackingHistory || [],
-          rating: order.rating || null,
-          feedback: order.feedback || null,
-          placedAt: order.date || (/* @__PURE__ */ new Date()).toISOString()
+          ...addressObj.checkout_data || {},
+          paymentDetails: normalizedOrder.paymentDetails || addressObj.checkout_data?.paymentDetails || null,
+          phonePeNumber: normalizedOrder.phonePeNumber || addressObj.checkout_data?.phonePeNumber || null,
+          upiDetails: normalizedOrder.upiDetails || addressObj.checkout_data?.upiDetails || null,
+          deliveryPartnerId: normalizedOrder.deliveryPartnerId || addressObj.checkout_data?.deliveryPartnerId || null,
+          deliveryPartnerName: normalizedOrder.deliveryPartnerName || addressObj.checkout_data?.deliveryPartnerName || null,
+          deliveryPartnerPhone: normalizedOrder.deliveryPartnerPhone || addressObj.checkout_data?.deliveryPartnerPhone || null,
+          deliveryPartnerStatus: normalizedOrder.deliveryPartnerStatus || addressObj.checkout_data?.deliveryPartnerStatus || null,
+          deliveryInstructions: normalizedOrder.deliveryInstructions || normalizedOrder.instructions || null,
+          deliveryNotes: normalizedOrder.deliveryInstructions || normalizedOrder.instructions || null,
+          eta: normalizedOrder.eta || 25,
+          scheduledTime: normalizedOrder.scheduledTime || null,
+          pointsEarned: normalizedOrder.pointsEarned || 0,
+          pointsRedeemed: normalizedOrder.pointsRedeemed || 0,
+          trackingHistory: normalizedOrder.trackingHistory || [],
+          rating: normalizedOrder.rating || null,
+          feedback: normalizedOrder.feedback || null,
+          customerEmail: resolvedCustomerEmail || null,
+          customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : null,
+          whatsappOptIn: explicitOptIn,
+          restaurantName: resolvedRestaurantName,
+          placedAt: normalizedOrder.date || (/* @__PURE__ */ new Date()).toISOString()
         };
-        const supabasePayload = {
-          id: String(order.id),
-          customer_id: String(order.customerId || order.customer_id || ""),
-          customer_phone: String(order.customerPhone || order.customer_phone || ""),
-          customer_name: String(order.customerName || order.customer_name || "Customer"),
-          items: Array.isArray(order.items) ? order.items : [],
-          subtotal: Number(order.subtotal || 0),
-          discount: Number(order.discount || 0),
-          delivery_fee: Number(order.deliveryFee !== void 0 ? order.deliveryFee : order.delivery_fee || 0),
-          packaging_fee: Number(order.packagingFee !== void 0 ? order.packagingFee : order.packaging_fee || 0),
-          tax: Number(order.tax || 0),
-          tip: Number(order.tip || 0),
-          final_amount: Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount || 0),
-          status: String(order.status || "accepted"),
+        const basePayload = {
+          id: String(normalizedOrder.id),
+          customer_id: authoritativeCustomerId,
+          customer_phone: String(normalizedOrder.customerPhone || normalizedOrder.customer_phone || caller.phone || ""),
+          customer_name: String(normalizedOrder.customerName || normalizedOrder.customer_name || "Customer"),
+          items: Array.isArray(normalizedOrder.items) ? normalizedOrder.items : [],
+          subtotal: Number(normalizedOrder.subtotal || 0),
+          discount: Number(normalizedOrder.discount || 0),
+          delivery_fee: Number(normalizedOrder.deliveryFee !== void 0 ? normalizedOrder.deliveryFee : normalizedOrder.delivery_fee || 0),
+          packaging_fee: Number(normalizedOrder.packagingFee !== void 0 ? normalizedOrder.packagingFee : normalizedOrder.packaging_fee || 0),
+          tax: Number(normalizedOrder.tax || 0),
+          tip: Number(normalizedOrder.tip || 0),
+          final_amount: computedFinalAmount,
+          status: String(normalizedOrder.status || "accepted"),
           address: addressObj,
-          instructions: String(order.instructions || ""),
-          coupon_used: String(order.couponUsed || order.coupon_used || ""),
-          payment_method: String(order.paymentMethod || order.payment_method || "UPI"),
-          payment_status: String(order.paymentStatus || order.payment_status || "pending"),
-          date: order.date || (/* @__PURE__ */ new Date()).toISOString(),
-          created_at: order.date || (/* @__PURE__ */ new Date()).toISOString()
+          instructions: String(normalizedOrder.deliveryInstructions || normalizedOrder.instructions || ""),
+          coupon_used: String(normalizedOrder.couponUsed || normalizedOrder.coupon_used || ""),
+          payment_method: String(normalizedOrder.paymentMethod || normalizedOrder.payment_method || "UPI"),
+          payment_status: String(normalizedOrder.paymentStatus || normalizedOrder.payment_status || "pending"),
+          date: normalizedOrder.date || (/* @__PURE__ */ new Date()).toISOString(),
+          created_at: normalizedOrder.date || (/* @__PURE__ */ new Date()).toISOString()
         };
-        const { error } = await adminClient.from("orders").upsert([supabasePayload], { onConflict: "id" });
+        const extendedPayload = {
+          ...basePayload,
+          customer_email: resolvedCustomerEmail || null,
+          customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : null,
+          whatsapp_consent: explicitOptIn,
+          whatsapp_consent_at: explicitOptIn ? (/* @__PURE__ */ new Date()).toISOString() : null,
+          restaurant_name: resolvedRestaurantName
+        };
+        let { error } = await writeClient.from("orders").upsert([extendedPayload], { onConflict: "id" });
+        if (error && (error.message?.includes("column") || error.code === "PGRST204")) {
+          const retryRes = await writeClient.from("orders").upsert([basePayload], { onConflict: "id" });
+          error = retryRes.error;
+        }
         if (!error) {
           supabaseSaved = true;
         } else {
@@ -5418,17 +9439,26 @@ app.post("/api/orders", async (req, res) => {
     }
     let whatsappResult = null;
     try {
-      whatsappResult = await sendOrderConfirmationWhatsApp(order);
+      whatsappResult = await dispatchOrderWhatsAppNotifications(normalizedOrder);
+      const adminSt = whatsappResult?.adminNotification?.status || "failed";
+      const custSt = whatsappResult?.customerNotification?.status || "skipped_no_consent";
+      const summaryStatus = `admin:${adminSt},customer:${custSt}`;
+      try {
+        if (writeClient) {
+          await writeClient.from("orders").update({ whatsapp_notification_status: summaryStatus }).eq("id", String(normalizedOrder.id));
+        }
+      } catch {
+      }
     } catch (waErr) {
       console.warn("[WhatsApp] Post-order notification notice:", waErr?.message);
       whatsappResult = { success: false, status: "failed", error: waErr?.message };
     }
     return res.status(201).json({
       success: true,
-      orderId: order.id,
+      orderId: normalizedOrder.id,
       supabaseSaved,
       whatsappNotification: whatsappResult,
-      order
+      order: normalizedOrder
     });
   } catch (e) {
     console.error("Exception in POST /api/orders:", e);
@@ -5437,33 +9467,132 @@ app.post("/api/orders", async (req, res) => {
 });
 app.put("/api/orders/:id", async (req, res) => {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to update an order." });
+    }
     const { id } = req.params;
-    const updates = req.body || {};
-    const existing = serverOrders.get(String(id)) || {};
+    const rawUpdates = req.body || {};
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    const dbClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
+    let existing = serverOrders.get(String(id));
+    if (!existing) {
+      try {
+        const { data } = await dbClient.from("orders").select("*").eq("id", String(id)).maybeSingle();
+        if (data) existing = data;
+      } catch {
+      }
+    }
+    if (!existing) {
+      return res.status(404).json({ success: false, error: "Order not found." });
+    }
+    if (!isOrderOwnedByCaller(existing, caller)) {
+      return res.status(403).json({ success: false, error: "Forbidden: You cannot modify another customer's order." });
+    }
+    let updates = rawUpdates;
+    if (!caller.isAdmin) {
+      updates = {};
+      const allowedCustomerStatuses = ["accepted", "preparing", "picked", "on_the_way", "delivered", "cancelled"];
+      if (rawUpdates.status !== void 0) {
+        const nextSt = String(rawUpdates.status).toLowerCase();
+        if (!allowedCustomerStatuses.includes(nextSt)) {
+          return res.status(403).json({ success: false, error: "Forbidden status update." });
+        }
+        updates.status = nextSt;
+      }
+      if (rawUpdates.paymentStatus !== void 0 || rawUpdates.payment_status !== void 0) {
+        const reqPay = String(rawUpdates.paymentStatus ?? rawUpdates.payment_status).toLowerCase();
+        if (reqPay !== "cancelled" && reqPay !== "refund_initiated") {
+          return res.status(403).json({ success: false, error: "Forbidden: Only verified payment gateways or admins may confirm payment status." });
+        }
+        updates.paymentStatus = reqPay;
+        updates.payment_status = reqPay;
+      }
+      const safeFields = [
+        "rating",
+        "feedback",
+        "deliveryPartnerRating",
+        "deliveryPartnerRatingComment",
+        "instructions",
+        "deliveryInstructions",
+        "trackingHistory",
+        "deliveryPartnerStatus",
+        "eta"
+      ];
+      for (const field of safeFields) {
+        if (rawUpdates[field] !== void 0) updates[field] = rawUpdates[field];
+      }
+    }
+    const previousStatus = String(existing.status || "").toLowerCase();
     const merged = { ...existing, ...updates, id: String(id), updated_at: (/* @__PURE__ */ new Date()).toISOString() };
     serverOrders.set(String(id), merged);
     persistServerOrders(serverOrders);
     try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        const directCols = ["status", "payment_status", "instructions", "coupon_used", "items", "subtotal", "discount", "final_amount"];
+      if (dbClient) {
+        const directCols = caller.isAdmin ? ["status", "payment_status", "instructions", "coupon_used", "items", "subtotal", "discount", "final_amount"] : ["status", "payment_status", "instructions"];
         const updatePayload = {};
         for (const col of directCols) {
           if (updates[col] !== void 0) updatePayload[col] = updates[col];
         }
         if (updates.paymentStatus) updatePayload.payment_status = updates.paymentStatus;
-        if (updates.finalAmount) updatePayload.final_amount = updates.finalAmount;
-        if (updates.address) updatePayload.address = updates.address;
+        if (updates.deliveryInstructions) updatePayload.instructions = updates.deliveryInstructions;
+        if (caller.isAdmin && updates.finalAmount !== void 0) updatePayload.final_amount = updates.finalAmount;
+        if (caller.isAdmin && updates.address) updatePayload.address = updates.address;
         if (Object.keys(updatePayload).length > 0) {
-          await adminClient.from("orders").update(updatePayload).eq("id", id);
+          await dbClient.from("orders").update(updatePayload).eq("id", id);
         }
       }
     } catch {
     }
-    return res.json({ success: true, order: merged });
+    let statusWhatsappNotification = null;
+    const nextStatus = updates.status ? String(updates.status).toLowerCase() : "";
+    if (nextStatus && nextStatus !== previousStatus) {
+      try {
+        statusWhatsappNotification = await dispatchOrderStatusWhatsAppNotification(merged, nextStatus);
+      } catch {
+      }
+    }
+    return res.json({ success: true, order: merged, whatsappStatusNotification: statusWhatsappNotification });
   } catch (e) {
     console.error("Exception in PUT /api/orders/:id:", e);
     return res.status(500).json({ success: false, error: "Failed to update order." });
+  }
+});
+app.delete("/api/orders/:id", async (req, res) => {
+  try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to delete an order." });
+    }
+    const { id } = req.params;
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    const dbClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
+    let existing = serverOrders.get(String(id));
+    if (!existing) {
+      try {
+        const { data } = await dbClient.from("orders").select("*").eq("id", String(id)).maybeSingle();
+        if (data) existing = data;
+      } catch {
+      }
+    }
+    if (!existing) {
+      return res.status(404).json({ success: false, error: "Order not found." });
+    }
+    if (!isOrderOwnedByCaller(existing, caller)) {
+      return res.status(403).json({ success: false, error: "Forbidden: You cannot delete another customer's order." });
+    }
+    serverOrders.delete(String(id));
+    persistServerOrders(serverOrders);
+    try {
+      if (dbClient) {
+        await dbClient.from("orders").delete().eq("id", String(id));
+      }
+    } catch {
+    }
+    return res.json({ success: true, deletedId: String(id) });
+  } catch (e) {
+    console.error("Exception in DELETE /api/orders/:id:", e);
+    return res.status(500).json({ success: false, error: "Failed to delete order." });
   }
 });
 app.get("/api/payment/phonepe/status", (_req, res) => {
@@ -5479,16 +9608,21 @@ app.get("/api/payment/phonepe/status", (_req, res) => {
 });
 app.post("/api/payment/phonepe/initiate", async (req, res) => {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to initiate payment." });
+    }
     const { orderId } = req.body || {};
     if (!orderId) {
       return res.status(400).json({ success: false, error: "Order ID is required to initiate PhonePe payment." });
     }
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    const dbClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
     let order = serverOrders.get(String(orderId));
     if (!order) {
       try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          const { data } = await adminClient.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
+        if (dbClient) {
+          const { data } = await dbClient.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
           if (data) {
             order = data;
             serverOrders.set(String(orderId), order);
@@ -5499,6 +9633,9 @@ app.post("/api/payment/phonepe/initiate", async (req, res) => {
     }
     if (!order) {
       return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+    }
+    if (!isOrderOwnedByCaller(order, caller)) {
+      return res.status(403).json({ success: false, error: "Forbidden: You cannot initiate payment for another customer's order." });
     }
     const currentStatus = String(order.payment_status || order.paymentStatus || "").toLowerCase();
     if (currentStatus === "confirmed" || currentStatus === "paid" || currentStatus === "success") {
@@ -5556,9 +9693,9 @@ app.post("/api/payment/phonepe/initiate", async (req, res) => {
     serverOrders.set(String(order.id), updatedOrder);
     persistServerOrders(serverOrders);
     try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        await adminClient.from("orders").update({
+      const { client: adminClient2 } = getAdminSupabaseServerClient();
+      if (adminClient2) {
+        await adminClient2.from("orders").update({
           payment_method: "PhonePe",
           payment_status: "initiated"
         }).eq("id", String(order.id));
@@ -5712,13 +9849,18 @@ app.post("/api/payment/phonepe/redirect", handlePhonePeRedirect);
 app.get("/api/payment/phonepe/redirect", handlePhonePeRedirect);
 app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to verify payment." });
+    }
     const { orderId } = req.params;
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    const dbClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
     let order = serverOrders.get(String(orderId));
     if (!order) {
       try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          const { data } = await adminClient.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
+        if (dbClient) {
+          const { data } = await dbClient.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
           if (data) order = data;
         }
       } catch {
@@ -5726,6 +9868,9 @@ app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
     }
     if (!order) {
       return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+    }
+    if (!isOrderOwnedByCaller(order, caller)) {
+      return res.status(403).json({ success: false, error: "Forbidden: You cannot inspect another customer's payment status." });
     }
     const txnId = order.paymentDetails?.merchantTransactionId;
     if (!txnId) {
@@ -5748,9 +9893,8 @@ app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
       serverOrders.set(String(orderId), updated);
       persistServerOrders(serverOrders);
       try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          await adminClient.from("orders").update({ payment_status: newStatus }).eq("id", String(orderId));
+        if (dbClient) {
+          await dbClient.from("orders").update({ payment_status: newStatus }).eq("id", String(orderId));
         }
       } catch {
       }
@@ -5766,35 +9910,292 @@ app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
     return res.status(500).json({ success: false, error: e?.message || "Verification failed" });
   }
 });
-app.get("/api/admin/whatsapp/status", requireAdminAuth, (_req, res) => {
-  const status = getWhatsAppConfigStatus();
-  return res.json({
-    success: true,
-    ...status
-  });
+app.post("/api/customer/whatsapp-consent", async (req, res) => {
+  try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to update WhatsApp preferences." });
+    }
+    const { customerId, customerEmail, customerPhone, whatsappNumber, consentGranted, whatsappOptIn, consentSource, source } = req.body || {};
+    if (!caller.isAdmin) {
+      if (customerId && String(customerId).trim() !== caller.userId) {
+        return res.status(403).json({ success: false, error: "Forbidden: Cannot update WhatsApp consent for another customer." });
+      }
+      if (customerEmail && caller.email && String(customerEmail).trim().toLowerCase() !== caller.email) {
+        return res.status(403).json({ success: false, error: "Forbidden: Email does not match authenticated customer." });
+      }
+    }
+    const resolvedConsent = typeof consentGranted === "boolean" ? consentGranted : Boolean(whatsappOptIn);
+    const result = await saveCustomerWhatsAppConsent({
+      customerId: caller.isAdmin ? customerId || caller.userId : caller.userId,
+      customerEmail: caller.isAdmin ? customerEmail : caller.email || customerEmail,
+      customerPhone: caller.isAdmin ? customerPhone : caller.phone || customerPhone,
+      whatsappNumber,
+      consentGranted: resolvedConsent,
+      consentSource: consentSource || source || "checkout"
+    });
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+    return res.json({ success: true, preference: result.record });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to save WhatsApp preference." });
+  }
 });
-app.get("/api/admin/order-notifications", requireAdminAuth, async (_req, res) => {
+app.get("/api/customer/whatsapp-consent", async (req, res) => {
+  try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, error: "Authentication required to view WhatsApp preferences." });
+    }
+    const { customerId, customerEmail, customerPhone, whatsappNumber } = req.query || {};
+    if (!caller.isAdmin) {
+      if (customerId && String(customerId).trim() !== caller.userId) {
+        return res.status(403).json({ success: false, error: "Forbidden: Cannot read another customer's WhatsApp preference." });
+      }
+      if (customerEmail && caller.email && String(customerEmail).trim().toLowerCase() !== caller.email) {
+        return res.status(403).json({ success: false, error: "Forbidden: Email does not match authenticated customer." });
+      }
+      if (customerPhone && caller.phone && normalizePhone(String(customerPhone)) !== caller.phone) {
+        return res.status(403).json({ success: false, error: "Forbidden: Phone does not match authenticated customer." });
+      }
+    }
+    const pref = await getCustomerWhatsAppConsent({
+      customerId: caller.isAdmin ? customerId ? String(customerId) : void 0 : caller.userId,
+      customerEmail: caller.isAdmin ? customerEmail ? String(customerEmail) : void 0 : caller.email || void 0,
+      customerPhone: caller.isAdmin ? customerPhone ? String(customerPhone) : void 0 : caller.phone || void 0,
+      whatsappNumber: whatsappNumber ? String(whatsappNumber) : void 0
+    });
+    return res.json({ success: true, preference: pref });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to read WhatsApp preference." });
+  }
+});
+app.get("/api/orders/:orderId/notifications", async (req, res) => {
+  try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.authenticated) {
+      return res.status(401).json({ success: false, notifications: [], error: "Authentication required." });
+    }
+    const { orderId } = req.params;
+    if (!caller.isAdmin) {
+      let targetOrder = serverOrders.get(String(orderId));
+      if (!targetOrder) {
+        try {
+          const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+          const readClient = isServiceRole ? adminClient : caller.authType === "supabase" ? createUserScopedSupabaseClient(caller.token) : adminClient;
+          const { data } = await readClient.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
+          if (data) targetOrder = data;
+        } catch {
+        }
+      }
+      if (!targetOrder) {
+        return res.status(404).json({ success: false, notifications: [], error: "Order not found." });
+      }
+      if (!isOrderOwnedByCaller(targetOrder, caller)) {
+        return res.status(403).json({ success: false, notifications: [], error: "Forbidden: You cannot inspect notifications for another customer's order." });
+      }
+    }
+    const records = await listOrderNotifications({ orderId: String(orderId), limit: 20 });
+    const sanitized = records.map((r) => {
+      const maskPhone = (p) => {
+        const d = String(p || "").replace(/\D/g, "");
+        if (d.length < 4) return p || "N/A";
+        return `+${d.slice(0, 2)} \u2022\u2022\u2022\u2022\u2022\u2022${d.slice(-4)}`;
+      };
+      return {
+        id: r.id,
+        orderId: r.order_id,
+        recipientRole: r.recipient_role,
+        recipientMasked: r.recipient_role === "admin" ? "+91 \u2022\u2022\u2022\u2022\u2022\u20222135" : maskPhone(r.recipient),
+        notificationType: r.notification_type,
+        templateName: r.template_name,
+        status: r.status,
+        messageId: r.message_id,
+        consentVerified: r.consent_verified,
+        errorMessage: r.error_message,
+        submittedAt: r.submitted_at,
+        sentAt: r.sent_at,
+        deliveredAt: r.delivered_at,
+        readAt: r.read_at,
+        failedAt: r.failed_at,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      };
+    });
+    return res.json({ success: true, notifications: sanitized });
+  } catch (err) {
+    return res.json({ success: false, notifications: [], error: err?.message });
+  }
+});
+var handleWhatsAppWebhookVerify = (req, res) => {
+  const check = verifyWhatsAppWebhookSubscription(req.query);
+  if (check.ok && check.challenge) {
+    return res.status(200).type("text/plain").send(check.challenge);
+  }
+  return res.status(check.statusCode).json({ success: false, error: check.error });
+};
+var handleWhatsAppWebhookEvent = async (req, res) => {
+  const sigHeader = req.headers["x-hub-signature-256"];
+  const rawBody = req.rawBody;
+  const appSecretConfigured = Boolean((process.env.WHATSAPP_APP_SECRET || "").trim());
+  const signatureOk = verifyMetaWebhookSignature(rawBody, sigHeader);
+  const safeHeaders = {
+    "content-type": req.headers["content-type"] || null,
+    "user-agent": req.headers["user-agent"] || null,
+    "x-hub-signature-256": sigHeader ? `${sigHeader.slice(0, 14)}...` : null,
+    signatureVerificationMode: appSecretConfigured ? "enforced" : "app_secret_not_set"
+  };
+  if (!signatureOk) {
+    await recordRawWebhookEvent({
+      payload: req.body,
+      headers: safeHeaders,
+      signatureValid: false,
+      forceEventType: "invalid_signature",
+      errorSummary: "Rejected: Invalid X-Hub-Signature-256 Meta webhook signature."
+    }).catch(() => {
+    });
+    return res.status(401).json({ success: false, error: "Invalid Meta webhook signature." });
+  }
+  try {
+    const outcome = await processWhatsAppWebhookEvent(req.body, {
+      headers: safeHeaders,
+      signatureValid: appSecretConfigured ? true : null
+    });
+    return res.status(200).json({ success: true, ...outcome });
+  } catch (err) {
+    console.error("[WhatsApp Webhook] Processing exception:", err?.message);
+    return res.status(200).json({ success: false, error: err?.message });
+  }
+};
+app.get(["/api/webhooks/whatsapp", "/api/whatsapp/webhook"], handleWhatsAppWebhookVerify);
+app.post(["/api/webhooks/whatsapp", "/api/whatsapp/webhook"], handleWhatsAppWebhookEvent);
+app.get("/api/admin/whatsapp/webhook-events", requireAdminAuth, async (req, res) => {
+  try {
+    const requestedLimit = Number(req.query?.limit || 50);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(1, requestedLimit), 50) : 50;
+    const query = String(req.query?.q ?? req.query?.search ?? "").trim();
+    const rawSearchBy = String(req.query?.searchBy ?? "all").trim();
+    const searchBy = rawSearchBy === "wamid" || rawSearchBy === "matched_order_id" ? rawSearchBy : "all";
+    const events = await listRecentWebhookEvents(limit, { query, searchBy });
+    return res.json({
+      success: true,
+      count: events.length,
+      maxLimit: 50,
+      query,
+      searchBy,
+      events
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      events: [],
+      error: err?.message || "Failed to fetch Meta WhatsApp webhook events."
+    });
+  }
+});
+app.get("/api/admin/whatsapp/status", requireAdminAuth, async (req, res) => {
+  try {
+    const forceTemplates = req.query?.refresh === "true";
+    const configStatus = getWhatsAppConfigStatus();
+    const [templates, notifications] = await Promise.all([
+      getWhatsAppTemplatesStatus(forceTemplates),
+      listOrderNotifications({ limit: 100 })
+    ]);
+    const adminNotifs = notifications.filter((n) => n.recipient_role === "admin");
+    const customerNotifs = notifications.filter((n) => n.recipient_role === "customer");
+    const failedNotif = notifications.find((n) => n.status === "failed");
+    const cutoff24hMs = Date.now() - 24 * 60 * 60 * 1e3;
+    const allFailedNotifs = notifications.filter((n) => n.status === "failed");
+    const recentFailed24hList = allFailedNotifs.filter((n) => {
+      const ts = new Date(n.failed_at || n.updated_at || n.created_at || 0).getTime();
+      return Number.isFinite(ts) && ts >= cutoff24hMs;
+    });
+    const summaryCounts = {
+      total: notifications.length,
+      pending: notifications.filter((n) => n.status === "pending").length,
+      submitted: notifications.filter((n) => n.status === "submitted").length,
+      sent: notifications.filter((n) => n.status === "sent").length,
+      delivered: notifications.filter((n) => n.status === "delivered").length,
+      read: notifications.filter((n) => n.status === "read").length,
+      failed: allFailedNotifs.length,
+      recentFailed24h: recentFailed24hList.length,
+      recentFailedAdmin24h: recentFailed24hList.filter((n) => n.recipient_role === "admin").length,
+      recentFailedCustomer24h: recentFailed24hList.filter((n) => n.recipient_role === "customer").length,
+      skippedNoConsent: notifications.filter((n) => n.status === "skipped_no_consent").length
+    };
+    const recentFailedNotifications = recentFailed24hList.slice(0, 5).map((n) => ({
+      id: n.id,
+      orderId: n.order_id,
+      recipientRole: n.recipient_role,
+      recipient: n.recipient,
+      templateName: n.template_name,
+      errorMessage: n.error_message,
+      timestamp: n.failed_at || n.updated_at || n.created_at
+    }));
+    const baseAppUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/+$/, "") : `${req.protocol}://${req.get("host")}`;
+    return res.json({
+      success: true,
+      ...configStatus,
+      webhookUrl: `${baseAppUrl}/api/webhooks/whatsapp`,
+      templates,
+      summaryCounts,
+      recentFailedNotifications,
+      latestAdminNotification: adminNotifs[0] || null,
+      latestCustomerNotification: customerNotifs[0] || null,
+      lastError: failedNotif ? {
+        id: failedNotif.id,
+        orderId: failedNotif.order_id,
+        recipientRole: failedNotif.recipient_role,
+        recipient: failedNotif.recipient,
+        message: failedNotif.error_message,
+        timestamp: failedNotif.failed_at || failedNotif.updated_at
+      } : null
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to inspect WhatsApp status." });
+  }
+});
+app.get("/api/admin/order-notifications", requireAdminAuth, async (req, res) => {
+  try {
+    const orderId = req.query?.orderId ? String(req.query.orderId) : void 0;
+    const notifications = await listOrderNotifications({ orderId, limit: 150 });
+    return res.json({ success: true, notifications });
+  } catch (err) {
+    return res.json({ success: true, notifications: [], error: err?.message });
+  }
+});
+var resolveOrderForNotificationRetry = async (orderId) => {
+  const local = serverOrders.get(String(orderId));
+  if (local) return local;
   try {
     const { client } = getAdminSupabaseServerClient();
     if (client) {
-      const { data, error } = await client.from("order_notifications").select("*").order("created_at", { ascending: false }).limit(50);
-      if (!error && Array.isArray(data)) {
-        return res.json({ success: true, notifications: data });
-      }
+      const { data } = await client.from("orders").select("*").eq("id", String(orderId)).maybeSingle();
+      if (data) return data;
     }
   } catch {
   }
-  return res.json({ success: true, notifications: [] });
+  return null;
+};
+app.post("/api/admin/whatsapp/retry/:notificationId", requireAdminAuth, async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const result = await retryFailedNotification(String(notificationId), resolveOrderForNotificationRetry);
+    return res.json({ success: result.success, result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err?.message || "Failed to retry notification." });
+  }
 });
 app.post("/api/admin/order-notifications/resend/:orderId", requireAdminAuth, async (req, res) => {
   const { orderId } = req.params;
-  const order = serverOrders.get(String(orderId));
+  const order = await resolveOrderForNotificationRetry(String(orderId));
   if (!order) {
     return res.status(404).json({ success: false, error: `Order ${orderId} not found` });
   }
   try {
-    const result = await sendOrderConfirmationWhatsApp(order);
-    return res.json({ success: result.success, result });
+    const result = await dispatchOrderWhatsAppNotifications(order);
+    return res.json({ success: result.overallSuccess, result });
   } catch (err) {
     return res.status(500).json({ success: false, error: err?.message || "Failed to dispatch WhatsApp alert" });
   }
@@ -6163,10 +10564,32 @@ app.post("/api/admin/reset-data", requireAdminAuth, (req, res) => {
     hotelsCount: serverHotels.length
   });
 });
+app.get(["/sw.js", "/registerSW.js"], (_req, res) => {
+  res.setHeader("Content-Type", "application/javascript");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.send(`
+      if (typeof self !== 'undefined' && self.registration) {
+        self.addEventListener('install', function() { self.skipWaiting(); });
+        self.addEventListener('activate', function(event) {
+          event.waitUntil(
+            caches.keys().then(function(names) {
+              return Promise.all(names.map(function(n) { return caches.delete(n); }));
+            }).then(function() {
+              return self.registration.unregister();
+            })
+          );
+        });
+      }
+    `);
+});
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3e3;
-  const distPath = path.join(process.cwd(), "dist");
-  const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === "dev" || !fs.existsSync(path.join(distPath, "index.html"));
+  const distPath = path4.join(process.cwd(), "dist");
+  const hasDistBuild = fs4.existsSync(path4.join(distPath, "index.html"));
+  const isDev = process.env.NODE_ENV === "development" || process.env.npm_lifecycle_event === "dev" || !hasDistBuild;
+  if (hasDistBuild) {
+    app.use(express.static(distPath, { index: "index.html", maxAge: "5m" }));
+  }
   if (isDev) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -6175,9 +10598,8 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(path4.join(distPath, "index.html"));
     });
   }
   app.listen(PORT, "0.0.0.0", () => {
@@ -6189,7 +10611,7 @@ var isDirectExecution = (() => {
     if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT) {
       return false;
     }
-    const argv1 = process.argv[1] ? path.resolve(process.argv[1]) : "";
+    const argv1 = process.argv[1] ? path4.resolve(process.argv[1]) : "";
     return argv1.endsWith("server.ts") || argv1.endsWith("server.js");
   } catch {
     return false;
@@ -6208,6 +10630,13 @@ export {
   startServer,
   verifySignedSessionToken
 };
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ * 
+ * Production Email Dispatcher for Nuvvo.
+ * Supports Nodemailer (via Gmail App Password or custom SMTP) and Supabase Auth.
+ */
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -6234,8 +10663,14 @@ export {
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Production Email Dispatcher for Nuvvo.
- * Supports Nodemailer (via Gmail App Password or custom SMTP) and Supabase Auth.
+ * Supabase Email Logs Service
+ * 
+ * Provides unified, non-blocking telemetry logging for all OTP email attempts:
+ * - signInWithOtp (dispatch, resend, rate limits, SMTP fallbacks)
+ * - verifyOtp (verification checks, invalid codes, expired tokens, successes)
+ * 
+ * Persists to Supabase `public.email_logs` table with non-blocking async execution,
+ * circuit-breaker protection (PGRST205 tolerance), and an in-memory buffer for instant inspection.
  */
 /**
  * @license
@@ -6263,6 +10698,21 @@ export {
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * NUVVO — Official Meta WhatsApp Cloud API Notification Service
+ *
+ * Features:
+ * - Strict server-side Meta Graph API integration (v21.0+ configurable via WHATSAPP_GRAPH_API_VERSION)
+ * - Fixed Admin alert recipient (+919063692135) on every new order
+ * - Verified & consented Customer WhatsApp number resolution (never assumes email = phone or phone = consent)
+ * - Transactional Outbox + Idempotency Key deduplication preventing duplicate alerts on API retries
+ * - 7 Meta-approved template definitions + live WABA template approval status sync
+ * - Full delivery lifecycle tracking: pending -> submitted -> sent -> delivered -> read | failed
+ * - Meta webhook subscription verification & event processing (delivery statuses + STOP opt-out)
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
  * 
  * Standalone Vercel Serverless Function: /api/auth/setup-profile
  * Creates customer profile, verifies username uniqueness, and securely hashes password.
@@ -6270,9 +10720,42 @@ export {
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * 
- * Standalone Vercel Serverless Function: /api/auth/customer-login
- * Performs secure Username/Email + Password authentication with server-side lookup.
+ *
+ * Customer Registration Endpoint: POST /api/auth/customer-register
+ * Creates a password-based Customer account in Supabase Auth and persists
+ * profile data (without passwords) in public.customer_profiles.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Standalone Serverless Function: /api/auth/customer-login
+ * Authenticates customers via Supabase Auth (signInWithPassword) using Username
+ * (resolved securely on backend, case-insensitive) or Email + Password.
+ * Enforces login rate limiting and preserves verified email status honestly.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Customer Profile Endpoint: GET / PUT /api/auth/customer-profile
+ * Strictly verifies Supabase Bearer JWT, blocks cross-customer profile access,
+ * and reads/updates only the authenticated customer's own profile row under RLS.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Customer Forgot Password Endpoint: POST /api/auth/forgot-password
+ * Sends a secure Supabase Auth password recovery email (supporting Username or Email resolution
+ * strictly on backend) with rate limiting and non-enumerating responses.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Resend Email Verification Endpoint: POST /api/auth/resend-verification
+ * Triggers Supabase Auth confirmation email resend for unverified accounts.
  */
 /**
  * @license
@@ -6280,6 +10763,15 @@ export {
  * 
  * Standalone Vercel Serverless Function: /api/auth/reset-password
  * Handles Customer Forgot Password flow with verified Email OTP.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Authenticated Customer Change Password Endpoint: POST /api/auth/change-password
+ * Requires active Supabase Bearer JWT, verifies the current password via Supabase Auth
+ * before updating to the new password, applies strict rate limiting, and never stores
+ * or logs plaintext passwords.
  */
 /**
  * @license
@@ -6348,14 +10840,11 @@ export {
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Server-side WhatsApp Business Cloud API Utility
- * Uses:
- * - WHATSAPP_ACCESS_TOKEN
- * - WHATSAPP_PHONE_NUMBER_ID
- * - WHATSAPP_BUSINESS_RECIPIENT
+ * Standalone Serverless API Endpoint: /api/verify-smtp
  * 
- * Generates structured order notifications and persists delivery records
- * in Supabase `order_notifications` table.
+ * Uses Nodemailer to connect to the configured SMTP credentials,
+ * verify server handshake & authentication, and transmit a test email,
+ * returning a detailed success or error JSON response to the client.
  */
 /**
  * @license
@@ -6374,5 +10863,16 @@ export {
  * - Check Status Endpoint: /pg/v1/status/{merchantId}/{merchantTransactionId}
  * - Checksum algorithm: SHA256(data + saltKey) + "###" + saltIndex
  * - Safe credential isolation: secrets are read ONLY from server-side environment variables.
+ */
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Express API Interceptor Middleware:
+ * 1. Intercepts all /api/* requests to measure response times (duration_ms) and status codes.
+ * 2. Computes rolling error rates and persists structured telemetry to Supabase `public.api_logs`
+ *    using a non-blocking, batched writer with automatic circuit-breaking if the table is unmigrated.
+ * 3. Implements a 5-minute (300,000ms) in-memory cache for frequent GET requests to reduce external
+ *    database and service load, with automatic cache invalidation on POST/PUT/PATCH/DELETE mutations.
  */
 //# sourceMappingURL=server.js.map

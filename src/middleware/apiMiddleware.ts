@@ -69,12 +69,12 @@ const NON_CACHEABLE_PREFIXES = [
 ];
 
 // Frequent GET prefixes eligible for the 5-minute cache
+// Note: Customer-scoped /api/orders is intentionally excluded so responses never leak across users.
 const CACHEABLE_GET_PREFIXES = [
   '/api/dishes',
   '/api/food-items',
   '/api/restaurants',
   '/api/hotels',
-  '/api/orders',
   '/api/settings',
   '/api/payment/phonepe/status'
 ];

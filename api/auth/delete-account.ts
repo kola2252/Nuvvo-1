@@ -16,7 +16,7 @@ import {
   fallbackCustomerAccounts,
   fallbackUsernamesRegistry
 } from "../../lib/auth-utils";
-import { getAdminSupabaseServerClient } from "../../src/utils/supabase/server";
+import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -35,11 +35,18 @@ export default async function handler(req: any, res: any) {
 
     const token = authHeader.replace('Bearer ', '').trim();
     const verified = verifySignedSessionJwt(token);
+
+    let supabaseAuthUser: any = null;
     if (!verified.valid || !verified.payload) {
-      return sendJsonResponse(res, 401, {
-        success: false,
-        error: "Session has expired or is invalid. Please log in again."
-      });
+      const publicSupabase = getPublicSupabaseServerClient();
+      const { data: sbUserData } = await publicSupabase.auth.getUser(token);
+      if (!sbUserData?.user?.id) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Session has expired or is invalid. Please log in again."
+        });
+      }
+      supabaseAuthUser = sbUserData.user;
     }
 
     const body = await parseRequestBody(req);
@@ -52,7 +59,32 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const sessionEmail = normalizeEmail(verified.payload.email || '');
+    if (supabaseAuthUser) {
+      const publicSupabase = getPublicSupabaseServerClient();
+      const { error: pwErr } = await publicSupabase.auth.signInWithPassword({
+        email: supabaseAuthUser.email,
+        password: String(password)
+      });
+      if (pwErr) {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Incorrect password. Account deletion aborted for security."
+        });
+      }
+
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      if (adminClient && isServiceRole) {
+        await adminClient.from('customer_profiles').delete().eq('id', supabaseAuthUser.id);
+        await adminClient.auth.admin.deleteUser(supabaseAuthUser.id).catch(() => {});
+      }
+
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message: "Your customer account and profile data have been permanently deleted."
+      });
+    }
+
+    const sessionEmail = normalizeEmail(verified.payload!.email || '');
     if (!sessionEmail) {
       return sendJsonResponse(res, 400, {
         success: false,

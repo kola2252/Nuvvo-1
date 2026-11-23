@@ -9,12 +9,14 @@ import { motion } from 'motion/react';
 import { 
   ShoppingBag, Trash2, Plus, Minus, Tag, Check, ArrowRight, MapPin, 
   Wallet, FileText, ChevronRight, ChevronLeft, X, PhoneCall, AlertTriangle, Coins, Sparkles,
-  Calendar, Clock, PlusCircle, RefreshCw, Camera, Award, CreditCard
+  Calendar, Clock, PlusCircle, RefreshCw, Camera, Award, CreditCard, MessageSquare, ShieldCheck
 } from 'lucide-react';
 import AddressSelectorModal from './AddressSelectorModal';
 import QRCodeScannerModal from './QRCodeScannerModal';
 import PaymentMethodScreen from './PaymentMethodScreen';
 import { PaymentMethodType } from '../types';
+import { getActiveAuthToken } from '../utils/supabase/client';
+import { getUserScopedItem } from '../utils/userScopedStorage';
 
 export default function CartScreen() {
   const { 
@@ -23,9 +25,9 @@ export default function CartScreen() {
     deliveryPartnerTip, setDeliveryPartnerTip,
     orderInstructions, setOrderInstructions,
     createNewOrder, setActiveTrackingOrder, setCurrentPage, setSelectedFoodItem,
-    user, validateDeliveryLocation,
+    user, updateUserProfile, validateDeliveryLocation,
     nuvvoPoints, pointsToRedeem, redeemPointsForDiscount, cancelPointsRedemption,
-    restaurants, clickToWhatsAppFoodBooking,
+    restaurants,
     pageHistory, goBack, closePage
   } = useApp();
 
@@ -40,13 +42,16 @@ export default function CartScreen() {
   const [showCouponsDialog, setShowCouponsDialog] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('UPI');
   const [lastPaymentDetails, setLastPaymentDetails] = useState<any>(null);
-  const [phonePeNumber, setPhonePeNumber] = useState(() => {
-    try {
-      return localStorage.getItem('nuvvo_googlepay_number') || '7702906994';
-    } catch {
-      return '7702906994';
-    }
+  const [phonePeNumber, setPhonePeNumber] = useState(() => user?.phone || '');
+
+  // Customer WhatsApp Number & Explicit Opt-In Consent (never assumes email = WhatsApp or phone entry = opt-in)
+  const [checkoutWhatsappInput, setCheckoutWhatsappInput] = useState<string>(() => {
+    const existingWa = user?.whatsappNumber || '';
+    const digits = existingWa.replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : '';
   });
+  const [checkoutWhatsappConsent, setCheckoutWhatsappConsent] = useState<boolean>(() => Boolean(user?.whatsappOptIn));
+  const [checkoutWhatsappError, setCheckoutWhatsappError] = useState<string>('');
   
   // Custom tipping state
   const [showCustomTip, setShowCustomTip] = useState(false);
@@ -55,38 +60,8 @@ export default function CartScreen() {
   const [selectedUPIId, setSelectedUPIId] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 
-  const savedCards = (() => {
-    if (!user) return [];
-    try {
-      const stored = localStorage.getItem(`nuvvo_cards_${user.phone}`);
-      return stored ? JSON.parse(stored) : [
-        { id: 'card_saved_1', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
-        { id: 'card_saved_2', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
-      ];
-    } catch {
-      return [];
-    }
-  })();
-
-  const savedUPIs = (() => {
-    if (!user) return [];
-    const activeGPayNum = (() => {
-      try {
-        return localStorage.getItem('nuvvo_googlepay_number') || '7702906994';
-      } catch {
-        return '7702906994';
-      }
-    })();
-    try {
-      const stored = localStorage.getItem(`nuvvo_upis_${user.phone}`);
-      return stored ? JSON.parse(stored) : [
-        { id: 'upi_saved_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
-        { id: 'upi_saved_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
-      ];
-    } catch {
-      return [];
-    }
-  })();
+  const savedCards = user?.id ? getUserScopedItem<any[]>(user.id, 'saved_cards', []) : [];
+  const savedUPIs = user?.id ? getUserScopedItem<any[]>(user.id, 'saved_upis', []) : [];
 
   // Scheduling states
   const [scheduleMode, setScheduleMode] = useState<'ASAP' | 'SCHEDULED'>('ASAP');
@@ -243,6 +218,71 @@ export default function CartScreen() {
     }
   };
 
+  const validateAndSyncCheckoutWhatsapp = (): { valid: boolean; e164: string; optIn: boolean } => {
+    const raw = checkoutWhatsappInput.trim();
+    if (raw.includes('@')) {
+      setCheckoutWhatsappError('Email address cannot be used as a WhatsApp number. Enter a 10-digit mobile number.');
+      return { valid: false, e164: '', optIn: false };
+    }
+    const digits = raw.replace(/\D/g, '');
+    const normalized10 = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : (digits.length === 11 && digits.startsWith('0') ? digits.slice(1) : digits);
+
+    if (raw && (!/^[6-9]\d{9}$/.test(normalized10) && (digits.length < 10 || digits.length > 15))) {
+      setCheckoutWhatsappError('Please enter a valid 10-digit WhatsApp mobile number.');
+      return { valid: false, e164: '', optIn: false };
+    }
+
+    if (checkoutWhatsappConsent && !normalized10) {
+      setCheckoutWhatsappError('Please enter your 10-digit WhatsApp number to receive automatic order confirmations.');
+      return { valid: false, e164: '', optIn: false };
+    }
+
+    setCheckoutWhatsappError('');
+    const e164 = normalized10
+      ? (normalized10.length === 10 ? `+91${normalized10}` : `+${digits}`)
+      : '';
+
+    // Persist consent update cleanly to backend & user profile if number was provided
+    if (e164 && user) {
+      updateUserProfile(
+        user.name,
+        user.email,
+        user.avatar,
+        user.phone,
+        user.addresses,
+        user.preferredLanguage,
+        {
+          whatsappNumber: e164,
+          whatsappOptIn: checkoutWhatsappConsent,
+          whatsappOptInAt: checkoutWhatsappConsent ? new Date().toISOString() : undefined,
+          whatsappOptInSource: 'checkout'
+        }
+      );
+
+      (async () => {
+        try {
+          const token = await getActiveAuthToken();
+          await fetch('/api/customer/whatsapp-consent', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              customerEmail: user.email,
+              customerPhone: user.phone,
+              whatsappNumber: e164,
+              consentGranted: checkoutWhatsappConsent,
+              consentSource: 'checkout'
+            })
+          });
+        } catch {}
+      })();
+    }
+
+    return { valid: true, e164, optIn: Boolean(e164 && checkoutWhatsappConsent) };
+  };
+
   const handleCreateOrder = () => {
     if (cart.length === 0) return;
     if (!currentAddress) {
@@ -257,6 +297,9 @@ export default function CartScreen() {
         return;
       }
     }
+
+    const waCheck = validateAndSyncCheckoutWhatsapp();
+    if (!waCheck.valid) return;
 
     const scheduledVal = scheduleMode === 'SCHEDULED' ? getScheduledTimeString() : undefined;
     
@@ -277,7 +320,12 @@ export default function CartScreen() {
     const created = createNewOrder(
       paymentMethod, 
       paymentMethod === 'PhonePe' ? phonePeNumber : undefined,
-      scheduledVal
+      scheduledVal,
+      {
+        customerWhatsappNumber: waCheck.e164 || undefined,
+        whatsappOptIn: waCheck.optIn,
+        customerEmail: user?.email
+      }
     );
     if (created) {
       if (checkoutMsg) {
@@ -306,6 +354,12 @@ export default function CartScreen() {
       }
     }
 
+    const waCheck = validateAndSyncCheckoutWhatsapp();
+    if (!waCheck.valid) {
+      setCheckoutStep('cart');
+      return;
+    }
+
     const scheduledVal = scheduleMode === 'SCHEDULED' ? getScheduledTimeString() : undefined;
     setPaymentMethod(method);
     setLastPaymentDetails(paymentDetails);
@@ -313,7 +367,12 @@ export default function CartScreen() {
     const created = createNewOrder(
       method, 
       paymentDetails || (method === 'PhonePe' ? phonePeNumber : undefined),
-      scheduledVal
+      scheduledVal,
+      {
+        customerWhatsappNumber: waCheck.e164 || undefined,
+        whatsappOptIn: waCheck.optIn,
+        customerEmail: user?.email
+      }
     );
 
     if (created) {
@@ -321,9 +380,13 @@ export default function CartScreen() {
         // Asynchronously call the server to initiate PhonePe Standard Checkout
         (async () => {
           try {
+            const token = await getActiveAuthToken();
             const res = await fetch('/api/payment/phonepe/initiate', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {})
+              },
               body: JSON.stringify({ orderId: created.id })
             });
 
@@ -443,7 +506,7 @@ export default function CartScreen() {
         <span className="text-xs font-mono font-bold text-zinc-400">Secure AES Endpoint</span>
       </div>
 
-      <div className="p-4 max-w-md mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-4">
         
         {/* CART ITEMS LIST */}
         <div className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-4">
@@ -1065,6 +1128,86 @@ export default function CartScreen() {
           </div>
         </div>
 
+        {/* CUSTOMER WHATSAPP NUMBER & EXPLICIT NOTIFICATION CONSENT */}
+        <div id="checkout-whatsapp-consent-card" className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-4 sm:p-5 shadow-sm space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                <MessageSquare className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                  Automatic WhatsApp Order Updates
+                </h4>
+                <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400">
+                  Receive instant order confirmation and live status alerts via Meta WhatsApp Cloud API.
+                </p>
+              </div>
+            </div>
+            {user?.phone && (
+              <button
+                type="button"
+                onClick={() => {
+                  const cleanDigits = user.phone.replace(/\D/g, '').slice(-10);
+                  setCheckoutWhatsappInput(cleanDigits);
+                  setCheckoutWhatsappError('');
+                }}
+                className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Use {user.phone.slice(-10)}
+              </button>
+            )}
+          </div>
+
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-zinc-400">+91</span>
+            <input
+              id="checkout-whatsapp-number-input"
+              type="tel"
+              maxLength={10}
+              placeholder="Enter 10-digit WhatsApp mobile number"
+              value={checkoutWhatsappInput}
+              onChange={e => {
+                const val = e.target.value;
+                if (val.includes('@')) {
+                  setCheckoutWhatsappError('Email address cannot be used as a WhatsApp number.');
+                  return;
+                }
+                setCheckoutWhatsappInput(val.replace(/\D/g, ''));
+                if (checkoutWhatsappError) setCheckoutWhatsappError('');
+              }}
+              className="w-full bg-slate-50 dark:bg-zinc-800/80 pl-11 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <label className="flex items-start gap-2.5 p-2.5 rounded-2xl bg-slate-50 dark:bg-zinc-800/50 border border-slate-200/70 dark:border-zinc-700/60 cursor-pointer select-none">
+            <input
+              id="checkout-whatsapp-consent-checkbox"
+              type="checkbox"
+              checked={checkoutWhatsappConsent}
+              onChange={e => {
+                setCheckoutWhatsappConsent(e.target.checked);
+                if (checkoutWhatsappError) setCheckoutWhatsappError('');
+              }}
+              className="mt-0.5 w-4 h-4 accent-emerald-600 rounded cursor-pointer shrink-0"
+            />
+            <div className="space-y-0.5 text-left">
+              <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-200 block leading-snug">
+                Yes, automatically send my Nuvvo order confirmation and delivery updates to this WhatsApp number.
+              </span>
+              <span className="text-[10px] text-zinc-500 dark:text-zinc-400 block">
+                Requires explicit consent. Reply STOP anytime to opt out.
+              </span>
+            </div>
+          </label>
+
+          {checkoutWhatsappError && (
+            <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-[11px] font-bold text-rose-700 dark:text-rose-300">
+              {checkoutWhatsappError}
+            </div>
+          )}
+        </div>
+
         {/* LAUNCH PROCEED TO PAYMENT CALL */}
         <button
           id="proceed-to-payment-action-btn"
@@ -1082,41 +1225,14 @@ export default function CartScreen() {
                 return;
               }
             }
+            const waCheck = validateAndSyncCheckoutWhatsapp();
+            if (!waCheck.valid) return;
             setCheckoutStep('payment');
           }}
           className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white py-4 rounded-3xl font-extrabold transition-all shadow-xl shadow-orange-500/10 flex items-center justify-center gap-2 active:scale-98 cursor-pointer mt-4 group"
         >
           <span>Proceed to Payment • ₹{finalAmount}</span>
           <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-        </button>
-
-        {/* WhatsApp Food Booking & Direct Order Option */}
-        <button
-          id="cart-whatsapp-food-booking-btn"
-          type="button"
-          onClick={() => {
-            const firstRestId = cart[0]?.foodItem.restaurantId;
-            const matchedRest = restaurants?.find(r => r.id === firstRestId);
-            const restName = matchedRest?.name || 'Nuvvo Kitchen Partner';
-
-            clickToWhatsAppFoodBooking({
-              restaurantName: restName,
-              items: cart.map(item => ({
-                name: item.foodItem.name,
-                quantity: item.quantity,
-                price: item.foodItem.discountPrice || item.foodItem.price
-              })),
-              totalAmount: finalAmount,
-              deliveryAddress: currentAddress?.fullAddress || currentAddress?.landmark || 'Chirala, Andhra Pradesh',
-              customerName: user?.name,
-              customerPhone: user?.phone || '',
-              customNote: orderInstructions || undefined
-            });
-          }}
-          className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-3.5 rounded-3xl font-extrabold transition-all shadow-lg shadow-emerald-500/15 flex items-center justify-center gap-2 active:scale-98 cursor-pointer mt-2.5 text-xs group"
-        >
-          <span className="text-sm">💬</span>
-          <span>Book / Order via WhatsApp</span>
         </button>
 
       </div>

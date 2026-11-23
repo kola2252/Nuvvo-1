@@ -12,17 +12,19 @@ import {
   History, RefreshCw, ChevronDown, ChevronLeft, CheckCircle, Edit, Plus, X, Map, Check,
   Bell, Sparkles, CreditCard, Lock, Camera, Star, ShoppingBag, Search,
   Share2, Copy, Gift, Users, Wallet, Receipt, Printer, Download,
-  ChevronUp, Mail, AlertCircle
+  ChevronUp, Mail, AlertCircle, MessageSquare, Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import { Address, SavedCard, SavedUPI } from '../types';
 import OrderHistory from './OrderHistory';
 import AdminCatalogManager from './AdminCatalogManager';
 import { isAdminRole, isSuperAdminRole, isAuthorizedAdminPhone } from '../config/authConfig';
+import { getActiveAuthToken } from '../utils/supabase/client';
+import { getUserScopedItem, setUserScopedItem } from '../utils/userScopedStorage';
 
 export default function AccountScreen() {
   const { 
     user, toggleDarkMode, darkMode, logoutUser, setCurrentPage, isAdmin, isSuperAdmin,
-    currentAddress, clickToWhatsAppSupport, clickToWhatsAppFoodBooking, logs, changeOrderStatus, addAuditLog,
+    currentAddress, clickToWhatsAppSupport, logs, changeOrderStatus, addAuditLog,
     registerNewRestaurantRequest, restaurants, toggleRestaurantActiveStatus,
     orders, reorderItems, updateUserAddresses, setCurrentAddress,
     orderUpdatesEnabled, promotionalAlertsEnabled, deliveryUpdatesEnabled,
@@ -33,16 +35,22 @@ export default function AccountScreen() {
     pageHistory, goBack, closePage, language, setLanguage,
     referralSettings, updateReferralSettings, resetAllReferralPoints, resetUserReferralPoints, adjustUserReferralPoints,
     requestAdminSaveConfirmation,
-    deleteCustomerAccount
+    deleteCustomerAccount,
+    resendCustomerVerificationEmail,
+    changeCustomerPassword,
+    requestCustomerPasswordReset
   } = useApp();
 
   // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
   const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
   const isAuthorizedAdmin = isAuthorizedPhone || ((isAdmin || isAdminRole(user?.role)) && isAuthorizedPhone);
   const isSuperAdminCell = isAuthorizedPhone || ((isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedPhone);
+  const isCustomerAccount = !user?.role || user.role === 'Customer';
 
   const [isEditingInfo, setIsEditingInfo] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileSavedSuccess, setProfileSavedSuccess] = useState(false);
+  const [profileSaveError, setProfileSaveError] = useState('');
   const [selectedPreviewThemeId, setSelectedPreviewThemeId] = useState<string>(currentTheme.id);
   const [showThemeAppliedMessage, setShowThemeAppliedMessage] = useState<boolean>(false);
 
@@ -54,151 +62,51 @@ export default function AccountScreen() {
   const [profileName, setProfileName] = useState(user?.name || '');
   const [profileEmail, setProfileEmail] = useState(user?.email || '');
   const [profilePhone, setProfilePhone] = useState(user?.phone || '');
+  const [profileLocation, setProfileLocation] = useState(user?.location || '');
+  const [profileWhatsapp, setProfileWhatsapp] = useState(() => {
+    const d = (user?.whatsappNumber || '').replace(/\D/g, '');
+    return d.length >= 10 ? d.slice(-10) : '';
+  });
+  const [profileWhatsappOptIn, setProfileWhatsappOptIn] = useState<boolean>(Boolean(user?.whatsappOptIn));
   const [profileFlatNo, setProfileFlatNo] = useState('');
   const [profileArea, setProfileArea] = useState('');
   const [profileCity, setProfileCity] = useState('');
 
-  // Email Verification with user_otps state
-  const [isEmailVerifiedState, setIsEmailVerifiedState] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem(`nuvvo_email_verified_${user?.email || ''}`);
-      if (stored === 'true') return true;
-    } catch {}
-    return Boolean(user?.isEmailVerified);
-  });
-  const [showEmailVerifyBox, setShowEmailVerifyBox] = useState(false);
-  const [verifyEmailOtpInput, setVerifyEmailOtpInput] = useState('');
-  const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
-  const [isVerifyingEmailOtp, setIsVerifyingEmailOtp] = useState(false);
-  const [emailOtpSentSuccess, setEmailOtpSentSuccess] = useState(false);
-  const [emailOtpFeedbackMsg, setEmailOtpFeedbackMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
-  const [emailOtpCooldown, setEmailOtpCooldown] = useState(0);
+  // Honest Supabase Auth Email Verification state (never overridden via localStorage)
+  const isEmailVerifiedState = Boolean(user?.isEmailVerified);
+  const [isSendingVerifyEmail, setIsSendingVerifyEmail] = useState(false);
+  const [verifyEmailFeedbackMsg, setVerifyEmailFeedbackMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [emailVerifyCooldown, setEmailVerifyCooldown] = useState(0);
 
   useEffect(() => {
-    if (user?.email) {
-      try {
-        const stored = localStorage.getItem(`nuvvo_email_verified_${user.email}`);
-        if (stored === 'true') {
-          setIsEmailVerifiedState(true);
-        } else if (user.isEmailVerified) {
-          setIsEmailVerifiedState(true);
-        }
-      } catch {}
-    }
-  }, [user?.email, user?.isEmailVerified]);
-
-  useEffect(() => {
-    if (emailOtpCooldown <= 0) return;
-    const timer = setInterval(() => setEmailOtpCooldown(c => c - 1), 1000);
+    if (emailVerifyCooldown <= 0) return;
+    const timer = setInterval(() => setEmailVerifyCooldown(c => c - 1), 1000);
     return () => clearInterval(timer);
-  }, [emailOtpCooldown]);
+  }, [emailVerifyCooldown]);
 
-  const handleRequestEmailVerificationCode = async (targetEmailToVerify?: string) => {
-    const emailToUse = (targetEmailToVerify || profileEmail || user?.email || '').trim().toLowerCase();
+  const handleResendSupabaseVerification = async (targetEmail?: string) => {
+    const emailToUse = (targetEmail || profileEmail || user?.email || '').trim().toLowerCase();
     if (!emailToUse || !emailToUse.includes('@') || !emailToUse.includes('.')) {
-      setEmailOtpFeedbackMsg({ type: 'error', text: 'Please enter a valid email address to verify.' });
+      setVerifyEmailFeedbackMsg({ type: 'error', text: 'A valid customer email is required for verification.' });
       return;
     }
 
-    setIsSendingEmailOtp(true);
-    setEmailOtpFeedbackMsg(null);
+    setIsSendingVerifyEmail(true);
+    setVerifyEmailFeedbackMsg(null);
+    const result = await resendCustomerVerificationEmail(emailToUse);
+    setIsSendingVerifyEmail(false);
 
-    try {
-      const res = await fetch('/api/auth/send-email-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: emailToUse,
-          fullName: user?.name || 'Valued Customer',
-          location: 'Chirala'
-        })
+    if (result.success) {
+      setEmailVerifyCooldown(45);
+      setVerifyEmailFeedbackMsg({
+        type: 'success',
+        text: result.message || `Verification link sent to ${emailToUse}. Check your inbox and spam folder.`
       });
-
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        setEmailOtpSentSuccess(true);
-        setShowEmailVerifyBox(true);
-        setEmailOtpCooldown(30);
-        setEmailOtpFeedbackMsg({
-          type: 'info',
-          text: data.message || `A 6-digit verification code has been dispatched and stored in user_otps for ${emailToUse}.`
-        });
-      } else {
-        setEmailOtpFeedbackMsg({
-          type: 'error',
-          text: data.error || 'Failed to dispatch verification code. Please check SMTP settings or try again.'
-        });
-      }
-    } catch {
-      setEmailOtpFeedbackMsg({
+    } else {
+      setVerifyEmailFeedbackMsg({
         type: 'error',
-        text: 'Network error while contacting verification server. Please retry.'
+        text: result.error || 'Could not dispatch verification email right now. Please try again later.'
       });
-    } finally {
-      setIsSendingEmailOtp(false);
-    }
-  };
-
-  const handleVerifyEmailCodeSubmit = async () => {
-    const emailToUse = (profileEmail || user?.email || '').trim().toLowerCase();
-    const cleanCode = verifyEmailOtpInput.trim().replace(/\D/g, '');
-
-    if (!cleanCode || cleanCode.length !== 6) {
-      setEmailOtpFeedbackMsg({ type: 'error', text: 'Please enter the complete 6-digit verification code.' });
-      return;
-    }
-
-    setIsVerifyingEmailOtp(true);
-    setEmailOtpFeedbackMsg(null);
-
-    try {
-      const res = await fetch('/api/auth/verify-db-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          identifier: emailToUse,
-          otp: cleanCode,
-          purpose: 'email_login'
-        })
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        setIsEmailVerifiedState(true);
-        try {
-          localStorage.setItem(`nuvvo_email_verified_${emailToUse}`, 'true');
-        } catch {}
-        setEmailOtpFeedbackMsg({
-          type: 'success',
-          text: '✓ Email successfully verified against user_otps table!'
-        });
-        setVerifyEmailOtpInput('');
-        setShowEmailVerifyBox(false);
-
-        // Update active profile in context
-        if (user) {
-          updateUserProfile(
-            user.name,
-            emailToUse,
-            user.avatar,
-            user.phone,
-            user.addresses,
-            user.preferredLanguage
-          );
-        }
-      } else {
-        setEmailOtpFeedbackMsg({
-          type: 'error',
-          text: data.error || 'Incorrect or expired code. Please verify against user_otps database entry.'
-        });
-      }
-    } catch {
-      setEmailOtpFeedbackMsg({
-        type: 'error',
-        text: 'Error verifying OTP code. Please try again.'
-      });
-    } finally {
-      setIsVerifyingEmailOtp(false);
     }
   };
 
@@ -226,12 +134,87 @@ export default function AccountScreen() {
     }
   };
 
+  // Security & Change Password state (never stores or displays raw password)
+  const [currentPwdInput, setCurrentPwdInput] = useState('');
+  const [newPwdInput, setNewPwdInput] = useState('');
+  const [confirmNewPwdInput, setConfirmNewPwdInput] = useState('');
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [showConfirmNewPwd, setShowConfirmNewPwd] = useState(false);
+  const [isChangingPwd, setIsChangingPwd] = useState(false);
+  const [pwdChangeError, setPwdChangeError] = useState('');
+  const [pwdChangeSuccess, setPwdChangeSuccess] = useState('');
+  const [isSendingProfileReset, setIsSendingProfileReset] = useState(false);
+  const [profileResetNotice, setProfileResetNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleChangeCustomerPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwdChangeError('');
+    setPwdChangeSuccess('');
+
+    if (!currentPwdInput) {
+      setPwdChangeError('Please enter your current password.');
+      return;
+    }
+    if (!newPwdInput || newPwdInput.length < 6) {
+      setPwdChangeError('New password must be at least 6 characters long.');
+      return;
+    }
+    if (newPwdInput !== confirmNewPwdInput) {
+      setPwdChangeError('New password and confirm password do not match.');
+      return;
+    }
+    if (newPwdInput === currentPwdInput) {
+      setPwdChangeError('New password must be different from your current password.');
+      return;
+    }
+
+    setIsChangingPwd(true);
+    const res = await changeCustomerPassword(currentPwdInput, newPwdInput, confirmNewPwdInput);
+    setIsChangingPwd(false);
+
+    if (res.success) {
+      setCurrentPwdInput('');
+      setNewPwdInput('');
+      setConfirmNewPwdInput('');
+      setPwdChangeSuccess(res.message || 'Password updated successfully.');
+    } else {
+      setPwdChangeError(res.error || 'Unable to change password right now.');
+    }
+  };
+
+  const handleSendProfileForgotReset = async () => {
+    if (!user?.email) {
+      setProfileResetNotice({ type: 'error', text: 'Add a verified email address to your profile before requesting a password reset.' });
+      return;
+    }
+    setIsSendingProfileReset(true);
+    setProfileResetNotice(null);
+    const res = await requestCustomerPasswordReset(user.email);
+    setIsSendingProfileReset(false);
+    if (res.success) {
+      setProfileResetNotice({
+        type: 'success',
+        text: res.message || `Password reset instructions sent to ${user.email}.`
+      });
+    } else {
+      setProfileResetNotice({
+        type: 'error',
+        text: res.error || 'Unable to send password reset email right now.'
+      });
+    }
+  };
+
   // Synchronize state variables with active user data on mount / change
   useEffect(() => {
     if (user) {
       setProfileName(user.name || '');
       setProfileEmail(user.email || '');
       setProfilePhone(user.phone || '');
+      setProfileLocation(user.location || '');
+      const waDigits = (user.whatsappNumber || '').replace(/\D/g, '');
+      setProfileWhatsapp(waDigits.length >= 10 ? waDigits.slice(-10) : '');
+      setProfileWhatsappOptIn(Boolean(user.whatsappOptIn));
       const primaryAddr = user.addresses?.find(a => a.isDefault) || user.addresses?.[0];
       setProfileFlatNo(primaryAddr?.flatNo || '');
       setProfileArea(primaryAddr?.area || '');
@@ -338,33 +321,38 @@ export default function AccountScreen() {
     }
   };
 
-  // Loyalty local UI triggers
+  // Loyalty local UI triggers (strictly isolated per userId)
   const [dailyClaimLoading, setDailyClaimLoading] = useState(false);
   const [dailyClaimed, setDailyClaimed] = useState<boolean>(() => {
-    return localStorage.getItem('nuvvo_daily_pts_timestamp') === new Date().toLocaleDateString();
+    if (!user?.id) return false;
+    return getUserScopedItem<string>(user.id, 'daily_pts_timestamp', '') === new Date().toLocaleDateString();
   });
   const [spinResultMsg, setSpinResultMsg] = useState<string | null>(null);
 
-  // REFERRAL & STORE CREDITS SYSTEM STATES
-  const [referralCode] = useState<string>(() => {
-    const cached = localStorage.getItem('nuvvo_user_referral_code');
+  const buildReferralCodeForUser = (name?: string, uid?: string) => {
+    const userNamePart = name ? name.split(' ')[0].replace(/[^a-zA-Z]/g, '').slice(0, 4).toUpperCase() : 'USER';
+    const uidPart = uid ? uid.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase() : Math.random().toString(36).substring(2, 6).toUpperCase();
+    return `NUVVO-${userNamePart || 'VIP'}-${uidPart || '0000'}`;
+  };
+
+  // REFERRAL & STORE CREDITS SYSTEM STATES (isolated per customer userId)
+  const [referralCode, setReferralCode] = useState<string>(() => {
+    if (!user?.id) return '';
+    const cached = getUserScopedItem<string>(user.id, 'referral_code', '');
     if (cached) return cached;
-    const userNamePart = user?.name ? user.name.split(' ')[0].replace(/[^a-zA-Z]/g, '').slice(0, 4).toUpperCase() : 'USER';
-    const randPart = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const newCode = `NUVVO-${userNamePart || 'VIP'}-${randPart}`;
-    localStorage.setItem('nuvvo_user_referral_code', newCode);
+    const newCode = buildReferralCodeForUser(user.name, user.id);
+    setUserScopedItem(user.id, 'referral_code', newCode);
     return newCode;
   });
 
-  const [referralCredits, setReferralCredits] = useState<number>(() => {
-    const stored = localStorage.getItem('nuvvo_referral_credits');
-    return (stored !== null && stored !== '') ? Number(stored) : 0;
-  });
+  const [referralCredits, setReferralCredits] = useState<number>(() =>
+    getUserScopedItem<number>(user?.id, 'referral_credits', 0)
+  );
 
   const [inputReferralCode, setInputReferralCode] = useState('');
-  const [appliedReferralCode, setAppliedReferralCode] = useState<string | null>(() => {
-    return localStorage.getItem('nuvvo_applied_referral_code');
-  });
+  const [appliedReferralCode, setAppliedReferralCode] = useState<string | null>(() =>
+    getUserScopedItem<string | null>(user?.id, 'applied_referral_code', null)
+  );
 
   const [referralMessage, setReferralMessage] = useState<string | null>(null);
   const [referralMsgType, setReferralMsgType] = useState<'success' | 'error' | null>(null);
@@ -372,14 +360,9 @@ export default function AccountScreen() {
   const [isSimulatingFriend, setIsSimulatingFriend] = useState(false);
   const [isConvertingCredits, setIsConvertingCredits] = useState(false);
 
-  const [referredFriendsList, setReferredFriendsList] = useState<any[]>(() => {
-    try {
-      const stored = localStorage.getItem('nuvvo_referred_friends');
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [referredFriendsList, setReferredFriendsList] = useState<any[]>(() =>
+    getUserScopedItem<any[]>(user?.id, 'referred_friends', [])
+  );
 
   // Admin-exclusive referral points control states
   const [adminReferrerBonus, setAdminReferrerBonus] = useState<number>(referralSettings?.referrerBonusPoints || 150);
@@ -388,29 +371,14 @@ export default function AccountScreen() {
   const [adminTargetPoints, setAdminTargetPoints] = useState('');
   const [adminReferralStatusMsg, setAdminReferralStatusMsg] = useState<string | null>(null);
 
-  // Persist referral changes
-  useEffect(() => {
-    localStorage.setItem('nuvvo_referral_credits', referralCredits.toString());
-  }, [referralCredits]);
+  // NUVVO WALLET STATES (isolated per customer userId, starts at ₹0 for new user accounts)
+  const [walletBalance, setWalletBalance] = useState<number>(() =>
+    getUserScopedItem<number>(user?.id, 'wallet_balance', 0)
+  );
 
-  useEffect(() => {
-    localStorage.setItem('nuvvo_referred_friends', JSON.stringify(referredFriendsList));
-  }, [referredFriendsList]);
-
-  // NUVVO WALLET STATES (Starts at ₹0 for new user accounts)
-  const [walletBalance, setWalletBalance] = useState<number>(() => {
-    const stored = localStorage.getItem('nuvvo_wallet_balance');
-    return (stored !== null && stored !== '') ? Number(stored) : 0;
-  });
-
-  const [walletHistory, setWalletHistory] = useState<any[]>(() => {
-    try {
-      const stored = localStorage.getItem('nuvvo_wallet_history');
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [walletHistory, setWalletHistory] = useState<any[]>(() =>
+    getUserScopedItem<any[]>(user?.id, 'wallet_history', [])
+  );
 
   const [walletFlowStep, setWalletFlowStep] = useState<'view' | 'input' | 'processing' | 'success' | 'failed'>('view');
   const [walletRechargeAmt, setWalletRechargeAmt] = useState<string>('500');
@@ -418,13 +386,61 @@ export default function AccountScreen() {
   const [walletProcessLog, setWalletProcessLog] = useState<string>('');
   const [walletSuccessMessage, setWalletSuccessMessage] = useState<string>('');
 
+  // Rehydrate & isolate customer-local wallet/referral/cards/UPIs whenever authenticated user changes
   useEffect(() => {
-    localStorage.setItem('nuvvo_wallet_balance', walletBalance.toString());
-  }, [walletBalance]);
+    if (!user?.id) {
+      setDailyClaimed(false);
+      setReferralCode('');
+      setReferralCredits(0);
+      setAppliedReferralCode(null);
+      setReferredFriendsList([]);
+      setWalletBalance(0);
+      setWalletHistory([]);
+      return;
+    }
+
+    setDailyClaimed(
+      getUserScopedItem<string>(user.id, 'daily_pts_timestamp', '') === new Date().toLocaleDateString()
+    );
+    const cachedRef = getUserScopedItem<string>(user.id, 'referral_code', '');
+    if (cachedRef) {
+      setReferralCode(cachedRef);
+    } else {
+      const freshCode = buildReferralCodeForUser(user.name, user.id);
+      setUserScopedItem(user.id, 'referral_code', freshCode);
+      setReferralCode(freshCode);
+    }
+    setReferralCredits(getUserScopedItem<number>(user.id, 'referral_credits', 0));
+    setAppliedReferralCode(getUserScopedItem<string | null>(user.id, 'applied_referral_code', null));
+    setReferredFriendsList(getUserScopedItem<any[]>(user.id, 'referred_friends', []));
+    setWalletBalance(getUserScopedItem<number>(user.id, 'wallet_balance', 0));
+    setWalletHistory(getUserScopedItem<any[]>(user.id, 'wallet_history', []));
+  }, [user?.id, user?.name]);
+
+  // Persist customer-scoped referral & wallet changes only for the active customer
+  useEffect(() => {
+    if (user?.id) {
+      setUserScopedItem(user.id, 'referral_credits', referralCredits);
+    }
+  }, [user?.id, referralCredits]);
 
   useEffect(() => {
-    localStorage.setItem('nuvvo_wallet_history', JSON.stringify(walletHistory));
-  }, [walletHistory]);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'referred_friends', referredFriendsList);
+    }
+  }, [user?.id, referredFriendsList]);
+
+  useEffect(() => {
+    if (user?.id) {
+      setUserScopedItem(user.id, 'wallet_balance', walletBalance);
+    }
+  }, [user?.id, walletBalance]);
+
+  useEffect(() => {
+    if (user?.id) {
+      setUserScopedItem(user.id, 'wallet_history', walletHistory);
+    }
+  }, [user?.id, walletHistory]);
 
   // SAVED ADDRESSES MANAGEMENT STATES
   const [showAddrForm, setShowAddrForm] = useState(false);
@@ -484,7 +500,7 @@ Rider Tip: ₹${order.deliveryPartnerTip || 0}
 Promo Discount: -₹${order.discount || 0}
 Loyalty Cashback: -₹${order.pointsRedeemed || 0}
 -----------------------------------------
-GRAND TOTAL: ₹${order.totalAmount}
+GRAND TOTAL: ₹${order.finalAmount ?? order.totalAmount ?? 0}
 =========================================
 Thank you for dining with Nuvvo Gourmet!`;
 
@@ -493,39 +509,24 @@ Thank you for dining with Nuvvo Gourmet!`;
     setTimeout(() => setCopiedInvoiceId(null), 2000);
   };
 
-  // SAVED PAYMENT STATE
-  const [savedCards, setSavedCards] = useState<SavedCard[]>(() => {
-    if (!user) return [];
-    try {
-      const stored = localStorage.getItem(`nuvvo_cards_${user.phone}`);
-      return stored ? JSON.parse(stored) : [
-        { id: 'card_saved_1', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 1256', expiryDate: '09/29', cardBrand: 'RuPay' },
-        { id: 'card_saved_2', cardHolder: user.name || 'User', cardNumber: '•••• •••• •••• 4821', expiryDate: '12/31', cardBrand: 'Visa' }
-      ];
-    } catch {
-      return [];
-    }
-  });
+  // SAVED PAYMENT STATE (strictly isolated per authenticated customer userId)
+  const [savedCards, setSavedCards] = useState<SavedCard[]>(() =>
+    getUserScopedItem<SavedCard[]>(user?.id, 'saved_cards', [])
+  );
 
-  const [savedUPIs, setSavedUPIs] = useState<SavedUPI[]>(() => {
-    if (!user) return [];
-    const activeGPayNum = user.phone || (() => {
-      try {
-        return localStorage.getItem('nuvvo_googlepay_number') || '';
-      } catch {
-        return '';
-      }
-    })();
-    try {
-      const stored = localStorage.getItem(`nuvvo_upis_${user.phone}`);
-      return stored ? JSON.parse(stored) : [
-        { id: 'upi_saved_1', name: 'Google Pay Primary', upiId: `${activeGPayNum}@okhdfcbank`, provider: 'GPAY' },
-        { id: 'upi_saved_2', name: 'PhonePe Secondary', upiId: `${activeGPayNum}@ybl`, provider: 'PHONEPE' }
-      ];
-    } catch {
-      return [];
+  const [savedUPIs, setSavedUPIs] = useState<SavedUPI[]>(() =>
+    getUserScopedItem<SavedUPI[]>(user?.id, 'saved_upis', [])
+  );
+
+  useEffect(() => {
+    if (!user?.id) {
+      setSavedCards([]);
+      setSavedUPIs([]);
+      return;
     }
-  });
+    setSavedCards(getUserScopedItem<SavedCard[]>(user.id, 'saved_cards', []));
+    setSavedUPIs(getUserScopedItem<SavedUPI[]>(user.id, 'saved_upis', []));
+  }, [user?.id]);
 
   const [showPayForm, setShowPayForm] = useState<'card' | 'upi' | null>(null);
 
@@ -614,7 +615,7 @@ Thank you for dining with Nuvvo Gourmet!`;
     const executeSaveCard = () => {
       const updated = [...savedCards, newCard];
       setSavedCards(updated);
-      localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
+      setUserScopedItem(user.id, 'saved_cards', updated);
 
       // Reset Form
       setCardHolder('');
@@ -658,7 +659,7 @@ Thank you for dining with Nuvvo Gourmet!`;
     const executeSaveUPI = () => {
       const updated = [...savedUPIs, newUpi];
       setSavedUPIs(updated);
-      localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
+      setUserScopedItem(user.id, 'saved_upis', updated);
 
       // Reset Form
       setUpiLabel('');
@@ -684,7 +685,7 @@ Thank you for dining with Nuvvo Gourmet!`;
       onConfirm: () => {
         const updated = savedCards.filter(c => c.id !== cardId);
         setSavedCards(updated);
-        localStorage.setItem(`nuvvo_cards_${user.phone}`, JSON.stringify(updated));
+        setUserScopedItem(user.id, 'saved_cards', updated);
       }
     });
   };
@@ -699,7 +700,7 @@ Thank you for dining with Nuvvo Gourmet!`;
       onConfirm: () => {
         const updated = savedUPIs.filter(u => u.id !== upiId);
         setSavedUPIs(updated);
-        localStorage.setItem(`nuvvo_upis_${user.phone}`, JSON.stringify(updated));
+        setUserScopedItem(user.id, 'saved_upis', updated);
       }
     });
   };
@@ -832,16 +833,46 @@ Thank you for dining with Nuvvo Gourmet!`;
 
   const handleUpdateProfile = (e: React.FormEvent) => {
     e.preventDefault();
+    setProfileSaveError('');
 
     const trimmedName = profileName.trim();
-    const trimmedEmail = profileEmail.trim();
+    const trimmedEmail = (isCustomerAccount ? (user?.email || profileEmail) : profileEmail).trim();
+    const trimmedLocation = profileLocation.trim();
+    const cleanPhoneDigits = profilePhone.replace(/\D/g, '').slice(-10);
+    const rawWa = profileWhatsapp.trim();
 
     if (!trimmedName) {
-      alert("దయచేసి మీ పేరును నమోదు చేయండి (Please enter your full name).");
+      setProfileSaveError('Please enter your full name.');
       return;
     }
 
-    const executeUpdateProfile = () => {
+    if (isCustomerAccount && cleanPhoneDigits.length !== 10) {
+      setProfileSaveError('Please enter a valid 10-digit mobile number.');
+      return;
+    }
+
+    if (rawWa.includes('@')) {
+      setProfileSaveError('Email address cannot be used as a WhatsApp number. Please enter a 10-digit mobile number.');
+      return;
+    }
+
+    const cleanWaDigits = rawWa.replace(/\D/g, '');
+    if (rawWa && cleanWaDigits.length < 10) {
+      setProfileSaveError('Please enter a valid 10-digit WhatsApp mobile number.');
+      return;
+    }
+    if (profileWhatsappOptIn && cleanWaDigits.length < 10) {
+      setProfileSaveError('Please enter a valid 10-digit WhatsApp mobile number to enable WhatsApp order notifications.');
+      return;
+    }
+
+    const formattedWhatsappE164 = cleanWaDigits.length >= 10
+      ? (cleanWaDigits.length === 10 ? `+91${cleanWaDigits}` : `+${cleanWaDigits}`)
+      : '';
+
+    const executeUpdateProfile = async () => {
+      setIsSavingProfile(true);
+      setProfileSaveError('');
       let updatedAddresses = user?.addresses ? [...user.addresses] : [];
       if (profileFlatNo.trim() || profileArea.trim()) {
         const primaryAddr = user?.addresses?.find(a => a.isDefault) || user?.addresses?.[0];
@@ -859,7 +890,7 @@ Thank you for dining with Nuvvo Gourmet!`;
             id: `addr_${Date.now()}`,
             type: 'Home',
             flatNo: profileFlatNo.trim() || 'N/A',
-            area: profileArea.trim() || 'Chirala Delivery Point',
+            area: profileArea.trim() || trimmedLocation || 'Chirala Delivery Point',
             city: profileCity.trim() || 'Chirala',
             isDefault: true
           };
@@ -868,14 +899,54 @@ Thank you for dining with Nuvvo Gourmet!`;
         }
       }
 
-      // Single atomic update ensuring name, email and addresses persist together
-      updateUserProfile(
-        trimmedName, 
-        trimmedEmail, 
-        user?.avatar, 
-        profilePhone.trim() || user?.phone, 
-        updatedAddresses.length ? updatedAddresses : undefined
+      const combinedDeliveryAddress = [profileFlatNo.trim(), profileArea.trim(), profileCity.trim()]
+        .filter(Boolean)
+        .join(', ');
+
+      // Persist name, mobile, location, addresses, and explicit WhatsApp consent to Supabase customer_profiles
+      const saveResult = await updateUserProfile(
+        trimmedName,
+        trimmedEmail,
+        user?.avatar,
+        cleanPhoneDigits || user?.phone,
+        updatedAddresses.length ? updatedAddresses : undefined,
+        undefined,
+        {
+          whatsappNumber: formattedWhatsappE164 || undefined,
+          whatsappOptIn: Boolean(formattedWhatsappE164 && profileWhatsappOptIn),
+          whatsappOptInAt: profileWhatsappOptIn ? new Date().toISOString() : undefined,
+          whatsappOptInSource: 'profile'
+        },
+        {
+          location: trimmedLocation || undefined,
+          deliveryAddress: combinedDeliveryAddress || undefined
+        }
       );
+
+      setIsSavingProfile(false);
+
+      if (saveResult && !saveResult.success) {
+        setProfileSaveError(saveResult.error || 'Failed to save profile changes to Supabase.');
+        return;
+      }
+
+      if (formattedWhatsappE164) {
+        const token = await getActiveAuthToken();
+        fetch('/api/customer/whatsapp-consent', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            customerEmail: trimmedEmail || user?.email,
+            customerPhone: cleanPhoneDigits || user?.phone,
+            whatsappNumber: formattedWhatsappE164,
+            consentGranted: Boolean(profileWhatsappOptIn),
+            consentSource: 'profile'
+          })
+        }).catch(() => {});
+      }
 
       setProfileSavedSuccess(true);
       setTimeout(() => {
@@ -887,7 +958,7 @@ Thank you for dining with Nuvvo Gourmet!`;
     requestAdminSaveConfirmation({
       title: `Save Profile Details: "${trimmedName}"`,
       itemType: 'User Profile (ఖాతా ప్రొఫైల్ వివరాలు)',
-      description: `Phone: ${profilePhone.trim() || user?.phone} • Email: ${trimmedEmail || 'Not Provided'}`,
+      description: `Phone: ${cleanPhoneDigits || user?.phone} • Area: ${trimmedLocation || 'Not Set'} • Email: ${trimmedEmail || 'Not Provided'}`,
       onConfirm: executeUpdateProfile
     });
   };
@@ -922,7 +993,9 @@ Thank you for dining with Nuvvo Gourmet!`;
       const possibleAmounts = [15, 25, 35, 50];
       const selectedAmt = possibleAmounts[Math.floor(Math.random() * possibleAmounts.length)];
       awardPointsBonus(selectedAmt, "Daily reward gift claim bonus!", "spin_bonus");
-      localStorage.setItem('nuvvo_daily_pts_timestamp', new Date().toLocaleDateString());
+      if (user?.id) {
+        setUserScopedItem(user.id, 'daily_pts_timestamp', new Date().toLocaleDateString());
+      }
       setDailyClaimed(true);
       setDailyClaimLoading(false);
       setSpinResultMsg(`🎉 Congratulations! You received +${selectedAmt} Nuvvo Points!`);
@@ -981,7 +1054,9 @@ Thank you for dining with Nuvvo Gourmet!`;
     // Add ₹100 credit on successful application
     setReferralCredits(prev => prev + 100);
     setAppliedReferralCode(code);
-    localStorage.setItem('nuvvo_applied_referral_code', code);
+    if (user?.id) {
+      setUserScopedItem(user.id, 'applied_referral_code', code);
+    }
     setReferralMessage("🎉 Code applied successfully! ₹100 Store Credits have been credited to your balance.");
     setReferralMsgType("success");
     setInputReferralCode('');
@@ -1118,7 +1193,7 @@ Thank you for dining with Nuvvo Gourmet!`;
         </button>
       </div>
 
-      <div className="p-4 max-w-sm mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-4">
         
         {/* CORE USER BIO PROFILE */}
         <div className="space-y-1.5">
@@ -1201,11 +1276,18 @@ Thank you for dining with Nuvvo Gourmet!`;
                     </button>
                   )}
                 </div>
-                <p className="text-[10px] text-zinc-400 font-mono font-bold mt-1 tracking-tight">MOBILE: +91 {user?.phone || 'Guest Mode'}</p>
+                <p className="text-[10px] text-zinc-400 font-mono font-bold mt-1 tracking-tight">
+                  {user?.username ? `@${user.username} • ` : ''}MOBILE: +91 {user?.phone || 'Not Set'}
+                </p>
                 <div className="mt-1 flex gap-1 items-center flex-wrap">
+                  {user?.username && (
+                    <span className="text-[9px] bg-slate-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-2 py-0.5 rounded-full font-mono font-bold">
+                      @{user.username}
+                    </span>
+                  )}
                   {user?.role && (
                     <span className="text-[9px] bg-orange-500/10 text-orange-600 px-2 py-0.5 rounded-full font-bold uppercase">
-                      Role: {user?.role || 'Guest'}
+                      Role: {user?.role || 'Customer'}
                     </span>
                   )}
                   {isAuthorizedAdmin && (
@@ -1239,16 +1321,38 @@ Thank you for dining with Nuvvo Gourmet!`;
                   <span className="text-xs font-black text-zinc-900 dark:text-zinc-100 uppercase tracking-tight flex items-center gap-1.5">
                     <Edit className="w-3.5 h-3.5 text-orange-500" /> Edit Profile Details
                   </span>
-                  <span className="text-[9px] text-zinc-400 font-medium">Update Name & Email</span>
+                  <span className="text-[9px] text-zinc-400 font-medium">Saved securely to Supabase</span>
                 </div>
+
+                {profileSaveError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] font-semibold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{profileSaveError}</span>
+                  </div>
+                )}
+
+                {/* USERNAME (READ-ONLY HANDLE FOR CUSTOMERS) */}
+                {user?.username && (
+                  <div>
+                    <label className="block text-[10px] uppercase font-black text-zinc-400 dark:text-zinc-500 mb-1 tracking-wider">
+                      Unique Username Handle
+                    </label>
+                    <input
+                      type="text"
+                      value={`@${user.username}`}
+                      readOnly
+                      className="w-full bg-slate-100 dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 font-mono font-bold focus:outline-none cursor-not-allowed"
+                    />
+                  </div>
+                )}
 
                 {/* NAME FIELD */}
                 <div>
                   <div className="flex justify-between items-center mb-1">
                     <label className="text-[10px] uppercase font-black text-zinc-600 dark:text-zinc-300 tracking-wider flex items-center gap-1">
-                      <User className="w-3 h-3 text-orange-500" /> Customer Name (కస్టమర్ పేరు)
+                      <User className="w-3 h-3 text-orange-500" /> Full Name (కస్టమర్ పేరు)
                     </label>
-                    <span className="text-[9px] text-orange-500 font-bold">Change Name</span>
+                    <span className="text-[9px] text-orange-500 font-bold">Required</span>
                   </div>
                   <input 
                     type="text" 
@@ -1265,40 +1369,119 @@ Thank you for dining with Nuvvo Gourmet!`;
                 <div>
                   <div className="flex justify-between items-center mb-1">
                     <label className="text-[10px] uppercase font-black text-zinc-600 dark:text-zinc-300 tracking-wider flex items-center gap-1">
-                      <Mail className="w-3 h-3 text-orange-500" /> Customer Email (ఈమెయిల్ అడ్రస్)
+                      <Mail className="w-3 h-3 text-orange-500" /> Account Email (ఈమెయిల్ అడ్రస్)
                     </label>
-                    <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold">Save Email</span>
+                    <span className="text-[9px] text-zinc-400 font-bold">
+                      {isCustomerAccount ? 'Supabase Login Identity' : 'Contact Email'}
+                    </span>
                   </div>
                   <input 
                     type="email" 
                     value={profileEmail} 
-                    onChange={e => setProfileEmail(e.target.value)} 
-                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-bold focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500 text-sm"
+                    readOnly={isCustomerAccount}
+                    onChange={e => { if (!isCustomerAccount) setProfileEmail(e.target.value); }} 
+                    className={`w-full p-2.5 rounded-xl border font-bold text-sm focus:outline-none ${
+                      isCustomerAccount
+                        ? 'bg-slate-100 dark:bg-zinc-800/80 text-zinc-600 dark:text-zinc-400 border-slate-200 dark:border-zinc-700 cursor-not-allowed'
+                        : 'bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-slate-200 dark:border-zinc-700 focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500'
+                    }`}
                     placeholder="name@example.com"
                   />
-                  <p className="text-[9.5px] text-zinc-400 dark:text-zinc-500 mt-1">Order confirmations, digital food receipts, and invoices are saved to this email.</p>
+                  <p className="text-[9.5px] text-zinc-400 dark:text-zinc-500 mt-1">
+                    {isCustomerAccount
+                      ? 'Your email is linked to your verified Supabase Auth account.'
+                      : 'Order confirmations, digital food receipts, and invoices are saved to this email.'}
+                  </p>
                 </div>
 
-                {/* PHONE NUMBER (READ-ONLY / LOCKED) */}
+                {/* PHONE NUMBER */}
                 <div>
-                  <label className="block text-[10px] uppercase font-black text-zinc-400 dark:text-zinc-550 mb-1 tracking-wider">Registered Mobile Number</label>
-                  <div className="relative opacity-80">
+                  <label className="block text-[10px] uppercase font-black text-zinc-600 dark:text-zinc-300 mb-1 tracking-wider">
+                    Mobile Number
+                  </label>
+                  <div className={`relative ${!isCustomerAccount ? 'opacity-80' : ''}`}>
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 font-bold font-mono">+91</span>
                     <input 
                       type="tel" 
+                      maxLength={10}
                       value={profilePhone} 
-                      readOnly
-                      className="w-full bg-slate-100 dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 pl-11 pr-2.5 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-mono font-bold focus:outline-none cursor-not-allowed"
+                      readOnly={!isCustomerAccount}
+                      onChange={e => {
+                        if (isCustomerAccount) {
+                          setProfilePhone(e.target.value.replace(/\D/g, ''));
+                        }
+                      }}
+                      className={`w-full pl-11 pr-2.5 py-2.5 rounded-xl border font-mono font-bold focus:outline-none ${
+                        isCustomerAccount
+                          ? 'bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border-slate-200 dark:border-zinc-700 focus:border-orange-500'
+                          : 'bg-slate-100 dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-700 cursor-not-allowed'
+                      }`}
                       placeholder="10-digit mobile number"
                     />
                   </div>
-                  <p className="text-[9px] text-zinc-400 mt-0.5 font-mono">Mobile is verified via OTP security pass.</p>
+                  {!isCustomerAccount && (
+                    <p className="text-[9px] text-zinc-400 mt-0.5 font-mono">Partner/Admin mobile login ID cannot be changed here.</p>
+                  )}
+                </div>
+
+                {/* LOCATION / AREA */}
+                <div>
+                  <label className="block text-[10px] uppercase font-black text-zinc-600 dark:text-zinc-300 mb-1 tracking-wider flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-orange-500" /> Location / Area
+                  </label>
+                  <input
+                    type="text"
+                    value={profileLocation}
+                    onChange={e => setProfileLocation(e.target.value)}
+                    placeholder="e.g. Chirala Central Hub, Kothapet Road"
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 font-bold focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500 text-xs"
+                  />
+                </div>
+
+                {/* WHATSAPP NUMBER & EXPLICIT OPT-IN CONSENT */}
+                <div className="p-3 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/40 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[10px] uppercase font-black text-emerald-800 dark:text-emerald-300 tracking-wider flex items-center gap-1">
+                      <MessageSquare className="w-3 h-3" /> WhatsApp Notification Number
+                    </label>
+                    {profilePhone && (
+                      <button
+                        type="button"
+                        onClick={() => setProfileWhatsapp(profilePhone.replace(/\D/g, '').slice(-10))}
+                        className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                      >
+                        Use Registered Phone
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 font-bold font-mono">+91</span>
+                    <input
+                      type="tel"
+                      maxLength={10}
+                      value={profileWhatsapp}
+                      onChange={e => setProfileWhatsapp(e.target.value.replace(/\D/g, ''))}
+                      placeholder="10-digit WhatsApp mobile number"
+                      className="w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 pl-11 pr-2.5 py-2 rounded-xl border border-emerald-200 dark:border-zinc-700 font-mono font-bold focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={profileWhatsappOptIn}
+                      onChange={e => setProfileWhatsappOptIn(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-emerald-600 rounded cursor-pointer shrink-0"
+                    />
+                    <span className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 leading-snug">
+                      Receive automatic Nuvvo order confirmations and delivery updates on WhatsApp (Explicit Opt-In Consent)
+                    </span>
+                  </label>
                 </div>
 
                 {/* PRIMARY DELIVERY PIN SUBSECTION */}
                 <div className="pt-2.5 border-t border-dashed border-slate-200 dark:border-zinc-800 space-y-2">
                   <span className="block text-[9.5px] uppercase font-black text-orange-500 tracking-wider">
-                    Primary Delivery Location (Optional)
+                    Primary Delivery Address
                   </span>
                   
                   <div className="grid grid-cols-2 gap-2">
@@ -1338,23 +1521,24 @@ Thank you for dining with Nuvvo Gourmet!`;
                 <div className="flex gap-2 justify-end pt-2 border-t dark:border-zinc-800">
                   <button 
                     type="button" 
-                    onClick={() => setIsEditingInfo(false)}
+                    onClick={() => { setIsEditingInfo(false); setProfileSaveError(''); }}
                     className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-750 text-zinc-650 dark:text-zinc-300 rounded-xl font-black uppercase text-[10px] tracking-wider transition cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button 
                     type="submit"
-                    className={`px-5 py-2.5 ${currentTheme.bgClass} hover:opacity-90 text-white rounded-xl font-black uppercase text-[10px] tracking-wider transition cursor-pointer shadow-md flex items-center gap-1.5 active:scale-95`}
+                    disabled={isSavingProfile}
+                    className={`px-5 py-2.5 ${currentTheme.bgClass} hover:opacity-90 disabled:opacity-60 text-white rounded-xl font-black uppercase text-[10px] tracking-wider transition cursor-pointer shadow-md flex items-center gap-1.5 active:scale-95`}
                   >
-                    <Check className="w-3.5 h-3.5" /> Save Details (వివరాలు సేవ్ చేయండి)
+                    <Check className="w-3.5 h-3.5" /> {isSavingProfile ? 'Saving...' : 'Save Details (వివరాలు సేవ్ చేయండి)'}
                   </button>
                 </div>
               </form>
             ) : (
               <div className="pt-3 border-t dark:border-zinc-800 text-xs space-y-2.5">
                 <div className="space-y-2">
-                  {/* NAME ROW WITH DIRECT CHANGE BUTTON */}
+                  {/* NAME & USERNAME ROW */}
                   <div className="flex items-center justify-between text-[11px] p-2.5 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-orange-500 shadow-2xs">
@@ -1363,7 +1547,11 @@ Thank you for dining with Nuvvo Gourmet!`;
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
                           <span className="text-[9px] uppercase font-bold text-zinc-400 block">Customer Name</span>
-                          <span className="text-[8px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.2 rounded font-bold">✓ Saved</span>
+                          {user?.username && (
+                            <span className="text-[8.5px] bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 px-1.5 py-0.2 rounded font-mono font-bold">
+                              @{user.username}
+                            </span>
+                          )}
                         </div>
                         <strong className="text-zinc-850 dark:text-zinc-150 font-black block truncate text-xs">
                           {user?.name || 'Incomplete Profile'}
@@ -1375,28 +1563,27 @@ Thank you for dining with Nuvvo Gourmet!`;
                       onClick={() => setIsEditingInfo(true)}
                       className="text-[10px] text-orange-600 dark:text-orange-400 font-extrabold hover:underline cursor-pointer flex items-center gap-1 bg-orange-50 dark:bg-orange-950/40 px-2 py-1 rounded-lg shrink-0"
                     >
-                      <Edit className="w-2.5 h-2.5" /> Change Name
+                      <Edit className="w-2.5 h-2.5" /> Edit Profile
                     </button>
                   </div>
 
-                  {/* EMAIL ROW WITH DIRECT EDIT/ADD BUTTON & USER_OTPS VERIFICATION */}
-                  <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80 space-y-2.5">
-                    <div className="flex items-center justify-between text-[11px]">
+                  {/* EMAIL ROW WITH HONEST SUPABASE AUTH VERIFICATION STATUS */}
+                  <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] gap-2">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-indigo-500 shadow-2xs">
+                        <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-indigo-500 shadow-2xs shrink-0">
                           <Mail className="w-3.5 h-3.5" />
                         </span>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-[9px] uppercase font-bold text-zinc-400 block">Customer Email</span>
-                            {/* Dynamic Verification Status Badge */}
                             {isEmailVerifiedState ? (
                               <span className="text-[8px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full font-black flex items-center gap-1">
-                                <CheckCircle className="w-2.5 h-2.5" /> Verified (user_otps)
+                                <CheckCircle className="w-2.5 h-2.5" /> Email Verified
                               </span>
                             ) : user?.email ? (
                               <span className="text-[8px] bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full font-black flex items-center gap-1">
-                                <AlertCircle className="w-2.5 h-2.5" /> Unverified
+                                <AlertCircle className="w-2.5 h-2.5" /> Verification Pending
                               </span>
                             ) : null}
                           </div>
@@ -1410,98 +1597,76 @@ Thank you for dining with Nuvvo Gourmet!`;
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {user?.email && !isEmailVerifiedState && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!showEmailVerifyBox) {
-                                handleRequestEmailVerificationCode(user.email);
-                              } else {
-                                setShowEmailVerifyBox(false);
-                              }
-                            }}
-                            disabled={isSendingEmailOtp}
-                            className="text-[10px] text-white font-extrabold cursor-pointer flex items-center gap-1 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 px-2.5 py-1.5 rounded-lg shadow-xs active:scale-95 transition-all"
-                          >
-                            <Shield className="w-2.5 h-2.5" /> {isSendingEmailOtp ? 'Sending Code...' : showEmailVerifyBox ? 'Close' : 'Verify Email'}
-                          </button>
-                        )}
+                      {user?.email && !isEmailVerifiedState && (
                         <button
                           type="button"
-                          onClick={() => setIsEditingInfo(true)}
-                          className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold hover:underline cursor-pointer flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-1 rounded-lg shrink-0"
+                          onClick={() => handleResendSupabaseVerification(user.email)}
+                          disabled={isSendingVerifyEmail || emailVerifyCooldown > 0}
+                          className="text-[10px] text-white font-extrabold cursor-pointer flex items-center gap-1 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-60 px-2.5 py-1.5 rounded-lg shadow-xs active:scale-95 transition-all shrink-0"
                         >
-                          {user?.email ? <><Edit className="w-2.5 h-2.5" /> Edit</> : <><Plus className="w-2.5 h-2.5" /> Add Email</>}
+                          <Shield className="w-2.5 h-2.5" />
+                          {isSendingVerifyEmail
+                            ? 'Sending...'
+                            : emailVerifyCooldown > 0
+                            ? `Sent (${emailVerifyCooldown}s)`
+                            : 'Resend Verification'}
                         </button>
-                      </div>
+                      )}
                     </div>
 
-                    {/* INLINE OTP VERIFICATION FORM (AGAINST USER_OTPS TABLE) */}
-                    {showEmailVerifyBox && (
-                      <div className="pt-2 border-t border-slate-200 dark:border-zinc-700/60 space-y-2">
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="font-bold text-zinc-600 dark:text-zinc-300">Enter 6-Digit Code (from user_otps)</span>
-                          {emailOtpCooldown > 0 ? (
-                            <span className="text-zinc-400 font-mono text-[9.5px]">Resend in {emailOtpCooldown}s</span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleRequestEmailVerificationCode()}
-                              disabled={isSendingEmailOtp}
-                              className="text-orange-600 dark:text-orange-400 hover:underline font-bold cursor-pointer"
-                            >
-                              Resend OTP
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            maxLength={6}
-                            placeholder="• • • • • •"
-                            value={verifyEmailOtpInput}
-                            onChange={e => setVerifyEmailOtpInput(e.target.value.replace(/\D/g, ''))}
-                            className="flex-1 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-xl px-3 py-2 text-center font-mono font-black text-sm tracking-widest text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleVerifyEmailCodeSubmit}
-                            disabled={isVerifyingEmailOtp || verifyEmailOtpInput.length < 6}
-                            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-all"
-                          >
-                            {isVerifyingEmailOtp ? (
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <CheckCircle className="w-3 h-3" />
-                            )}
-                            Verify
-                          </button>
-                        </div>
-
-                        {emailOtpFeedbackMsg && (
-                          <div className={`p-2 rounded-xl text-[10.5px] font-medium flex items-start gap-1.5 ${
-                            emailOtpFeedbackMsg.type === 'success'
-                              ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
-                              : emailOtpFeedbackMsg.type === 'error'
-                              ? 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
-                              : 'bg-orange-50 text-orange-800 dark:bg-orange-950/40 dark:text-orange-300 border border-orange-200 dark:border-orange-800'
-                          }`}>
-                            <span className="shrink-0">
-                              {emailOtpFeedbackMsg.type === 'success' ? '✓' : emailOtpFeedbackMsg.type === 'error' ? '⚠️' : 'ℹ️'}
-                            </span>
-                            <span className="leading-snug">{emailOtpFeedbackMsg.text}</span>
-                          </div>
-                        )}
+                    {verifyEmailFeedbackMsg && (
+                      <div className={`p-2 rounded-xl text-[10.5px] font-medium flex items-start gap-1.5 ${
+                        verifyEmailFeedbackMsg.type === 'success'
+                          ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                          : 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                      }`}>
+                        <span className="leading-snug">{verifyEmailFeedbackMsg.text}</span>
                       </div>
                     )}
                   </div>
 
-                  {/* PHONE */}
+                  {/* PHONE & LOCATION */}
                   <div className="flex items-center justify-between text-[11px] px-2.5 py-1">
                     <span className="text-zinc-400 font-semibold">Phone:</span>
-                    <strong className="text-zinc-800 dark:text-zinc-200 font-mono font-bold">+91 {user?.phone || 'Guest Mode'}</strong>
+                    <strong className="text-zinc-800 dark:text-zinc-200 font-mono font-bold">+91 {user?.phone || 'Not Set'}</strong>
+                  </div>
+
+                  {user?.location && (
+                    <div className="flex items-center justify-between text-[11px] px-2.5 py-1">
+                      <span className="text-zinc-400 font-semibold">Location / Area:</span>
+                      <strong className="text-zinc-800 dark:text-zinc-200 font-bold text-right">{user.location}</strong>
+                    </div>
+                  )}
+
+                  {/* WHATSAPP ORDER NOTIFICATIONS */}
+                  <div className="flex items-center justify-between text-[11px] px-2.5 py-2 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-100 dark:border-zinc-800/80">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="p-1.5 bg-white dark:bg-zinc-700 rounded-xl text-emerald-600 shadow-2xs shrink-0">
+                        <MessageSquare className="w-3.5 h-3.5" />
+                      </span>
+                      <div className="min-w-0">
+                        <span className="text-[9px] uppercase font-bold text-zinc-400 block">WhatsApp Order Alerts</span>
+                        <strong className="text-zinc-850 dark:text-zinc-150 font-mono font-bold block truncate text-xs">
+                          {user?.whatsappNumber ? user.whatsappNumber : 'Not added'}
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md border ${
+                        user?.whatsappOptIn && user?.whatsappNumber
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
+                          : 'bg-slate-100 text-zinc-600 border-slate-200 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700'
+                      }`}>
+                        {user?.whatsappOptIn && user?.whatsappNumber ? 'Opted In' : 'Not Opted In'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingInfo(true)}
+                        className="text-[10px] text-emerald-600 dark:text-emerald-400 font-extrabold hover:underline cursor-pointer"
+                      >
+                        Manage
+                      </button>
+                    </div>
                   </div>
 
                   {/* ADDRESS */}
@@ -1521,7 +1686,11 @@ Thank you for dining with Nuvvo Gourmet!`;
                 </div>
 
                 <div className="flex justify-between items-center pt-2.5 border-t border-dashed dark:border-zinc-800">
-                  <p className="text-[10px] text-zinc-400 dark:text-zinc-550 font-mono italic">First Joined: June 2026</p>
+                  <p className="text-[10px] text-zinc-400 dark:text-zinc-550 font-mono italic">
+                    {user?.createdAt
+                      ? `Member since ${new Date(user.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
+                      : 'Nuvvo Member'}
+                  </p>
                   <button 
                     onClick={() => setIsEditingInfo(true)}
                     className={`${currentTheme.textClass} font-extrabold text-[11px] focus:outline-none hover:underline cursor-pointer flex items-center gap-1`}
@@ -2746,15 +2915,25 @@ Thank you for dining with Nuvvo Gourmet!`;
             </div>
           )}
 
-          {/* Invoices list */}
+          {/* Invoices list (strictly scoped to current customer unless authorized Admin) */}
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-            {orders.length === 0 ? (
-              <div className="py-6 text-center text-zinc-400">
-                <Receipt className="w-8 h-8 text-zinc-300 mx-auto mb-1.5" />
-                <p className="text-[10.5px] font-medium">No orders found to generate tax invoices.</p>
-              </div>
-            ) : (() => {
-              const filteredOrders = orders.filter(o => {
+            {(() => {
+              const ownedOrders = orders.filter(o => {
+                if (isAuthorizedAdmin) return true;
+                if (o.customerId && user?.id) return o.customerId === user.id;
+                return Boolean(user?.phone && o.customerPhone === user.phone);
+              });
+
+              if (ownedOrders.length === 0) {
+                return (
+                  <div className="py-6 text-center text-zinc-400">
+                    <Receipt className="w-8 h-8 text-zinc-300 mx-auto mb-1.5" />
+                    <p className="text-[10.5px] font-medium">No orders found to generate tax invoices.</p>
+                  </div>
+                );
+              }
+
+              const filteredOrders = ownedOrders.filter(o => {
                 const search = invoiceSearchQuery.toLowerCase();
                 const oId = o.id.toLowerCase();
                 const firstItem = o.items?.[0]?.foodItem?.name?.toLowerCase() || '';
@@ -2771,6 +2950,7 @@ Thank you for dining with Nuvvo Gourmet!`;
                 const itemNames = order.items.map(i => `${i.foodItem.name} x${i.quantity}`).join(', ');
                 const formattedDate = new Date(order.date).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
                 const isPaid = order.status !== 'cancelled';
+                const displayAmount = order.finalAmount ?? (order as any).totalAmount ?? 0;
                 
                 return (
                   <div 
@@ -2800,7 +2980,7 @@ Thank you for dining with Nuvvo Gourmet!`;
 
                     <div className="text-right shrink-0 space-y-1.5">
                       <span className="font-black text-[11.5px] text-zinc-900 dark:text-zinc-50 font-mono block">
-                        ₹{order.totalAmount}
+                        ₹{displayAmount}
                       </span>
                       <button
                         type="button"
@@ -3813,6 +3993,157 @@ Thank you for dining with Nuvvo Gourmet!`;
           )}
         </div>
 
+        {/* CUSTOMER SECURITY & PASSWORD MANAGEMENT */}
+        {user && isCustomerAccount && (
+          <div id="customer-security-password-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-zinc-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-2xl bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400">
+                  <Lock className="w-4 h-4" />
+                </span>
+                <div>
+                  <h4 className="text-xs font-black text-zinc-950 dark:text-zinc-50 uppercase tracking-tight">
+                    Security & Password
+                  </h4>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                    Passwords are encrypted and never displayed or stored in plain text
+                  </p>
+                </div>
+              </div>
+              <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800/50">
+                Session Isolated
+              </span>
+            </div>
+
+            {pwdChangeError && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 text-xs rounded-2xl font-medium">
+                {pwdChangeError}
+              </div>
+            )}
+
+            {pwdChangeSuccess && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 text-xs rounded-2xl font-semibold flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                <span>{pwdChangeSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleChangeCustomerPassword} autoComplete="on" className="space-y-3">
+              <input type="text" name="username" autoComplete="username" value={user.username || user.email || ''} readOnly className="hidden" aria-hidden="true" />
+              <div>
+                <label htmlFor="profile-current-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                  Current Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="profile-current-password"
+                    name="current-password"
+                    type={showCurrentPwd ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    placeholder="Enter current password"
+                    value={currentPwdInput}
+                    onChange={e => setCurrentPwdInput(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPwd(p => !p)}
+                    aria-label={showCurrentPwd ? 'Hide current password' : 'Show current password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                  >
+                    {showCurrentPwd ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="profile-new-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    New Password (Min 6 chars)
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      id="profile-new-password"
+                      name="new-password"
+                      type={showNewPwd ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      placeholder="Enter new password"
+                      value={newPwdInput}
+                      onChange={e => setNewPwdInput(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPwd(p => !p)}
+                      aria-label={showNewPwd ? 'Hide new password' : 'Show new password'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                    >
+                      {showNewPwd ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="profile-confirm-new-password" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Confirm New Password
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      id="profile-confirm-new-password"
+                      name="confirm-new-password"
+                      type={showConfirmNewPwd ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      placeholder="Re-enter new password"
+                      value={confirmNewPwdInput}
+                      onChange={e => setConfirmNewPwdInput(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmNewPwd(p => !p)}
+                      aria-label={showConfirmNewPwd ? 'Hide confirm password' : 'Show confirm password'}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                    >
+                      {showConfirmNewPwd ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isSendingProfileReset || !user.email}
+                  onClick={handleSendProfileForgotReset}
+                  className="text-[11px] font-bold text-orange-600 dark:text-orange-400 hover:underline disabled:opacity-50 cursor-pointer"
+                >
+                  {isSendingProfileReset ? 'Sending Reset Link...' : 'Forgot Password? Send Reset Email'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isChangingPwd}
+                  className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-xs active:scale-98"
+                >
+                  {isChangingPwd ? 'Updating Password...' : 'Change Password'}
+                </button>
+              </div>
+            </form>
+
+            {profileResetNotice && (
+              <div className={`p-2.5 rounded-xl text-[11px] font-medium border ${
+                profileResetNotice.type === 'success'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400'
+              }`}>
+                {profileResetNotice.text}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ACCOUNT PRIVACY & DANGER ZONE (SELF-SERVICE DELETION) */}
         {user && user.role === 'Customer' && (
           <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/60 dark:border-rose-900/40 rounded-3xl p-5 shadow-xs space-y-3 text-left">
@@ -4204,7 +4535,7 @@ Thank you for dining with Nuvvo Gourmet!`;
                     {/* Final Grand Total Row */}
                     <div className="flex justify-between items-baseline pt-2 border-t border-dashed border-slate-200 dark:border-zinc-800 text-xs font-black">
                       <span className="text-zinc-900 dark:text-zinc-50 uppercase tracking-wide">Grand Total Payable</span>
-                      <span className="text-lg text-orange-500 font-black">₹{order.totalAmount}</span>
+                      <span className="text-lg text-orange-500 font-black">₹{order.finalAmount ?? order.totalAmount ?? 0}</span>
                     </div>
                   </div>
 

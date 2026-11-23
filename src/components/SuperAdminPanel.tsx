@@ -14,6 +14,8 @@ import {
 } from 'recharts';
 import { isSuperAdminRole } from '../config/authConfig';
 import AdminCatalogManager from './AdminCatalogManager';
+import AdminEmailTool from './AdminEmailTool';
+import AdminWhatsAppSettings from './AdminWhatsAppSettings';
 import { 
   ShieldCheck, ShieldAlert, KeyRound, Radio, Trash, RefreshCw, Layers, 
   AlertTriangle, Filter, Search, CheckCircle, XCircle, UserPlus, 
@@ -87,15 +89,38 @@ export default function SuperAdminPanel() {
   const [selectedMailToPreview, setSelectedMailToPreview] = useState<any | null>(null);
   
   // Dashboard Tabs
-  const [activeSection, setActiveSection] = useState<'command' | 'vendors' | 'onboard' | 'riders' | 'logs' | 'banners' | 'analytics' | 'operations' | 'campaigns' | 'permissions'>(() => {
+  const [activeSection, setActiveSection] = useState<'command' | 'vendors' | 'onboard' | 'riders' | 'logs' | 'whatsapp' | 'banners' | 'analytics' | 'operations' | 'campaigns' | 'permissions'>(() => {
     try {
       const target = localStorage.getItem('nuvvo_admin_target_tab');
-      if (target === 'command' || target === 'vendors' || target === 'onboard' || target === 'riders' || target === 'logs' || target === 'banners' || target === 'analytics' || target === 'operations' || target === 'campaigns' || target === 'permissions') {
+      if (target === 'command' || target === 'vendors' || target === 'onboard' || target === 'riders' || target === 'logs' || target === 'whatsapp' || target === 'banners' || target === 'analytics' || target === 'operations' || target === 'campaigns' || target === 'permissions') {
         return target as any;
       }
     } catch {}
     return 'command';
   });
+  const [whatsappFailedCount, setWhatsappFailedCount] = useState<number>(0);
+  const [whatsappFailedFocusTick, setWhatsappFailedFocusTick] = useState<number>(0);
+
+  const fetchSuperAdminWhatsappFailedCount = React.useCallback(async () => {
+    try {
+      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      if (!token) return;
+      const res = await fetch('/api/admin/whatsapp/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      const count = Number(data?.summaryCounts?.recentFailed24h ?? data?.summaryCounts?.failed ?? 0);
+      setWhatsappFailedCount(Number.isFinite(count) ? count : 0);
+    } catch {}
+  }, []);
+
+  React.useEffect(() => {
+    if (!isSuperAdminAuthenticated) return;
+    fetchSuperAdminWhatsappFailedCount();
+    const timer = setInterval(fetchSuperAdminWhatsappFailedCount, 30_000);
+    return () => clearInterval(timer);
+  }, [isSuperAdminAuthenticated, fetchSuperAdminWhatsappFailedCount]);
 
   // Business Command Center states
   const [commandOrderTab, setCommandOrderTab] = useState<'pending' | 'preparing' | 'picked' | 'delivered' | 'cancelled'>('pending');
@@ -1078,10 +1103,28 @@ export default function SuperAdminPanel() {
             <h2 className="text-sm font-black tracking-tight mt-0.5">EXECUTIVE COMMAND PANEL</h2>
           </div>
         </div>
-        <span className="text-[10px] bg-zinc-950 text-red-400 font-extrabold px-2.5 py-1.5 rounded uppercase font-mono animate-pulse">ROOT DEFY</span>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {isSuperAdminAuthenticated && whatsappFailedCount > 0 && (
+            <button
+              type="button"
+              id="superadmin-whatsapp-failed-alert-badge"
+              onClick={() => {
+                setActiveSection('whatsapp');
+                setWhatsappFailedFocusTick(t => t + 1);
+              }}
+              title="Jump to failed WhatsApp notifications for manual retry"
+              className="px-3 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-900 border border-rose-400/60 text-white text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span>{whatsappFailedCount} Failed WhatsApp (24h)</span>
+              <span className="underline text-rose-300 font-extrabold">Intervene</span>
+            </button>
+          )}
+          <span className="text-[10px] bg-zinc-950 text-red-400 font-extrabold px-2.5 py-1.5 rounded uppercase font-mono">ROOT DEFY</span>
+        </div>
       </div>
 
-      <div className="p-4 max-w-2xl mx-auto space-y-4">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4">
         
         {/* MULTI-ROLE PORTAL BRIDGES (TOP PLACE IN SUPER ADMIN CHAMBER) */}
         <div id="super-admin-portal-bridges" className="bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
@@ -1192,7 +1235,7 @@ export default function SuperAdminPanel() {
             </div>
 
             {/* Dashboard Sub Navigation Tabs */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 md:grid-cols-10 bg-zinc-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
+            <div className="grid grid-cols-2 sm:grid-cols-6 md:grid-cols-11 bg-zinc-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
               <button
                 onClick={() => setActiveSection('command')}
                 className={`py-2 px-1 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer ${
@@ -1272,6 +1315,22 @@ export default function SuperAdminPanel() {
                 }`}
               >
                 <Radio className="w-3.5 h-3.5" /> <span className="text-[10px] sm:text-xs font-semibold">Campaigns</span>
+              </button>
+              <button
+                onClick={() => setActiveSection('whatsapp')}
+                className={`py-2 px-1 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer ${
+                  activeSection === 'whatsapp' 
+                    ? 'bg-white dark:bg-zinc-800 text-emerald-600 dark:text-emerald-400 shadow-sm font-semibold'
+                    : 'text-zinc-500'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="text-[10px] sm:text-xs font-semibold">WhatsApp</span>
+                {whatsappFailedCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9.5px] font-black leading-none tabular-nums shrink-0">
+                    {whatsappFailedCount}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setActiveSection('logs')}
@@ -6583,6 +6642,9 @@ export default function SuperAdminPanel() {
                   </div>
                 </div>
 
+                {/* 📧 LIVE SMTP DIAGNOSTIC & TEST DISPATCHER TOOL */}
+                <AdminEmailTool />
+
                 {/* 📧 AUTOMATED PARTNER MAILROOM SIMULATOR CARD */}
                 <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-4 shadow-sm space-y-3">
                   <div className="flex justify-between items-center border-b pb-2">
@@ -6680,6 +6742,16 @@ export default function SuperAdminPanel() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* SECTION 3B: WHATSAPP CLOUD API SETTINGS & NOTIFICATION HISTORY */}
+            {activeSection === 'whatsapp' && (
+              <div id="superadmin-whatsapp-tab" className="animate-fadeIn text-left">
+                <AdminWhatsAppSettings
+                  focusFailedTrigger={whatsappFailedFocusTick}
+                  onNotificationRetried={() => fetchSuperAdminWhatsappFailedCount()}
+                />
               </div>
             )}
 

@@ -9,6 +9,7 @@ import { CHIRALA_TOP13_FOOD_ITEMS } from "./src/data/chiralaPartners";
 import { 
   getAdminSupabaseServerClient, 
   getPublicSupabaseServerClient, 
+  createUserScopedSupabaseClient,
   createServerClient,
   checkServerSupabaseDiagnostics
 } from "./src/utils/supabase/server";
@@ -17,8 +18,13 @@ import sendEmailOtpHandler from "./api/auth/send-email-otp";
 import verifyEmailOtpHandler from "./api/auth/verify-email-otp";
 import verifyDbOtpHandler from "./api/auth/verify-db-otp";
 import setupProfileHandler from "./api/auth/setup-profile";
+import customerRegisterHandler from "./api/auth/customer-register";
 import customerLoginHandler from "./api/auth/customer-login";
+import customerProfileHandler from "./api/auth/customer-profile";
+import forgotPasswordHandler from "./api/auth/forgot-password";
+import resendVerificationHandler from "./api/auth/resend-verification";
 import resetPasswordHandler from "./api/auth/reset-password";
+import changePasswordHandler from "./api/auth/change-password";
 import deleteAccountHandler from "./api/auth/delete-account";
 import adminCheckPhoneHandler from "./api/auth/admin-check-phone";
 import adminVerifyPinHandler from "./api/auth/admin-verify-pin";
@@ -26,13 +32,32 @@ import adminUpdatePinHandler from "./api/auth/admin-update-pin";
 import emailDiagnosticsHandler from "./api/auth/email-diagnostics";
 import adminVerifyHandler from "./api/admin/verify";
 import verifyEmailHandler from "./api/verify-email";
+import verifySmtpHandler from "./api/verify-smtp";
 import { 
   verifyAdminPin, 
-  isAuthorizedAdminAccountPhone 
+  isAuthorizedAdminAccountPhone,
+  normalizePhone,
+  resolveCallerIdentity,
+  isOrderOwnedByCaller
 } from "./lib/auth-utils";
 import { 
-  sendOrderConfirmationWhatsApp, 
-  getWhatsAppConfigStatus 
+  sendOrderConfirmationWhatsApp,
+  dispatchOrderWhatsAppNotifications,
+  dispatchOrderStatusWhatsAppNotification,
+  getWhatsAppConfigStatus,
+  getWhatsAppTemplatesStatus,
+  verifyWhatsAppWebhookSubscription,
+  verifyMetaWebhookSignature,
+  processWhatsAppWebhookEvent,
+  recordRawWebhookEvent,
+  listRecentWebhookEvents,
+  listOrderNotifications,
+  retryFailedNotification,
+  retryFailedWebhookEvent,
+  saveCustomerWhatsAppConsent,
+  getCustomerWhatsAppConsent,
+  parseValidWhatsAppPhone,
+  FIXED_ADMIN_WHATSAPP_E164
 } from "./src/utils/whatsappService";
 import {
   getPhonePeConfigStatus,
@@ -44,6 +69,7 @@ import {
   apiInterceptorMiddleware,
   getApiTelemetrySummary
 } from "./src/middleware/apiMiddleware";
+import { getRecentEmailLogs } from "./src/services/supabaseEmailLogs";
 
 dotenv.config();
 
@@ -349,7 +375,11 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Enable CORS for universal client access
@@ -373,6 +403,24 @@ app.get("/api/admin/api-logs", (_req, res) => {
     ...getApiTelemetrySummary()
   });
 });
+
+// Endpoint to inspect OTP email attempts, status, recipients, and error details
+app.get("/api/admin/email-logs", async (req, res) => {
+  const recipient = typeof req.query.recipient === 'string' ? req.query.recipient : undefined;
+  const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 50;
+
+  const result = await getRecentEmailLogs({
+    recipient,
+    limit,
+    client: supabaseServer
+  });
+
+  return res.json({
+    success: true,
+    ...result
+  });
+});
+
 
 
   // API route for Gemini recommendations
@@ -972,6 +1020,9 @@ Current User Query: ${message}`;
   }
 
   // Diagnostic endpoints checking email delivery readiness & crypto module safely
+  app.all(["/api/verify-smtp", "/verify-smtp"], (req, res) => {
+    return verifySmtpHandler(req, res);
+  });
   app.all(["/api/verify-email", "/verify-email"], (req, res) => {
     return verifyEmailHandler(req, res);
   });
@@ -995,14 +1046,72 @@ Current User Query: ${message}`;
   app.all(["/api/auth/setup-profile", "/auth/setup-profile"], (req, res) => {
     return setupProfileHandler(req, res);
   });
+  app.all(["/api/auth/customer-register", "/auth/customer-register"], (req, res) => {
+    return customerRegisterHandler(req, res);
+  });
   app.all(["/api/auth/customer-login", "/auth/customer-login"], (req, res) => {
     return customerLoginHandler(req, res);
+  });
+  app.all(["/api/auth/customer-profile", "/auth/customer-profile"], (req, res) => {
+    return customerProfileHandler(req, res);
+  });
+  app.all(["/api/auth/forgot-password", "/auth/forgot-password"], (req, res) => {
+    return forgotPasswordHandler(req, res);
+  });
+  app.all(["/api/auth/resend-verification", "/auth/resend-verification"], (req, res) => {
+    return resendVerificationHandler(req, res);
   });
   app.all(["/api/auth/reset-password", "/auth/reset-password"], (req, res) => {
     return resetPasswordHandler(req, res);
   });
+  app.all(["/api/auth/change-password", "/auth/change-password"], (req, res) => {
+    return changePasswordHandler(req, res);
+  });
   app.all(["/api/auth/delete-account", "/auth/delete-account"], (req, res) => {
     return deleteAccountHandler(req, res);
+  });
+
+  // Professional Order Confirmation HTML Email Dispatcher (Authenticated + Ownership Verified)
+  app.post(["/api/email/order-confirmation", "/api/order/send-receipt"], async (req, res) => {
+    try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: "Authentication required." });
+      }
+
+      const payload = req.body || {};
+      const orderId = String(payload.orderId || payload.id || "").trim();
+      if (!caller.isAdmin) {
+        const reqCustId = String(payload.customerId || payload.customer_id || "").trim();
+        if (reqCustId && reqCustId !== caller.userId) {
+          return res.status(403).json({ success: false, error: "Forbidden: Cannot dispatch receipt for another customer." });
+        }
+        if (orderId) {
+          let existing = serverOrders.get(orderId);
+          if (!existing) {
+            try {
+              const { client: adminClient } = getAdminSupabaseServerClient();
+              const readClient = caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient;
+              const { data } = await readClient.from('orders').select('*').eq('id', orderId).maybeSingle();
+              if (data) existing = data;
+            } catch {}
+          }
+          if (existing && !isOrderOwnedByCaller(existing, caller)) {
+            return res.status(403).json({ success: false, error: "Forbidden: You do not own this order." });
+          }
+        }
+      }
+
+      const { sendOrderConfirmationEmail } = await import("./lib/email-service");
+      const result = await sendOrderConfirmationEmail(payload);
+      return res.status(200).json(result);
+    } catch (err: any) {
+      console.error("[Order Confirmation Email Endpoint Error]:", err?.message || err);
+      return res.status(200).json({
+        success: false,
+        error: err?.message || "Internal server error while sending order receipt."
+      });
+    }
   });
 
   // Secure Admin Verification endpoints
@@ -1106,31 +1215,45 @@ Current User Query: ${message}`;
         });
       }
 
+      // Customer-unique secure temporary code:
+      // Derive a unique 6-digit code for this specific customer mobile number
+      const epochWindow = Math.floor(Date.now() / (10 * 60 * 1000));
+      const backupHmac = crypto.createHmac('sha256', SESSION_SECRET)
+        .update(`mobile_backup_${cleanPhone}_${epochWindow}`)
+        .digest('hex');
+      const uniqueMobileBackupCode = String(parseInt(backupHmac.substring(0, 8), 16) % 900000 + 100000);
+
       // In-app OTP delivery mode:
       // Return fresh 6-digit verification OTP clearly marked for seamless instant login.
       return res.json({
         success: true,
         smsConfigured: false,
         isDevTesting: false,
-        message: "A 6-digit verification code has been issued for your session (valid for 5 minutes).",
+        message: "A unique 6-digit verification code has been issued for your session (valid for 5 minutes).",
         devOtp: generatedOtp,
         sessionOtp: generatedOtp,
-        defaultOtp: "123456",
+        customerBackupCode: uniqueMobileBackupCode,
         expiresInSeconds: 300,
         challengeToken
       });
     } catch (err: any) {
-      console.warn("[OTP Notice] Handled failure in /api/auth/send-otp with resilient default OTP:", err?.message || err);
-      const fallbackOtp = "123456";
+      console.warn("[OTP Notice] Handled failure in /api/auth/send-otp with resilient customer-unique OTP:", err?.message || err);
+      const cleanPhoneDigits = String(req?.body?.phone || '9876543210').replace(/\D/g, '').slice(-10);
+      const epochWindow = Math.floor(Date.now() / (10 * 60 * 1000));
+      const fallbackHmac = crypto.createHmac('sha256', SESSION_SECRET)
+        .update(`mobile_backup_${cleanPhoneDigits}_${epochWindow}`)
+        .digest('hex');
+      const uniqueFallbackOtp = String(parseInt(fallbackHmac.substring(0, 8), 16) % 900000 + 100000);
+
       return res.status(200).json({
         success: true,
         smsConfigured: false,
         isDevTesting: false,
-        isDefaultOtp: true,
-        message: "Default verification code (123456) active for instant customer login.",
-        devOtp: fallbackOtp,
-        sessionOtp: fallbackOtp,
-        defaultOtp: fallbackOtp,
+        isDefaultOtp: false,
+        message: "Unique verification code issued for customer registration.",
+        devOtp: uniqueFallbackOtp,
+        sessionOtp: uniqueFallbackOtp,
+        customerBackupCode: uniqueFallbackOtp,
         expiresInSeconds: 300
       });
     }
@@ -1234,6 +1357,27 @@ Current User Query: ${message}`;
               error: `The verification OTP code is incorrect. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
             });
           }
+        }
+      }
+
+      // 3. Customer-unique temporary code verification (strictly customer-unique, bound to epoch window)
+      if (!isVerified && !isExpired) {
+        const epochWindow = Math.floor(Date.now() / (10 * 60 * 1000));
+        const prevEpochWindow = epochWindow - 1; // 10-minute grace window
+        const backupHmacCurrent = crypto.createHmac('sha256', SESSION_SECRET)
+          .update(`mobile_backup_${cleanPhone}_${epochWindow}`)
+          .digest('hex');
+        const backupHmacPrev = crypto.createHmac('sha256', SESSION_SECRET)
+          .update(`mobile_backup_${cleanPhone}_${prevEpochWindow}`)
+          .digest('hex');
+
+        const uniqueCurrent = String(parseInt(backupHmacCurrent.substring(0, 8), 16) % 900000 + 100000);
+        const uniquePrev = String(parseInt(backupHmacPrev.substring(0, 8), 16) % 900000 + 100000);
+
+        if (inputCode === uniqueCurrent || inputCode === uniquePrev) {
+          isVerified = true;
+          serverOtpStore.delete(cleanPhone);
+          persistOtps(serverOtpStore);
         }
       }
 
@@ -1601,43 +1745,82 @@ Current User Query: ${message}`;
     }
   });
 
-  // --- ORDERS MANAGEMENT & SUPABASE SYNCHRONIZATION APIS ---
+  // --- ORDERS MANAGEMENT & SUPABASE SYNCHRONIZATION APIS (AUTHENTICATED & CUSTOMER-ISOLATED) ---
   app.get("/api/orders", async (req, res) => {
     try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: "Authentication required to access orders." });
+      }
+
       const { phone, customerId } = req.query || {};
-      const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
-      const digits = cleanPhone.length === 12 && cleanPhone.startsWith('91') ? cleanPhone.slice(2) : cleanPhone;
+      const cleanPhone = phone ? normalizePhone(String(phone)) : '';
+      const digits = cleanPhone;
+      const requestedCustomerId = customerId ? String(customerId).trim() : '';
+
+      // Non-admin callers must NEVER query another customer's ID or phone
+      if (!caller.isAdmin) {
+        if (requestedCustomerId && requestedCustomerId !== caller.userId) {
+          return res.status(403).json({ success: false, error: "Forbidden: You cannot access another customer's orders." });
+        }
+        if (digits && (!caller.phone || digits !== caller.phone)) {
+          return res.status(403).json({ success: false, error: "Forbidden: You cannot access orders for another mobile number." });
+        }
+      }
 
       const orderMap = new Map<string, any>();
 
-      // 1. Prime with persistent server orders matching filter
+      // 1. Prime with persistent server orders matching filter & ownership
       for (const [id, order] of serverOrders.entries()) {
-        const oPhone = (order.customer_phone || order.customerPhone || '').replace(/\D/g, '');
-        const oDigits = oPhone.length === 12 && oPhone.startsWith('91') ? oPhone.slice(2) : oPhone;
-        const oCustId = order.customer_id || order.customerId;
+        if (!caller.isAdmin) {
+          if (isOrderOwnedByCaller(order, caller)) {
+            orderMap.set(String(id), order);
+          }
+          continue;
+        }
 
-        if (!digits && !customerId) {
+        const oPhone = normalizePhone(order.customer_phone || order.customerPhone || '');
+        const oCustId = String(order.customer_id || order.customerId || '').trim();
+
+        if (!digits && !requestedCustomerId) {
           orderMap.set(String(id), order);
-        } else if (digits && (oDigits === digits || oPhone.includes(digits))) {
+        } else if (digits && (oPhone === digits || oPhone.includes(digits))) {
           orderMap.set(String(id), order);
-        } else if (customerId && oCustId === customerId) {
+        } else if (requestedCustomerId && oCustId === requestedCustomerId) {
           orderMap.set(String(id), order);
         }
       }
 
-      // 2. Query Supabase orders table if present
+      // 2. Query Supabase orders table using privilege-appropriate client + post-filter ownership
       try {
-        const publicClient = getPublicSupabaseServerClient();
-        let query = publicClient.from('orders').select('*');
-        if (digits) {
-          query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits},customerPhone.eq.${digits}`);
-        } else if (customerId) {
-          query = query.or(`customer_id.eq.${customerId},customerId.eq.${customerId}`);
+        const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+        const dbClient = caller.isAdmin
+          ? adminClient
+          : (caller.authType === 'supabase' && !isServiceRole
+              ? createUserScopedSupabaseClient(caller.token)
+              : adminClient);
+
+        let query = dbClient.from('orders').select('*');
+        if (caller.isAdmin) {
+          if (digits) {
+            query = query.or(`customer_phone.eq.${digits},customer_phone.eq.+91${digits}`);
+          } else if (requestedCustomerId) {
+            query = query.eq('customer_id', requestedCustomerId);
+          }
+        } else {
+          if (caller.userId && caller.phone) {
+            query = query.or(`customer_id.eq.${caller.userId},customer_phone.eq.${caller.phone},customer_phone.eq.+91${caller.phone}`);
+          } else if (caller.userId) {
+            query = query.eq('customer_id', caller.userId);
+          }
         }
+
         const { data, error } = await query.order('created_at', { ascending: false });
         if (!error && Array.isArray(data)) {
           for (const row of data) {
-            orderMap.set(String(row.id), row);
+            if (caller.isAdmin || isOrderOwnedByCaller(row, caller)) {
+              orderMap.set(String(row.id), row);
+            }
           }
         }
       } catch {}
@@ -1651,76 +1834,182 @@ Current User Query: ${message}`;
       return res.json(sorted);
     } catch (e: any) {
       console.error('Exception in GET /api/orders:', e);
-      return res.json([]);
+      return res.status(500).json({ success: false, error: 'Failed to retrieve orders.' });
     }
   });
 
   app.post("/api/orders", async (req, res) => {
     try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: 'Authentication required to place an order.' });
+      }
+
       const order = req.body || {};
+
+      // Enforce customer ownership on creation (never trust frontend-supplied customerId or role)
+      const suppliedCustomerId = String(order.customerId || order.customer_id || '').trim();
+      if (!caller.isAdmin) {
+        if (suppliedCustomerId && suppliedCustomerId !== caller.userId) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Cannot place an order under another customer ID.' });
+        }
+      }
+
+      // 1. Validate order on the backend
+      if (!Array.isArray(order.items) || order.items.length === 0) {
+        return res.status(400).json({ success: false, error: 'Order must contain at least one food item.' });
+      }
+      const computedFinalAmount = Number(order.finalAmount !== undefined ? order.finalAmount : (order.final_amount ?? 0));
+      if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
+        return res.status(400).json({ success: false, error: 'Invalid order total amount.' });
+      }
+
       if (!order.id) {
-        order.id = `order_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        order.id = `order_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+      }
+
+      const authoritativeCustomerId = caller.isAdmin
+        ? (suppliedCustomerId || caller.userId)
+        : caller.userId;
+
+      // Prevent overwriting another customer's existing order ID on idempotent replay
+      const existingServerOrder = serverOrders.get(String(order.id));
+      if (existingServerOrder && !isOrderOwnedByCaller(existingServerOrder, caller)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Order ID belongs to another customer.' });
+      }
+
+      // Normalize email, restaurant name, and validated WhatsApp consent fields (never assuming email = phone)
+      const checkoutMeta = (order.address && typeof order.address === 'object' && order.address.checkout_data) || {};
+      const resolvedCustomerEmail = String(
+        order.customerEmail || order.customer_email || checkoutMeta.customerEmail || (!caller.isAdmin ? caller.email : '') || ''
+      ).trim();
+      const resolvedRestaurantName = String(
+        order.restaurantName ||
+        order.restaurant_name ||
+        checkoutMeta.restaurantName ||
+        order.items?.[0]?.foodItem?.restaurantName ||
+        order.items?.[0]?.restaurantName ||
+        'Nuvvo Kitchen Partner'
+      ).trim();
+
+      const rawCustomerWa = order.customerWhatsappNumber || order.customer_whatsapp || checkoutMeta.customerWhatsappNumber || '';
+      const parsedWa = rawCustomerWa ? parseValidWhatsAppPhone(String(rawCustomerWa)) : null;
+      const explicitOptIn = order.whatsappOptIn !== undefined
+        ? Boolean(order.whatsappOptIn)
+        : (order.whatsapp_consent !== undefined ? Boolean(order.whatsapp_consent) : Boolean(checkoutMeta.whatsappOptIn));
+
+      const normalizedOrder = {
+        ...order,
+        id: String(order.id),
+        customerId: authoritativeCustomerId,
+        customer_id: authoritativeCustomerId,
+        customerEmail: resolvedCustomerEmail,
+        customer_email: resolvedCustomerEmail,
+        restaurantName: resolvedRestaurantName,
+        restaurant_name: resolvedRestaurantName,
+        customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : '',
+        customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : '',
+        whatsappOptIn: explicitOptIn,
+        whatsapp_consent: explicitOptIn
+      };
+
+      // Persist explicit WhatsApp consent record in Supabase if customer supplied a valid number + choice
+      if (parsedWa?.valid && (order.whatsappOptIn !== undefined || order.whatsapp_consent !== undefined)) {
+        saveCustomerWhatsAppConsent({
+          customerId: authoritativeCustomerId,
+          customerEmail: resolvedCustomerEmail,
+          customerPhone: normalizedOrder.customerPhone || normalizedOrder.customer_phone,
+          whatsappNumber: parsedWa.e164,
+          consentGranted: explicitOptIn,
+          consentSource: 'checkout'
+        }).catch(() => {});
       }
 
       // Persist in server orders store
-      serverOrders.set(String(order.id), order);
+      serverOrders.set(String(normalizedOrder.id), normalizedOrder);
       persistServerOrders(serverOrders);
 
-      // Attempt Supabase database upsert with schema-compliant payload
+      // 2. Attempt Supabase database upsert with schema-compliant payload & checkout metadata preservation
       let supabaseSaved = false;
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const writeClient = isServiceRole
+        ? adminClient
+        : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+
       try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          const addressObj = typeof order.address === 'object' && order.address !== null
-            ? { ...order.address }
-            : { formatted: String(order.address || '') };
+        if (writeClient) {
+          const addressObj = typeof normalizedOrder.address === 'object' && normalizedOrder.address !== null
+            ? { ...normalizedOrder.address }
+            : { formatted: String(normalizedOrder.address || '') };
 
           addressObj.checkout_data = {
-            paymentDetails: order.paymentDetails || null,
-            phonePeNumber: order.phonePeNumber || null,
-            upiDetails: order.upiDetails || null,
-            deliveryPartnerId: order.deliveryPartnerId || null,
-            deliveryPartnerName: order.deliveryPartnerName || null,
-            deliveryPartnerPhone: order.deliveryPartnerPhone || null,
-            deliveryPartnerStatus: order.deliveryPartnerStatus || null,
-            deliveryInstructions: order.deliveryInstructions || order.instructions || null,
-            deliveryNotes: order.deliveryInstructions || order.instructions || null,
-            eta: order.eta || 25,
-            scheduledTime: order.scheduledTime || null,
-            pointsEarned: order.pointsEarned || 0,
-            pointsRedeemed: order.pointsRedeemed || 0,
-            trackingHistory: order.trackingHistory || [],
-            rating: order.rating || null,
-            feedback: order.feedback || null,
-            placedAt: order.date || new Date().toISOString()
+            ...(addressObj.checkout_data || {}),
+            paymentDetails: normalizedOrder.paymentDetails || addressObj.checkout_data?.paymentDetails || null,
+            phonePeNumber: normalizedOrder.phonePeNumber || addressObj.checkout_data?.phonePeNumber || null,
+            upiDetails: normalizedOrder.upiDetails || addressObj.checkout_data?.upiDetails || null,
+            deliveryPartnerId: normalizedOrder.deliveryPartnerId || addressObj.checkout_data?.deliveryPartnerId || null,
+            deliveryPartnerName: normalizedOrder.deliveryPartnerName || addressObj.checkout_data?.deliveryPartnerName || null,
+            deliveryPartnerPhone: normalizedOrder.deliveryPartnerPhone || addressObj.checkout_data?.deliveryPartnerPhone || null,
+            deliveryPartnerStatus: normalizedOrder.deliveryPartnerStatus || addressObj.checkout_data?.deliveryPartnerStatus || null,
+            deliveryInstructions: normalizedOrder.deliveryInstructions || normalizedOrder.instructions || null,
+            deliveryNotes: normalizedOrder.deliveryInstructions || normalizedOrder.instructions || null,
+            eta: normalizedOrder.eta || 25,
+            scheduledTime: normalizedOrder.scheduledTime || null,
+            pointsEarned: normalizedOrder.pointsEarned || 0,
+            pointsRedeemed: normalizedOrder.pointsRedeemed || 0,
+            trackingHistory: normalizedOrder.trackingHistory || [],
+            rating: normalizedOrder.rating || null,
+            feedback: normalizedOrder.feedback || null,
+            customerEmail: resolvedCustomerEmail || null,
+            customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : null,
+            whatsappOptIn: explicitOptIn,
+            restaurantName: resolvedRestaurantName,
+            placedAt: normalizedOrder.date || new Date().toISOString()
           };
 
-          const supabasePayload = {
-            id: String(order.id),
-            customer_id: String(order.customerId || order.customer_id || ''),
-            customer_phone: String(order.customerPhone || order.customer_phone || ''),
-            customer_name: String(order.customerName || order.customer_name || 'Customer'),
-            items: Array.isArray(order.items) ? order.items : [],
-            subtotal: Number(order.subtotal || 0),
-            discount: Number(order.discount || 0),
-            delivery_fee: Number(order.deliveryFee !== undefined ? order.deliveryFee : (order.delivery_fee || 0)),
-            packaging_fee: Number(order.packagingFee !== undefined ? order.packagingFee : (order.packaging_fee || 0)),
-            tax: Number(order.tax || 0),
-            tip: Number(order.tip || 0),
-            final_amount: Number(order.finalAmount !== undefined ? order.finalAmount : (order.final_amount || 0)),
-            status: String(order.status || 'accepted'),
+          const basePayload: Record<string, any> = {
+            id: String(normalizedOrder.id),
+            customer_id: authoritativeCustomerId,
+            customer_phone: String(normalizedOrder.customerPhone || normalizedOrder.customer_phone || caller.phone || ''),
+            customer_name: String(normalizedOrder.customerName || normalizedOrder.customer_name || 'Customer'),
+            items: Array.isArray(normalizedOrder.items) ? normalizedOrder.items : [],
+            subtotal: Number(normalizedOrder.subtotal || 0),
+            discount: Number(normalizedOrder.discount || 0),
+            delivery_fee: Number(normalizedOrder.deliveryFee !== undefined ? normalizedOrder.deliveryFee : (normalizedOrder.delivery_fee || 0)),
+            packaging_fee: Number(normalizedOrder.packagingFee !== undefined ? normalizedOrder.packagingFee : (normalizedOrder.packaging_fee || 0)),
+            tax: Number(normalizedOrder.tax || 0),
+            tip: Number(normalizedOrder.tip || 0),
+            final_amount: computedFinalAmount,
+            status: String(normalizedOrder.status || 'accepted'),
             address: addressObj,
-            instructions: String(order.deliveryInstructions || order.instructions || ''),
-            coupon_used: String(order.couponUsed || order.coupon_used || ''),
-            payment_method: String(order.paymentMethod || order.payment_method || 'UPI'),
-            payment_status: String(order.paymentStatus || order.payment_status || 'pending'),
-            date: order.date || new Date().toISOString(),
-            created_at: order.date || new Date().toISOString()
+            instructions: String(normalizedOrder.deliveryInstructions || normalizedOrder.instructions || ''),
+            coupon_used: String(normalizedOrder.couponUsed || normalizedOrder.coupon_used || ''),
+            payment_method: String(normalizedOrder.paymentMethod || normalizedOrder.payment_method || 'UPI'),
+            payment_status: String(normalizedOrder.paymentStatus || normalizedOrder.payment_status || 'pending'),
+            date: normalizedOrder.date || new Date().toISOString(),
+            created_at: normalizedOrder.date || new Date().toISOString()
           };
 
-          const { error } = await adminClient
+          const extendedPayload: Record<string, any> = {
+            ...basePayload,
+            customer_email: resolvedCustomerEmail || null,
+            customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : null,
+            whatsapp_consent: explicitOptIn,
+            whatsapp_consent_at: explicitOptIn ? new Date().toISOString() : null,
+            restaurant_name: resolvedRestaurantName
+          };
+
+          let { error } = await writeClient
             .from('orders')
-            .upsert([supabasePayload], { onConflict: 'id' });
+            .upsert([extendedPayload], { onConflict: 'id' });
+
+          if (error && (error.message?.includes('column') || error.code === 'PGRST204')) {
+            const retryRes = await writeClient
+              .from('orders')
+              .upsert([basePayload], { onConflict: 'id' });
+            error = retryRes.error;
+          }
+
           if (!error) {
             supabaseSaved = true;
           } else {
@@ -1731,10 +2020,23 @@ Current User Query: ${message}`;
         console.warn('[Supabase Orders] Server POST exception:', err?.message);
       }
 
-      // Trigger WhatsApp Business Cloud API notification (idempotent, never breaks order placement)
+      // 3. Automatically dispatch Admin (+919063692135) & Consented Customer Meta Cloud API notifications (idempotent, non-blocking to order success)
       let whatsappResult: any = null;
       try {
-        whatsappResult = await sendOrderConfirmationWhatsApp(order);
+        whatsappResult = await dispatchOrderWhatsAppNotifications(normalizedOrder);
+
+        // Record latest notification status summary on order row if available
+        const adminSt = whatsappResult?.adminNotification?.status || 'failed';
+        const custSt = whatsappResult?.customerNotification?.status || 'skipped_no_consent';
+        const summaryStatus = `admin:${adminSt},customer:${custSt}`;
+        try {
+          if (writeClient) {
+            await writeClient
+              .from('orders')
+              .update({ whatsapp_notification_status: summaryStatus })
+              .eq('id', String(normalizedOrder.id));
+          }
+        } catch {}
       } catch (waErr: any) {
         console.warn('[WhatsApp] Post-order notification notice:', waErr?.message);
         whatsappResult = { success: false, status: 'failed', error: waErr?.message };
@@ -1742,10 +2044,10 @@ Current User Query: ${message}`;
 
       return res.status(201).json({
         success: true,
-        orderId: order.id,
+        orderId: normalizedOrder.id,
         supabaseSaved,
         whatsappNotification: whatsappResult,
-        order
+        order: normalizedOrder
       });
     } catch (e: any) {
       console.error('Exception in POST /api/orders:', e);
@@ -1755,10 +2057,76 @@ Current User Query: ${message}`;
 
   app.put("/api/orders/:id", async (req, res) => {
     try {
-      const { id } = req.params;
-      const updates = req.body || {};
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: 'Authentication required to update an order.' });
+      }
 
-      const existing = serverOrders.get(String(id)) || {};
+      const { id } = req.params;
+      const rawUpdates = req.body || {};
+
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = isServiceRole
+        ? adminClient
+        : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+
+      let existing = serverOrders.get(String(id));
+      if (!existing) {
+        try {
+          const { data } = await dbClient
+            .from('orders')
+            .select('*')
+            .eq('id', String(id))
+            .maybeSingle();
+          if (data) existing = data;
+        } catch {}
+      }
+
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'Order not found.' });
+      }
+
+      if (!isOrderOwnedByCaller(existing, caller)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: You cannot modify another customer\'s order.' });
+      }
+
+      // Restrict non-admin modifications to safe customer-scoped fields (block pricing, ownership, or paid-status tampering)
+      let updates: Record<string, any> = rawUpdates;
+      if (!caller.isAdmin) {
+        updates = {};
+        const allowedCustomerStatuses = ['accepted', 'preparing', 'picked', 'on_the_way', 'delivered', 'cancelled'];
+        if (rawUpdates.status !== undefined) {
+          const nextSt = String(rawUpdates.status).toLowerCase();
+          if (!allowedCustomerStatuses.includes(nextSt)) {
+            return res.status(403).json({ success: false, error: 'Forbidden status update.' });
+          }
+          updates.status = nextSt;
+        }
+        if (rawUpdates.paymentStatus !== undefined || rawUpdates.payment_status !== undefined) {
+          const reqPay = String(rawUpdates.paymentStatus ?? rawUpdates.payment_status).toLowerCase();
+          if (reqPay !== 'cancelled' && reqPay !== 'refund_initiated') {
+            return res.status(403).json({ success: false, error: 'Forbidden: Only verified payment gateways or admins may confirm payment status.' });
+          }
+          updates.paymentStatus = reqPay;
+          updates.payment_status = reqPay;
+        }
+        const safeFields = [
+          'rating',
+          'feedback',
+          'deliveryPartnerRating',
+          'deliveryPartnerRatingComment',
+          'instructions',
+          'deliveryInstructions',
+          'trackingHistory',
+          'deliveryPartnerStatus',
+          'eta'
+        ];
+        for (const field of safeFields) {
+          if (rawUpdates[field] !== undefined) updates[field] = rawUpdates[field];
+        }
+      }
+
+      const previousStatus = String(existing.status || '').toLowerCase();
       const merged = { ...existing, ...updates, id: String(id), updated_at: new Date().toISOString() };
 
       serverOrders.set(String(id), merged);
@@ -1766,19 +2134,21 @@ Current User Query: ${message}`;
 
       // Attempt Supabase update for valid table columns
       try {
-        const { client: adminClient } = getAdminSupabaseServerClient();
-        if (adminClient) {
-          const directCols = ['status', 'payment_status', 'instructions', 'coupon_used', 'items', 'subtotal', 'discount', 'final_amount'];
+        if (dbClient) {
+          const directCols = caller.isAdmin
+            ? ['status', 'payment_status', 'instructions', 'coupon_used', 'items', 'subtotal', 'discount', 'final_amount']
+            : ['status', 'payment_status', 'instructions'];
           const updatePayload: Record<string, any> = {};
           for (const col of directCols) {
             if (updates[col] !== undefined) updatePayload[col] = updates[col];
           }
           if (updates.paymentStatus) updatePayload.payment_status = updates.paymentStatus;
-          if (updates.finalAmount) updatePayload.final_amount = updates.finalAmount;
-          if (updates.address) updatePayload.address = updates.address;
+          if (updates.deliveryInstructions) updatePayload.instructions = updates.deliveryInstructions;
+          if (caller.isAdmin && updates.finalAmount !== undefined) updatePayload.final_amount = updates.finalAmount;
+          if (caller.isAdmin && updates.address) updatePayload.address = updates.address;
 
           if (Object.keys(updatePayload).length > 0) {
-            await adminClient
+            await dbClient
               .from('orders')
               .update(updatePayload)
               .eq('id', id);
@@ -1786,10 +2156,68 @@ Current User Query: ${message}`;
         }
       } catch {}
 
-      return res.json({ success: true, order: merged });
+      // Automatically send Meta template status update to opted-in customer when order status transitions
+      let statusWhatsappNotification: any = null;
+      const nextStatus = updates.status ? String(updates.status).toLowerCase() : '';
+      if (nextStatus && nextStatus !== previousStatus) {
+        try {
+          statusWhatsappNotification = await dispatchOrderStatusWhatsAppNotification(merged, nextStatus);
+        } catch {}
+      }
+
+      return res.json({ success: true, order: merged, whatsappStatusNotification: statusWhatsappNotification });
     } catch (e: any) {
       console.error('Exception in PUT /api/orders/:id:', e);
       return res.status(500).json({ success: false, error: 'Failed to update order.' });
+    }
+  });
+
+  app.delete("/api/orders/:id", async (req, res) => {
+    try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: 'Authentication required to delete an order.' });
+      }
+
+      const { id } = req.params;
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = isServiceRole
+        ? adminClient
+        : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+
+      let existing = serverOrders.get(String(id));
+      if (!existing) {
+        try {
+          const { data } = await dbClient
+            .from('orders')
+            .select('*')
+            .eq('id', String(id))
+            .maybeSingle();
+          if (data) existing = data;
+        } catch {}
+      }
+
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'Order not found.' });
+      }
+
+      if (!isOrderOwnedByCaller(existing, caller)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: You cannot delete another customer\'s order.' });
+      }
+
+      serverOrders.delete(String(id));
+      persistServerOrders(serverOrders);
+
+      try {
+        if (dbClient) {
+          await dbClient.from('orders').delete().eq('id', String(id));
+        }
+      } catch {}
+
+      return res.json({ success: true, deletedId: String(id) });
+    } catch (e: any) {
+      console.error('Exception in DELETE /api/orders/:id:', e);
+      return res.status(500).json({ success: false, error: 'Failed to delete order.' });
     }
   });
 
@@ -1812,18 +2240,27 @@ Current User Query: ${message}`;
   // Associates strictly with the existing Nuvvo order ID and verifies the amount from server storage
   app.post("/api/payment/phonepe/initiate", async (req, res) => {
     try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: "Authentication required to initiate payment." });
+      }
+
       const { orderId } = req.body || {};
       if (!orderId) {
         return res.status(400).json({ success: false, error: "Order ID is required to initiate PhonePe payment." });
       }
 
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = isServiceRole
+        ? adminClient
+        : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+
       // Retrieve existing order from server store or Supabase
       let order = serverOrders.get(String(orderId));
       if (!order) {
         try {
-          const { client: adminClient } = getAdminSupabaseServerClient();
-          if (adminClient) {
-            const { data } = await adminClient
+          if (dbClient) {
+            const { data } = await dbClient
               .from('orders')
               .select('*')
               .eq('id', String(orderId))
@@ -1838,6 +2275,10 @@ Current User Query: ${message}`;
 
       if (!order) {
         return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+      }
+
+      if (!isOrderOwnedByCaller(order, caller)) {
+        return res.status(403).json({ success: false, error: "Forbidden: You cannot initiate payment for another customer's order." });
       }
 
       // Verify payment status: Prevent duplicate payments for already paid orders
@@ -2118,18 +2559,27 @@ Current User Query: ${message}`;
   app.post("/api/payment/phonepe/redirect", handlePhonePeRedirect);
   app.get("/api/payment/phonepe/redirect", handlePhonePeRedirect);
 
-  // 5. Client Status Verification API
-  // Allows customer tracking screen or admin to verify status in real-time
+  // 5. Client Status Verification API (Authenticated + Ownership Verified)
+  // Allows owning customer or admin to verify status in real-time
   app.get("/api/payment/phonepe/verify/:orderId", async (req, res) => {
     try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: "Authentication required to verify payment." });
+      }
+
       const { orderId } = req.params;
+      const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = isServiceRole
+        ? adminClient
+        : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+
       let order = serverOrders.get(String(orderId));
 
       if (!order) {
         try {
-          const { client: adminClient } = getAdminSupabaseServerClient();
-          if (adminClient) {
-            const { data } = await adminClient
+          if (dbClient) {
+            const { data } = await dbClient
               .from('orders')
               .select('*')
               .eq('id', String(orderId))
@@ -2141,6 +2591,10 @@ Current User Query: ${message}`;
 
       if (!order) {
         return res.status(404).json({ success: false, error: `Order ${orderId} not found.` });
+      }
+
+      if (!isOrderOwnedByCaller(order, caller)) {
+        return res.status(403).json({ success: false, error: "Forbidden: You cannot inspect another customer's payment status." });
       }
 
       const txnId = order.paymentDetails?.merchantTransactionId;
@@ -2168,9 +2622,8 @@ Current User Query: ${message}`;
         persistServerOrders(serverOrders);
 
         try {
-          const { client: adminClient } = getAdminSupabaseServerClient();
-          if (adminClient) {
-            await adminClient
+          if (dbClient) {
+            await dbClient
               .from('orders')
               .update({ payment_status: newStatus })
               .eq('id', String(orderId));
@@ -2190,44 +2643,357 @@ Current User Query: ${message}`;
     }
   });
 
-  // --- WHATSAPP CLOUD API & ORDER NOTIFICATION DIAGNOSTIC APIS ---
-  app.get("/api/admin/whatsapp/status", requireAdminAuth, (_req, res) => {
-    const status = getWhatsAppConfigStatus();
-    return res.json({
-      success: true,
-      ...status
-    });
+  // --- CUSTOMER WHATSAPP CONSENT & ORDER DELIVERY STATUS APIS (AUTHENTICATED & ISOLATED) ---
+  app.post("/api/customer/whatsapp-consent", async (req, res) => {
+    try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: 'Authentication required to update WhatsApp preferences.' });
+      }
+
+      const { customerId, customerEmail, customerPhone, whatsappNumber, consentGranted, whatsappOptIn, consentSource, source } = req.body || {};
+      if (!caller.isAdmin) {
+        if (customerId && String(customerId).trim() !== caller.userId) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Cannot update WhatsApp consent for another customer.' });
+        }
+        if (customerEmail && caller.email && String(customerEmail).trim().toLowerCase() !== caller.email) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Email does not match authenticated customer.' });
+        }
+      }
+
+      const resolvedConsent = typeof consentGranted === 'boolean' ? consentGranted : Boolean(whatsappOptIn);
+      const result = await saveCustomerWhatsAppConsent({
+        customerId: caller.isAdmin ? (customerId || caller.userId) : caller.userId,
+        customerEmail: caller.isAdmin ? customerEmail : (caller.email || customerEmail),
+        customerPhone: caller.isAdmin ? customerPhone : (caller.phone || customerPhone),
+        whatsappNumber,
+        consentGranted: resolvedConsent,
+        consentSource: consentSource || source || 'checkout'
+      });
+
+      if (!result.success) {
+        return res.status(400).json({ success: false, error: result.error });
+      }
+      return res.json({ success: true, preference: result.record });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to save WhatsApp preference.' });
+    }
   });
 
-  app.get("/api/admin/order-notifications", requireAdminAuth, async (_req, res) => {
+  app.get("/api/customer/whatsapp-consent", async (req, res) => {
+    try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, error: 'Authentication required to view WhatsApp preferences.' });
+      }
+
+      const { customerId, customerEmail, customerPhone, whatsappNumber } = req.query || {};
+      if (!caller.isAdmin) {
+        if (customerId && String(customerId).trim() !== caller.userId) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Cannot read another customer\'s WhatsApp preference.' });
+        }
+        if (customerEmail && caller.email && String(customerEmail).trim().toLowerCase() !== caller.email) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Email does not match authenticated customer.' });
+        }
+        if (customerPhone && caller.phone && normalizePhone(String(customerPhone)) !== caller.phone) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Phone does not match authenticated customer.' });
+        }
+      }
+
+      const pref = await getCustomerWhatsAppConsent({
+        customerId: caller.isAdmin ? (customerId ? String(customerId) : undefined) : caller.userId,
+        customerEmail: caller.isAdmin ? (customerEmail ? String(customerEmail) : undefined) : (caller.email || undefined),
+        customerPhone: caller.isAdmin ? (customerPhone ? String(customerPhone) : undefined) : (caller.phone || undefined),
+        whatsappNumber: whatsappNumber ? String(whatsappNumber) : undefined
+      });
+      return res.json({ success: true, preference: pref });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to read WhatsApp preference.' });
+    }
+  });
+
+  // Order notification lifecycle endpoint strictly scoped to owning customer or Admin
+  app.get("/api/orders/:orderId/notifications", async (req, res) => {
+    try {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated) {
+        return res.status(401).json({ success: false, notifications: [], error: 'Authentication required.' });
+      }
+
+      const { orderId } = req.params;
+      if (!caller.isAdmin) {
+        let targetOrder = serverOrders.get(String(orderId));
+        if (!targetOrder) {
+          try {
+            const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+            const readClient = isServiceRole
+              ? adminClient
+              : (caller.authType === 'supabase' ? createUserScopedSupabaseClient(caller.token) : adminClient);
+            const { data } = await readClient.from('orders').select('*').eq('id', String(orderId)).maybeSingle();
+            if (data) targetOrder = data;
+          } catch {}
+        }
+        if (!targetOrder) {
+          return res.status(404).json({ success: false, notifications: [], error: 'Order not found.' });
+        }
+        if (!isOrderOwnedByCaller(targetOrder, caller)) {
+          return res.status(403).json({ success: false, notifications: [], error: 'Forbidden: You cannot inspect notifications for another customer\'s order.' });
+        }
+      }
+
+      const records = await listOrderNotifications({ orderId: String(orderId), limit: 20 });
+      const sanitized = records.map(r => {
+        const maskPhone = (p: string) => {
+          const d = String(p || '').replace(/\D/g, '');
+          if (d.length < 4) return p || 'N/A';
+          return `+${d.slice(0, 2)} ••••••${d.slice(-4)}`;
+        };
+        return {
+          id: r.id,
+          orderId: r.order_id,
+          recipientRole: r.recipient_role,
+          recipientMasked: r.recipient_role === 'admin' ? '+91 ••••••2135' : maskPhone(r.recipient),
+          notificationType: r.notification_type,
+          templateName: r.template_name,
+          status: r.status,
+          messageId: r.message_id,
+          consentVerified: r.consent_verified,
+          errorMessage: r.error_message,
+          submittedAt: r.submitted_at,
+          sentAt: r.sent_at,
+          deliveredAt: r.delivered_at,
+          readAt: r.read_at,
+          failedAt: r.failed_at,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at
+        };
+      });
+      return res.json({ success: true, notifications: sanitized });
+    } catch (err: any) {
+      return res.json({ success: false, notifications: [], error: err?.message });
+    }
+  });
+
+  // --- OFFICIAL META WHATSAPP CLOUD API WEBHOOKS ---
+  const handleWhatsAppWebhookVerify = (req: express.Request, res: express.Response) => {
+    const check = verifyWhatsAppWebhookSubscription(req.query as Record<string, any>);
+    if (check.ok && check.challenge) {
+      return res.status(200).type('text/plain').send(check.challenge);
+    }
+    return res.status(check.statusCode).json({ success: false, error: check.error });
+  };
+
+  const handleWhatsAppWebhookEvent = async (req: express.Request, res: express.Response) => {
+    const sigHeader = req.headers['x-hub-signature-256'] as string | undefined;
+    const rawBody = (req as any).rawBody as Buffer | undefined;
+    const appSecretConfigured = Boolean((process.env.WHATSAPP_APP_SECRET || '').trim());
+    const signatureOk = verifyMetaWebhookSignature(rawBody, sigHeader);
+
+    const safeHeaders: Record<string, any> = {
+      'content-type': req.headers['content-type'] || null,
+      'user-agent': req.headers['user-agent'] || null,
+      'x-hub-signature-256': sigHeader ? `${sigHeader.slice(0, 14)}...` : null,
+      signatureVerificationMode: appSecretConfigured ? 'enforced' : 'app_secret_not_set'
+    };
+
+    if (!signatureOk) {
+      await recordRawWebhookEvent({
+        payload: req.body,
+        headers: safeHeaders,
+        signatureValid: false,
+        forceEventType: 'invalid_signature',
+        errorSummary: 'Rejected: Invalid X-Hub-Signature-256 Meta webhook signature.'
+      }).catch(() => {});
+      return res.status(401).json({ success: false, error: 'Invalid Meta webhook signature.' });
+    }
+
+    try {
+      const outcome = await processWhatsAppWebhookEvent(req.body, {
+        headers: safeHeaders,
+        signatureValid: appSecretConfigured ? true : null
+      });
+      return res.status(200).json({ success: true, ...outcome });
+    } catch (err: any) {
+      console.error('[WhatsApp Webhook] Processing exception:', err?.message);
+      return res.status(200).json({ success: false, error: err?.message });
+    }
+  };
+
+  app.get(["/api/webhooks/whatsapp", "/api/whatsapp/webhook"], handleWhatsAppWebhookVerify);
+  app.post(["/api/webhooks/whatsapp", "/api/whatsapp/webhook"], handleWhatsAppWebhookEvent);
+
+  // --- WHATSAPP CLOUD API & ORDER NOTIFICATION ADMIN DIAGNOSTIC APIS ---
+  app.get("/api/admin/whatsapp/webhook-events", requireAdminAuth, async (req, res) => {
+    try {
+      const requestedLimit = Number(req.query?.limit || 50);
+      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(1, requestedLimit), 50) : 50;
+      const query = String(req.query?.q ?? req.query?.search ?? '').trim();
+      const rawSearchBy = String(req.query?.searchBy ?? 'all').trim();
+      const searchBy = (rawSearchBy === 'wamid' || rawSearchBy === 'matched_order_id') ? rawSearchBy : 'all';
+
+      const events = await listRecentWebhookEvents(limit, { query, searchBy });
+      return res.json({
+        success: true,
+        count: events.length,
+        maxLimit: 50,
+        query,
+        searchBy,
+        events
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        events: [],
+        error: err?.message || 'Failed to fetch Meta WhatsApp webhook events.'
+      });
+    }
+  });
+  app.get("/api/admin/whatsapp/status", requireAdminAuth, async (req, res) => {
+    try {
+      const forceTemplates = req.query?.refresh === 'true';
+      const configStatus = getWhatsAppConfigStatus();
+      const [templates, notifications] = await Promise.all([
+        getWhatsAppTemplatesStatus(forceTemplates),
+        listOrderNotifications({ limit: 100 })
+      ]);
+
+      const adminNotifs = notifications.filter(n => n.recipient_role === 'admin');
+      const customerNotifs = notifications.filter(n => n.recipient_role === 'customer');
+      const failedNotif = notifications.find(n => n.status === 'failed');
+
+      const cutoff24hMs = Date.now() - 24 * 60 * 60 * 1000;
+      const allFailedNotifs = notifications.filter(n => n.status === 'failed');
+      const recentFailed24hList = allFailedNotifs.filter(n => {
+        const ts = new Date(n.failed_at || n.updated_at || n.created_at || 0).getTime();
+        return Number.isFinite(ts) && ts >= cutoff24hMs;
+      });
+
+      const summaryCounts = {
+        total: notifications.length,
+        pending: notifications.filter(n => n.status === 'pending').length,
+        submitted: notifications.filter(n => n.status === 'submitted').length,
+        sent: notifications.filter(n => n.status === 'sent').length,
+        delivered: notifications.filter(n => n.status === 'delivered').length,
+        read: notifications.filter(n => n.status === 'read').length,
+        failed: allFailedNotifs.length,
+        recentFailed24h: recentFailed24hList.length,
+        recentFailedAdmin24h: recentFailed24hList.filter(n => n.recipient_role === 'admin').length,
+        recentFailedCustomer24h: recentFailed24hList.filter(n => n.recipient_role === 'customer').length,
+        skippedNoConsent: notifications.filter(n => n.status === 'skipped_no_consent').length
+      };
+
+      const recentFailedNotifications = recentFailed24hList.slice(0, 5).map(n => ({
+        id: n.id,
+        orderId: n.order_id,
+        recipientRole: n.recipient_role,
+        recipient: n.recipient,
+        templateName: n.template_name,
+        errorMessage: n.error_message,
+        timestamp: n.failed_at || n.updated_at || n.created_at
+      }));
+
+      const baseAppUrl = process.env.APP_URL
+        ? process.env.APP_URL.replace(/\/+$/, '')
+        : `${req.protocol}://${req.get('host')}`;
+
+      return res.json({
+        success: true,
+        ...configStatus,
+        webhookUrl: `${baseAppUrl}/api/webhooks/whatsapp`,
+        templates,
+        summaryCounts,
+        recentFailedNotifications,
+        latestAdminNotification: adminNotifs[0] || null,
+        latestCustomerNotification: customerNotifs[0] || null,
+        lastError: failedNotif
+          ? {
+              id: failedNotif.id,
+              orderId: failedNotif.order_id,
+              recipientRole: failedNotif.recipient_role,
+              recipient: failedNotif.recipient,
+              message: failedNotif.error_message,
+              timestamp: failedNotif.failed_at || failedNotif.updated_at
+            }
+          : null
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to inspect WhatsApp status.' });
+    }
+  });
+
+  app.get("/api/admin/order-notifications", requireAdminAuth, async (req, res) => {
+    try {
+      const orderId = req.query?.orderId ? String(req.query.orderId) : undefined;
+      const notifications = await listOrderNotifications({ orderId, limit: 150 });
+      return res.json({ success: true, notifications });
+    } catch (err: any) {
+      return res.json({ success: true, notifications: [], error: err?.message });
+    }
+  });
+
+  const resolveOrderForNotificationRetry = async (orderId: string): Promise<any | null> => {
+    const local = serverOrders.get(String(orderId));
+    if (local) return local;
     try {
       const { client } = getAdminSupabaseServerClient();
       if (client) {
-        const { data, error } = await client
-          .from('order_notifications')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50);
-
-        if (!error && Array.isArray(data)) {
-          return res.json({ success: true, notifications: data });
-        }
+        const { data } = await client.from('orders').select('*').eq('id', String(orderId)).maybeSingle();
+        if (data) return data;
       }
     } catch {}
+    return null;
+  };
 
-    return res.json({ success: true, notifications: [] });
+  app.post("/api/admin/whatsapp/retry/:notificationId", requireAdminAuth, async (req, res) => {
+    try {
+      const { notificationId } = req.params;
+      const result = await retryFailedNotification(String(notificationId), resolveOrderForNotificationRetry);
+      return res.json({ success: result.success, result });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Failed to retry notification.' });
+    }
+  });
+
+  app.post("/api/admin/whatsapp/webhook-events/:webhookEventId/retry", requireAdminAuth, async (req, res) => {
+    try {
+      const rawWebhookEventId = String(req.params.webhookEventId || '').trim();
+      if (!rawWebhookEventId || rawWebhookEventId.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(rawWebhookEventId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid webhook event ID format.'
+        });
+      }
+
+      const outcome = await retryFailedWebhookEvent(rawWebhookEventId, resolveOrderForNotificationRetry);
+      if (!outcome.found) {
+        return res.status(404).json(outcome);
+      }
+      if (
+        outcome.status === 'unlinked' ||
+        outcome.status === 'unlinked_invalid_signature' ||
+        outcome.status === 'order_not_found'
+      ) {
+        return res.status(422).json(outcome);
+      }
+      return res.json(outcome);
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Failed to retry webhook event.'
+      });
+    }
   });
 
   app.post("/api/admin/order-notifications/resend/:orderId", requireAdminAuth, async (req, res) => {
     const { orderId } = req.params;
-    const order = serverOrders.get(String(orderId));
+    const order = await resolveOrderForNotificationRetry(String(orderId));
     if (!order) {
       return res.status(404).json({ success: false, error: `Order ${orderId} not found` });
     }
 
     try {
-      const result = await sendOrderConfirmationWhatsApp(order);
-      return res.json({ success: result.success, result });
+      const result = await dispatchOrderWhatsAppNotifications(order);
+      return res.json({ success: result.overallSuccess, result });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || 'Failed to dispatch WhatsApp alert' });
     }

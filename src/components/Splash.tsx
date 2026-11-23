@@ -30,7 +30,7 @@ function Splash() {
   }, [user, setCurrentPage]);
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 dark:bg-zinc-950 transition-colors duration-300">
+    <div className="flex flex-col items-center justify-center min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-zinc-950 transition-colors duration-300">
       <div className="text-center flex flex-col items-center justify-center p-8 max-w-sm">
         {/* Real Premium Brand Icon & Slogan */}
         <NuvvoLogo size="lg" showText={true} animate={true} className="mb-2" />
