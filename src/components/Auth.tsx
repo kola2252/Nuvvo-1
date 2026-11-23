@@ -121,8 +121,8 @@ export default function Auth() {
   const [regWhatsappNumber, setRegWhatsappNumber] = useState('');
   const [regWhatsappOptIn, setRegWhatsappOptIn] = useState(false); // Explicitly unchecked by default
 
-  // Admin Security Flow - PIN field ONLY rendered after server confirmation
-  const [adminPhoneNumber, setAdminPhoneNumber] = useState('9063692135');
+  // Admin Security Flow - Admin must manually enter mobile number and master password/PIN
+  const [adminPhoneNumber, setAdminPhoneNumber] = useState('');
   const [adminPinCode, setAdminPinCode] = useState('');
   const [adminMaskedPhone, setAdminMaskedPhone] = useState('');
   const [isAdminAccountConfirmed, setIsAdminAccountConfirmed] = useState(false);
@@ -158,6 +158,8 @@ export default function Auth() {
       setStep('customer_login');
     } else if (newRole === 'Admin') {
       setStep('admin_phone');
+      setAdminPhoneNumber('');
+      setAdminMaskedPhone('');
       setIsAdminAccountConfirmed(false);
       setConfirmedAdminPhone('');
       setAdminPinCode('');
@@ -386,15 +388,15 @@ export default function Auth() {
     if (res.success && res.promptForPin) {
       setIsAdminAccountConfirmed(true);
       setConfirmedAdminPhone(digits);
-      setAdminMaskedPhone(res.maskedPhone || `+91 ${digits}`);
+      setAdminMaskedPhone(res.maskedPhone || '+91 ••••••••••');
       setStep('admin_pin');
       setAdminPinCode('');
-      setSuccessMsg(`Authorized administrator account verified on server. Security PIN unlocked.`);
+      setSuccessMsg('Authorized administrator mobile verified. Enter your Master Password / Security PIN to continue.');
     } else {
       setIsAdminAccountConfirmed(false);
       setConfirmedAdminPhone('');
       setStep('admin_phone');
-      setErrorMsg(res.error || `Access Denied: Mobile number (+91 ${digits}) is not associated with an authorized Admin or Super Admin account.`);
+      setErrorMsg(res.error || 'Access Denied: Entered mobile number is not associated with an authorized Admin or Super Admin account.');
     }
   };
 
@@ -403,13 +405,13 @@ export default function Auth() {
     setErrorMsg('');
 
     if (!isAdminAccountConfirmed && step !== 'admin_pin') {
-      setErrorMsg('Please submit and verify your administrator mobile number first.');
+      setErrorMsg('Please enter and verify your administrator mobile number first.');
       return;
     }
 
     const pin = adminPinCode.trim();
     if (!pin || pin.length < 4 || pin.length > 8) {
-      setErrorMsg('Please enter your 4-digit Administrator Security PIN.');
+      setErrorMsg('Please enter your Master Password / Security PIN.');
       return;
     }
 
@@ -421,7 +423,7 @@ export default function Auth() {
     if (res.success) {
       setStep('admin_choice_modal');
     } else {
-      setErrorMsg(res.error || 'Incorrect PIN. Verification failed.');
+      setErrorMsg(res.error || 'Incorrect Master Password / PIN. Verification failed.');
     }
   };
 
@@ -1018,7 +1020,7 @@ export default function Auth() {
           {/* ========================================================= */}
           {step === 'customer_forgot_password' && roleOption === 'Customer' && (
             <ForgotPassword
-              initialEmail={loginIdentifier.includes('@') ? loginIdentifier.trim() : ''}
+              initialEmail={loginIdentifier.trim()}
               initialError={initialForgotError}
               onBackToSignIn={() => {
                 setErrorMsg('');
@@ -1154,20 +1156,20 @@ export default function Auth() {
                   🛡️ Administrator Access Gateway
                 </div>
                 <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">
-                  {isAdminAccountConfirmed ? 'Step 2: Security PIN Verification' : 'Step 1: Admin Identity Check'}
+                  {isAdminAccountConfirmed ? 'Step 2: Enter Master Password / PIN' : 'Step 1: Enter Admin Mobile Number'}
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
                   {isAdminAccountConfirmed
-                    ? <>Authorized account <span className="font-bold font-mono text-zinc-800 dark:text-zinc-200">{adminMaskedPhone || `+91 ${adminPhoneNumber}`}</span> confirmed. Enter your secret PIN.</>
-                    : 'Enter authorized administrator mobile number to verify account access.'}
+                    ? 'Administrator account confirmed. Enter your Master Password / Security PIN to unlock.'
+                    : 'Manually enter your authorized administrator mobile number to continue.'}
                 </p>
               </div>
 
-              <form onSubmit={isAdminAccountConfirmed ? handleAdminVerifyPinSubmit : handleAdminPhoneCheck} className="space-y-4">
+              <form onSubmit={isAdminAccountConfirmed ? handleAdminVerifyPinSubmit : handleAdminPhoneCheck} autoComplete="off" className="space-y-4">
                 {/* Mobile Number Input */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider">
+                    <label htmlFor="admin-phone-input" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider">
                       Administrator Mobile Number
                     </label>
                     {isAdminAccountConfirmed && (
@@ -1176,6 +1178,8 @@ export default function Auth() {
                         onClick={() => {
                           setIsAdminAccountConfirmed(false);
                           setConfirmedAdminPhone('');
+                          setAdminPhoneNumber('');
+                          setAdminMaskedPhone('');
                           setAdminPinCode('');
                           setStep('admin_phone');
                           setErrorMsg('');
@@ -1190,17 +1194,22 @@ export default function Auth() {
                   <div className="relative">
                     <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 font-bold font-mono text-sm">+91</span>
                     <input
+                      id="admin-phone-input"
+                      name="admin-mobile-entry"
                       type="tel"
+                      inputMode="numeric"
+                      autoComplete="off"
                       maxLength={10}
                       required
                       disabled={isAdminAccountConfirmed || isLoading}
-                      placeholder="9063692135"
-                      value={adminPhoneNumber}
+                      placeholder="Enter 10-digit admin mobile"
+                      value={isAdminAccountConfirmed ? '••••••••••' : adminPhoneNumber}
                       onChange={e => {
                         setAdminPhoneNumber(e.target.value.replace(/\D/g, ''));
                         if (isAdminAccountConfirmed) {
                           setIsAdminAccountConfirmed(false);
                           setConfirmedAdminPhone('');
+                          setAdminMaskedPhone('');
                           setAdminPinCode('');
                           setStep('admin_phone');
                         }
@@ -1225,11 +1234,11 @@ export default function Auth() {
                     className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-2xl flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300 font-medium"
                   >
                     <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Authorized account verified on server. Security PIN unlocked.</span>
+                    <span>Authorized identity confirmed. Enter your Master Password / Security PIN below.</span>
                   </motion.div>
                 )}
 
-                {/* PIN INPUT FIELD - RENDERED ONLY AFTER SERVER CONFIRMATION */}
+                {/* MASTER PASSWORD / PIN INPUT FIELD - RENDERED ONLY AFTER SERVER CONFIRMATION */}
                 {isAdminAccountConfirmed ? (
                   <motion.div
                     initial={{ opacity: 0, height: 0, y: -6 }}
@@ -1239,17 +1248,21 @@ export default function Auth() {
                     className="space-y-4"
                   >
                     <div>
-                      <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                        Administrator Security PIN
+                      <label htmlFor="admin-master-pin" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                        Master Password / Security PIN
                       </label>
                       <div className="relative">
                         <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
                         <input
+                          id="admin-master-pin"
+                          name="admin-master-pin"
                           type="password"
-                          maxLength={6}
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={8}
                           required
                           autoFocus
-                          placeholder="••••"
+                          placeholder="Enter master PIN"
                           value={adminPinCode}
                           onChange={e => setAdminPinCode(e.target.value.replace(/\D/g, ''))}
                           className="w-full bg-slate-50 dark:bg-zinc-800 pl-11 pr-4 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-center font-mono font-black text-2xl tracking-widest text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
@@ -1274,7 +1287,7 @@ export default function Auth() {
                   <>
                     <div className="bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/40 p-3 rounded-2xl text-[11px] text-zinc-600 dark:text-zinc-300">
                       <p className="font-bold text-rose-700 dark:text-rose-400">🔒 Server-Enforced Security:</p>
-                      <p className="mt-0.5">Cell identity is verified strictly on the server before PIN input is enabled.</p>
+                      <p className="mt-0.5">Both your authorized mobile number and Master Password / Security PIN must be entered manually to unlock Admin access.</p>
                     </div>
 
                     <button
@@ -1283,7 +1296,7 @@ export default function Auth() {
                       className="w-full bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-rose-600/20 cursor-pointer active:scale-98 flex items-center justify-center gap-2"
                     >
                       <ShieldCheck className="w-4 h-4" />
-                      <span>{isLoading ? 'Verifying Phone On Server...' : 'Verify Admin Phone'}</span>
+                      <span>{isLoading ? 'Verifying Admin Identity...' : 'Verify Admin Mobile'}</span>
                     </button>
                   </>
                 )}

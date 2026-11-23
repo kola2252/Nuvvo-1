@@ -72,15 +72,81 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      const authEmail = normalizeEmail(supabaseAuthUser.email || '');
       const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = adminClient || publicSupabase;
+
+      let profileUsername = '';
+      let profilePhone = '';
+      try {
+        const { data: existingProfile } = await dbClient
+          .from('customer_profiles')
+          .select('username, phone')
+          .eq('id', supabaseAuthUser.id)
+          .maybeSingle();
+        if (existingProfile?.username) profileUsername = String(existingProfile.username).toLowerCase();
+        if (existingProfile?.phone) profilePhone = String(existingProfile.phone);
+      } catch {}
+
+      // Anonymize historical orders by customer_id while preserving financial accounting totals
+      try {
+        await dbClient
+          .from('orders')
+          .update({
+            customer_name: 'Former Customer (Deleted)',
+            customer_phone: '0000000000',
+            customer_email: null,
+            customer_whatsapp: null,
+            instructions: 'Account deleted by customer'
+          })
+          .eq('customer_id', supabaseAuthUser.id);
+      } catch {}
+
+      try {
+        await dbClient.from('customer_whatsapp_preferences').delete().eq('customer_id', supabaseAuthUser.id);
+      } catch {}
+
+      try {
+        await dbClient.from('customer_profiles').delete().eq('id', supabaseAuthUser.id);
+      } catch {}
+
       if (adminClient && isServiceRole) {
-        await adminClient.from('customer_profiles').delete().eq('id', supabaseAuthUser.id);
+        if (authEmail) {
+          try {
+            await adminClient.from('app_settings').delete().eq('key', `account_${authEmail}`);
+          } catch {}
+        }
+        if (profileUsername) {
+          try {
+            const { data: currentSettings } = await adminClient
+              .from('app_settings')
+              .select('value')
+              .eq('key', 'customer_usernames')
+              .maybeSingle();
+            const usernamesMap: Record<string, string> = currentSettings?.value || {};
+            if (usernamesMap[profileUsername]) {
+              delete usernamesMap[profileUsername];
+              await adminClient
+                .from('app_settings')
+                .upsert([{
+                  key: 'customer_usernames',
+                  value: usernamesMap,
+                  updated_at: new Date().toISOString()
+                }], { onConflict: 'key' });
+            }
+          } catch {}
+        }
         await adminClient.auth.admin.deleteUser(supabaseAuthUser.id).catch(() => {});
       }
 
+      if (authEmail) fallbackCustomerAccounts.delete(authEmail);
+      if (profileUsername) fallbackUsernamesRegistry.delete(profileUsername);
+      void profilePhone;
+
       return sendJsonResponse(res, 200, {
         success: true,
-        message: "Your customer account and profile data have been permanently deleted."
+        requiresSignOut: true,
+        message: "Your customer account and profile data have been permanently deleted and historical records anonymized."
       });
     }
 

@@ -299,41 +299,66 @@ function FoodDetails() {
         </div>
 
         {/* Footer controls */}
-        <div className="bg-slate-50 dark:bg-zinc-950 p-4 border-t border-slate-100 dark:border-zinc-850 flex items-center justify-between">
-          <div className="flex flex-col">
-            <span className="text-[10px] font-bold text-zinc-400">Total payable</span>
-            <span className="text-lg font-black text-zinc-900 dark:text-zinc-100 font-mono">
-              ₹{(selectedFoodItem.discountPrice || selectedFoodItem.price) + (extraCheese ? 50 : 0)}
-            </span>
-          </div>
+        {(() => {
+          const isDishUnavailable = selectedFoodItem.isAvailable === false || selectedFoodItem.is_available === false;
+          const basePrice = selectedFoodItem.discountPrice && selectedFoodItem.discountPrice < selectedFoodItem.price
+            ? selectedFoodItem.discountPrice
+            : selectedFoodItem.price;
+          const totalDisplay = basePrice + (extraCheese ? 50 : 0);
+          return (
+            <div className="bg-slate-50 dark:bg-zinc-950 p-4 border-t border-slate-100 dark:border-zinc-850 flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-zinc-400">Total payable</span>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-lg font-black text-zinc-900 dark:text-zinc-100 font-mono">
+                    ₹{totalDisplay}
+                  </span>
+                  {selectedFoodItem.discountPrice && selectedFoodItem.discountPrice < selectedFoodItem.price && (
+                    <span className="text-xs text-zinc-400 line-through font-mono">₹{selectedFoodItem.price + (extraCheese ? 50 : 0)}</span>
+                  )}
+                </div>
+              </div>
 
-          <div className="flex items-center gap-3">
-            {qty > 0 && (
-              <div className="flex items-center bg-zinc-900 dark:bg-zinc-850 text-white px-2.5 py-1.5 rounded-xl gap-3 text-sm">
-                <button onClick={() => updateCartQuantity(selectedFoodItem.id, -1)} className="p-1 hover:bg-zinc-800 rounded">
-                  -
-                </button>
-                <span className="font-bold">{qty}</span>
-                <button onClick={() => updateCartQuantity(selectedFoodItem.id, 1)} className="p-1 hover:bg-zinc-800 rounded">
-                  +
+              <div className="flex items-center gap-3">
+                {qty > 0 && (
+                  <div className="flex items-center bg-zinc-900 dark:bg-zinc-850 text-white px-2.5 py-1.5 rounded-xl gap-3 text-sm">
+                    <button onClick={() => updateCartQuantity(selectedFoodItem.id, -1)} className="p-1 hover:bg-zinc-800 rounded">
+                      -
+                    </button>
+                    <span className="font-bold">{qty}</span>
+                    <button
+                      disabled={isDishUnavailable}
+                      onClick={() => updateCartQuantity(selectedFoodItem.id, 1)}
+                      className="p-1 hover:bg-zinc-800 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
+                
+                <button
+                  disabled={isDishUnavailable}
+                  onClick={handleAddToCartWithCustomizations}
+                  className={`font-extrabold text-xs px-6 py-3.5 rounded-xl flex items-center gap-1.5 ${
+                    isDishUnavailable
+                      ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                      : 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-500/15 cursor-pointer active:scale-98'
+                  }`}
+                >
+                  {isDishUnavailable ? (
+                    'Currently Out of Stock'
+                  ) : addedNotice ? (
+                    <>
+                      <CheckCircle className="w-4 h-4" /> Added to basket!
+                    </>
+                  ) : (
+                    'Add Customs to Cart'
+                  )}
                 </button>
               </div>
-            )}
-            
-            <button
-              onClick={handleAddToCartWithCustomizations}
-              className="bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs px-6 py-3.5 rounded-xl shadow-lg shadow-orange-500/15 flex items-center gap-1.5 cursor-pointer active:scale-98"
-            >
-              {addedNotice ? (
-                <>
-                  <CheckCircle className="w-4 h-4" /> Added to basket!
-                </>
-              ) : (
-                'Add Customs to Cart'
-              )}
-            </button>
-          </div>
-        </div>
+            </div>
+          );
+        })()}
 
       </div>
     </div>

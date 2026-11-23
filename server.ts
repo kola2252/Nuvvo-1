@@ -284,6 +284,174 @@ export function verifySignedSessionToken(token: string): { valid: boolean; phone
   return { valid: false };
 }
 
+// Middleware to strictly enforce administrator privileges on server endpoints
+function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.substring(7).trim()
+    : (req.body?.adminToken || req.query?.adminToken || '');
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active administrator authorization required." });
+  }
+
+  const verified = verifySignedSessionToken(token);
+  if (!verified.valid) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid or expired administrator session." });
+  }
+
+  if (verified.role !== 'admin' && verified.role !== 'super_admin') {
+    return res.status(403).json({ success: false, error: "Forbidden: Only an Admin or Super Admin can access or modify these settings." });
+  }
+
+  (req as any).user = { phone: verified.phone, role: verified.role };
+  next();
+}
+
+// --- STORE OPERATIONS CONFIGURATION (NON-DESTRUCTIVE DEFAULTS PRESERVING CHIRALA BASELINE) ---
+const STORE_OPS_FILE = path.join(process.cwd(), '.server_store_operations.json');
+const DEFAULT_STORE_OPERATIONS = {
+  isCustomConfigActive: false,
+  deliveryFee: 39,
+  freeDeliveryAbove: 400,
+  minOrderAmount: 0,
+  taxRatePercent: 5,
+  packagingFee: 0,
+  pauseNewOrders: false,
+  pauseReason: '',
+  openingHoursLabel: '07:00 AM - 11:00 PM',
+  serviceableAreas: ['Chirala Town Center', 'Perala', 'Kothapet', 'Vodarevu', 'Ramapuram', 'Bypass Road', 'Station Road'],
+  lastUpdated: ''
+};
+
+function loadStoreOperationsSync() {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(STORE_OPS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(STORE_OPS_FILE, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        return { ...DEFAULT_STORE_OPERATIONS, ...parsed };
+      }
+    }
+  } catch {}
+  return { ...DEFAULT_STORE_OPERATIONS };
+}
+
+let serverStoreOperations = loadStoreOperationsSync();
+
+async function getActiveStoreOperations() {
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { data } = await client.from('app_settings').select('value').eq('key', 'store_operations').maybeSingle();
+      if (data?.value && typeof data.value === 'object') {
+        serverStoreOperations = { ...DEFAULT_STORE_OPERATIONS, ...(data.value as any) };
+      }
+    }
+  } catch {}
+  return serverStoreOperations;
+}
+
+async function persistStoreOperations(cfg: typeof DEFAULT_STORE_OPERATIONS) {
+  serverStoreOperations = { ...DEFAULT_STORE_OPERATIONS, ...cfg, lastUpdated: new Date().toISOString() };
+  try {
+    if (!process.env.VERCEL) {
+      fs.writeFileSync(STORE_OPS_FILE, JSON.stringify(serverStoreOperations, null, 2), 'utf8');
+    }
+  } catch {}
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from('app_settings').upsert([{
+        key: 'store_operations',
+        value: serverStoreOperations,
+        description: 'Admin-configured store delivery fees, min order, serviceable areas & pause mode',
+        updated_at: new Date().toISOString()
+      }], { onConflict: 'key' });
+    }
+  } catch {}
+  return serverStoreOperations;
+}
+
+// --- CUSTOMER SUPPORT TICKETS PERSISTENCE ---
+const SUPPORT_TICKETS_FILE = path.join(process.cwd(), '.server_support_tickets.json');
+
+function loadSupportTicketsSync(): any[] {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(SUPPORT_TICKETS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SUPPORT_TICKETS_FILE, 'utf8'));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+let serverSupportTickets: any[] = loadSupportTicketsSync();
+
+async function getActiveSupportTickets(): Promise<any[]> {
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { data } = await client.from('app_settings').select('value').eq('key', 'support_tickets').maybeSingle();
+      if (Array.isArray(data?.value)) {
+        serverSupportTickets = data.value;
+      }
+    }
+  } catch {}
+  return serverSupportTickets;
+}
+
+async function persistSupportTickets(tickets: any[]) {
+  serverSupportTickets = tickets;
+  try {
+    if (!process.env.VERCEL) {
+      fs.writeFileSync(SUPPORT_TICKETS_FILE, JSON.stringify(serverSupportTickets, null, 2), 'utf8');
+    }
+  } catch {}
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from('app_settings').upsert([{
+        key: 'support_tickets',
+        value: serverSupportTickets,
+        description: 'Customer support complaints and resolution history',
+        updated_at: new Date().toISOString()
+      }], { onConflict: 'key' });
+    }
+  } catch {}
+}
+
+// --- DURABLE DELIVERY PARTNER PERSISTENCE ---
+const DELIVERY_PARTNERS_FILE = path.join(process.cwd(), '.server_delivery_partners.json');
+
+function loadDeliveryPartnersSync(): any[] {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(DELIVERY_PARTNERS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DELIVERY_PARTNERS_FILE, 'utf8'));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+async function persistDeliveryPartners(partners: any[]) {
+  try {
+    if (!process.env.VERCEL) {
+      fs.writeFileSync(DELIVERY_PARTNERS_FILE, JSON.stringify(partners, null, 2), 'utf8');
+    }
+  } catch {}
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from('app_settings').upsert([{
+        key: 'delivery_partners',
+        value: partners,
+        description: 'Registered Nuvvo delivery partners fleet',
+        updated_at: new Date().toISOString()
+      }], { onConflict: 'key' });
+    }
+  } catch {}
+}
+
 interface HotelRecord {
   id: string;
   name: string;
@@ -386,7 +554,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Idempotency-Key');
   if (_req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -396,16 +564,16 @@ app.use((_req, res, next) => {
 // Intercept all /api/* requests: 5-minute GET cache + response time & error rate logging to Supabase `api_logs`
 app.use(apiInterceptorMiddleware);
 
-// Endpoint to inspect API response times, error rates, cache hit ratio, and recent api_logs
-app.get("/api/admin/api-logs", (_req, res) => {
+// Endpoint to inspect API response times, error rates, cache hit ratio, and recent api_logs (Admin only)
+app.get("/api/admin/api-logs", requireAdminAuth, (_req, res) => {
   return res.json({
     success: true,
     ...getApiTelemetrySummary()
   });
 });
 
-// Endpoint to inspect OTP email attempts, status, recipients, and error details
-app.get("/api/admin/email-logs", async (req, res) => {
+// Endpoint to inspect OTP email attempts, status, recipients, and error details (Admin only)
+app.get("/api/admin/email-logs", requireAdminAuth, async (req, res) => {
   const recipient = typeof req.query.recipient === 'string' ? req.query.recipient : undefined;
   const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 50;
 
@@ -419,6 +587,97 @@ app.get("/api/admin/email-logs", async (req, res) => {
     success: true,
     ...result
   });
+});
+
+// Store Operations Config endpoints (preserves Chirala baseline unless Admin saves custom config)
+app.get("/api/store-operations", async (_req, res) => {
+  const config = await getActiveStoreOperations();
+  return res.json({ success: true, config });
+});
+
+app.put("/api/admin/store-operations", requireAdminAuth, async (req, res) => {
+  const body = req.body || {};
+  const nextConfig = {
+    isCustomConfigActive: body.isCustomConfigActive !== undefined ? Boolean(body.isCustomConfigActive) : true,
+    deliveryFee: Math.max(0, Number(body.deliveryFee ?? serverStoreOperations.deliveryFee ?? 39)),
+    freeDeliveryAbove: Math.max(0, Number(body.freeDeliveryAbove ?? serverStoreOperations.freeDeliveryAbove ?? 400)),
+    minOrderAmount: Math.max(0, Number(body.minOrderAmount ?? serverStoreOperations.minOrderAmount ?? 0)),
+    taxRatePercent: Math.max(0, Math.min(28, Number(body.taxRatePercent ?? serverStoreOperations.taxRatePercent ?? 5))),
+    packagingFee: Math.max(0, Number(body.packagingFee ?? serverStoreOperations.packagingFee ?? 0)),
+    pauseNewOrders: Boolean(body.pauseNewOrders),
+    pauseReason: String(body.pauseReason || '').trim().slice(0, 200),
+    openingHoursLabel: String(body.openingHoursLabel || serverStoreOperations.openingHoursLabel || '07:00 AM - 11:00 PM').trim().slice(0, 80),
+    serviceableAreas: Array.isArray(body.serviceableAreas)
+      ? body.serviceableAreas.map((a: any) => String(a).trim()).filter(Boolean)
+      : serverStoreOperations.serviceableAreas,
+    lastUpdated: new Date().toISOString()
+  };
+  const saved = await persistStoreOperations(nextConfig);
+  return res.json({ success: true, config: saved });
+});
+
+// Customer Support Tickets & Complaints endpoints
+app.get("/api/support-tickets", async (req, res) => {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.authenticated) {
+    return res.status(401).json({ success: false, error: 'Authentication required to view support tickets.' });
+  }
+  const tickets = await getActiveSupportTickets();
+  if (caller.isAdmin) {
+    return res.json({ success: true, tickets });
+  }
+  const ownTickets = tickets.filter(t => String(t.customerId || '') === caller.userId);
+  return res.json({ success: true, tickets: ownTickets });
+});
+
+app.post("/api/support-tickets", async (req, res) => {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.authenticated) {
+    return res.status(401).json({ success: false, error: 'Authentication required to submit a support ticket.' });
+  }
+  const { subject, description, category, orderId, customerName, customerPhone } = req.body || {};
+  if (!subject || !String(subject).trim() || !description || !String(description).trim()) {
+    return res.status(400).json({ success: false, error: 'Subject and description are required.' });
+  }
+  const tickets = await getActiveSupportTickets();
+  const now = new Date().toISOString();
+  const allowedCategories = ['Order Issue', 'Payment / Refund', 'Delivery Delay', 'Account / App', 'General'];
+  const ticket = {
+    id: `tkt_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+    customerId: caller.userId,
+    customerName: String(customerName || caller.email || caller.phone || 'Customer').trim().slice(0, 80),
+    customerEmail: caller.email || '',
+    customerPhone: String(customerPhone || caller.phone || '').trim().slice(0, 20),
+    orderId: orderId ? String(orderId).trim().slice(0, 64) : undefined,
+    category: allowedCategories.includes(category) ? category : 'General',
+    subject: String(subject).trim().slice(0, 120),
+    description: String(description).trim().slice(0, 1000),
+    status: 'open',
+    createdAt: now,
+    updatedAt: now
+  };
+  await persistSupportTickets([ticket, ...tickets]);
+  return res.status(201).json({ success: true, ticket });
+});
+
+app.put("/api/admin/support-tickets/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { status, adminReply } = req.body || {};
+  const tickets = await getActiveSupportTickets();
+  const idx = tickets.findIndex(t => String(t.id) === String(id));
+  if (idx === -1) {
+    return res.status(404).json({ success: false, error: 'Support ticket not found.' });
+  }
+  const allowedStatuses = ['open', 'in_progress', 'resolved'];
+  const nextStatus = allowedStatuses.includes(status) ? status : tickets[idx].status;
+  tickets[idx] = {
+    ...tickets[idx],
+    status: nextStatus,
+    adminReply: adminReply !== undefined ? String(adminReply).trim().slice(0, 500) : tickets[idx].adminReply,
+    updatedAt: new Date().toISOString()
+  };
+  await persistSupportTickets(tickets);
+  return res.json({ success: true, ticket: tickets[idx] });
 });
 
 
@@ -1448,30 +1707,6 @@ Current User Query: ${message}`;
     });
   });
 
-  // Middleware to strictly enforce administrator privileges on server endpoints
-  function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith('Bearer ') 
-      ? authHeader.substring(7).trim() 
-      : (req.body?.adminToken || req.query?.adminToken || '');
-
-    if (!token) {
-      return res.status(401).json({ success: false, error: "Unauthorized: Active administrator authorization required." });
-    }
-
-    const verified = verifySignedSessionToken(token);
-    if (!verified.valid) {
-      return res.status(401).json({ success: false, error: "Unauthorized: Invalid or expired administrator session." });
-    }
-
-    if (verified.role !== 'admin' && verified.role !== 'super_admin') {
-      return res.status(403).json({ success: false, error: "Forbidden: Only an Admin or Super Admin can access or modify these settings." });
-    }
-
-    (req as any).user = { phone: verified.phone, role: verified.role };
-    next();
-  }
-
   // Diagnostic endpoint to verify server-side Supabase client status with SERVICE_ROLE_KEY
   app.get("/api/admin/diagnostics/supabase", requireAdminAuth, async (_req, res) => {
     try {
@@ -1770,10 +2005,13 @@ Current User Query: ${message}`;
 
       const orderMap = new Map<string, any>();
 
+      const isHiddenForNonAdmin = (ord: any) =>
+        !caller.isAdmin && Boolean(ord?.hiddenByCustomer || ord?.hidden_by_customer || ord?.address?.checkout_data?.hiddenByCustomer);
+
       // 1. Prime with persistent server orders matching filter & ownership
       for (const [id, order] of serverOrders.entries()) {
         if (!caller.isAdmin) {
-          if (isOrderOwnedByCaller(order, caller)) {
+          if (isOrderOwnedByCaller(order, caller) && !isHiddenForNonAdmin(order)) {
             orderMap.set(String(id), order);
           }
           continue;
@@ -1818,7 +2056,7 @@ Current User Query: ${message}`;
         const { data, error } = await query.order('created_at', { ascending: false });
         if (!error && Array.isArray(data)) {
           for (const row of data) {
-            if (caller.isAdmin || isOrderOwnedByCaller(row, caller)) {
+            if (caller.isAdmin || (isOrderOwnedByCaller(row, caller) && !isHiddenForNonAdmin(row))) {
               orderMap.set(String(row.id), row);
             }
           }
@@ -1855,13 +2093,36 @@ Current User Query: ${message}`;
         }
       }
 
-      // 1. Validate order on the backend
+      // Enforce Store Operations pause check for non-admin orders
+      const storeOps = await getActiveStoreOperations();
+      if (storeOps.isCustomConfigActive && storeOps.pauseNewOrders && !caller.isAdmin) {
+        return res.status(503).json({
+          success: false,
+          code: 'STORE_PAUSED',
+          error: storeOps.pauseReason || 'Orders are temporarily paused by the store administrator. Please check back shortly.'
+        });
+      }
+
+      // 1. Validate order items on the backend
       if (!Array.isArray(order.items) || order.items.length === 0) {
         return res.status(400).json({ success: false, error: 'Order must contain at least one food item.' });
       }
-      const computedFinalAmount = Number(order.finalAmount !== undefined ? order.finalAmount : (order.final_amount ?? 0));
-      if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
-        return res.status(400).json({ success: false, error: 'Invalid order total amount.' });
+
+      // Idempotency deduplication by explicit header/body idempotencyKey or existing owned order ID
+      const headerIdem = typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'].trim() : '';
+      const idempotencyKey = headerIdem || (order.idempotencyKey ? String(order.idempotencyKey).trim() : '');
+      if (idempotencyKey) {
+        for (const existingOrd of serverOrders.values()) {
+          if (existingOrd?.idempotencyKey === idempotencyKey && isOrderOwnedByCaller(existingOrd, caller)) {
+            return res.status(200).json({
+              success: true,
+              deduplicated: true,
+              orderId: existingOrd.id,
+              supabaseSaved: true,
+              order: existingOrd
+            });
+          }
+        }
       }
 
       if (!order.id) {
@@ -1874,8 +2135,115 @@ Current User Query: ${message}`;
 
       // Prevent overwriting another customer's existing order ID on idempotent replay
       const existingServerOrder = serverOrders.get(String(order.id));
-      if (existingServerOrder && !isOrderOwnedByCaller(existingServerOrder, caller)) {
-        return res.status(403).json({ success: false, error: 'Forbidden: Order ID belongs to another customer.' });
+      if (existingServerOrder) {
+        if (!isOrderOwnedByCaller(existingServerOrder, caller)) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Order ID belongs to another customer.' });
+        }
+        return res.status(200).json({
+          success: true,
+          deduplicated: true,
+          orderId: existingServerOrder.id,
+          supabaseSaved: true,
+          order: existingServerOrder
+        });
+      }
+
+      // Authoritative item availability & price recalculation
+      let catalogSubtotal = 0;
+      const catalogMap = new Map<string, any>(serverDishes);
+      try {
+        const publicClient = getPublicSupabaseServerClient();
+        const itemIds = order.items
+          .map((it: any) => String(it?.foodItem?.id || it?.id || '').trim())
+          .filter(Boolean);
+        if (itemIds.length > 0 && publicClient) {
+          const { data: dbDishes } = await publicClient
+            .from('food_items')
+            .select('id,name,price,is_available')
+            .in('id', itemIds);
+          if (Array.isArray(dbDishes)) {
+            for (const row of dbDishes) {
+              catalogMap.set(String(row.id), {
+                ...(catalogMap.get(String(row.id)) || {}),
+                id: String(row.id),
+                name: row.name,
+                price: Number(row.price),
+                is_available: row.is_available,
+                isAvailable: row.is_available !== false
+              });
+            }
+          }
+        }
+      } catch {}
+
+      for (const item of order.items) {
+        const qty = Math.floor(Number(item?.quantity || 0));
+        if (!Number.isFinite(qty) || qty <= 0 || qty > 99) {
+          return res.status(400).json({ success: false, error: 'Invalid item quantity.' });
+        }
+        const itemId = String(item?.foodItem?.id || item?.id || '').trim();
+        const catalogDish = itemId ? catalogMap.get(itemId) : null;
+        if (catalogDish && (catalogDish.isAvailable === false || catalogDish.is_available === false)) {
+          return res.status(400).json({
+            success: false,
+            code: 'ITEM_UNAVAILABLE',
+            error: `"${catalogDish.name || 'Selected dish'}" is currently out of stock.`
+          });
+        }
+        const clientBasePrice = Number(
+          item?.foodItem?.discountPrice && item.foodItem.discountPrice < item.foodItem.price
+            ? item.foodItem.discountPrice
+            : (item?.foodItem?.price ?? item?.price ?? 0)
+        );
+        const authoritativeBasePrice = catalogDish
+          ? (catalogDish.discountPrice && catalogDish.discountPrice < catalogDish.price
+              ? Number(catalogDish.discountPrice)
+              : Number(catalogDish.price))
+          : Math.max(0, clientBasePrice);
+
+        let customizationExtra = 0;
+        if (item?.selectedCustomizations && typeof item.selectedCustomizations === 'object') {
+          for (const choice of Object.values(item.selectedCustomizations) as any[]) {
+            if (choice && typeof choice.price === 'number' && choice.price > 0) {
+              customizationExtra += Math.min(choice.price, 500);
+            }
+          }
+        }
+        catalogSubtotal += (authoritativeBasePrice + customizationExtra) * qty;
+      }
+
+      if (storeOps.isCustomConfigActive && storeOps.minOrderAmount > 0 && catalogSubtotal < storeOps.minOrderAmount && !caller.isAdmin) {
+        return res.status(400).json({
+          success: false,
+          code: 'BELOW_MIN_ORDER',
+          error: `Minimum order subtotal is ₹${storeOps.minOrderAmount}. Current subtotal is ₹${catalogSubtotal}.`
+        });
+      }
+
+      const requestedDiscount = Math.max(0, Number(order.discount || 0));
+      const authoritativeDiscount = Math.min(catalogSubtotal, requestedDiscount);
+      const subtotalAfterDiscount = Math.max(0, catalogSubtotal - authoritativeDiscount);
+
+      const authoritativeDeliveryFee = caller.isAdmin && order.deliveryFee !== undefined
+        ? Math.max(0, Number(order.deliveryFee))
+        : (storeOps.isCustomConfigActive
+            ? (catalogSubtotal > storeOps.freeDeliveryAbove ? 0 : storeOps.deliveryFee)
+            : (catalogSubtotal > 400 ? 0 : 39));
+
+      const authoritativePackagingFee = caller.isAdmin && order.packagingFee !== undefined
+        ? Math.max(0, Number(order.packagingFee))
+        : (storeOps.isCustomConfigActive ? storeOps.packagingFee : 0);
+
+      const taxRate = storeOps.isCustomConfigActive ? storeOps.taxRatePercent : 5;
+      const authoritativeTax = Math.round(catalogSubtotal * (taxRate / 100));
+      const authoritativeTip = Math.max(0, Math.min(5000, Number(order.tip || 0)));
+
+      const computedFinalAmount = caller.isAdmin && order.finalAmount !== undefined
+        ? Math.max(0, Number(order.finalAmount))
+        : Math.max(0, subtotalAfterDiscount + authoritativeDeliveryFee + authoritativePackagingFee + authoritativeTax + authoritativeTip);
+
+      if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
+        return res.status(400).json({ success: false, error: 'Invalid order total amount.' });
       }
 
       // Normalize email, restaurant name, and validated WhatsApp consent fields (never assuming email = phone)
@@ -1907,6 +2275,17 @@ Current User Query: ${message}`;
         customer_email: resolvedCustomerEmail,
         restaurantName: resolvedRestaurantName,
         restaurant_name: resolvedRestaurantName,
+        subtotal: catalogSubtotal,
+        discount: authoritativeDiscount,
+        deliveryFee: authoritativeDeliveryFee,
+        delivery_fee: authoritativeDeliveryFee,
+        packagingFee: authoritativePackagingFee,
+        packaging_fee: authoritativePackagingFee,
+        tax: authoritativeTax,
+        tip: authoritativeTip,
+        finalAmount: computedFinalAmount,
+        final_amount: computedFinalAmount,
+        idempotencyKey: idempotencyKey || undefined,
         customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : '',
         customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : '',
         whatsappOptIn: explicitOptIn,
@@ -1964,6 +2343,7 @@ Current User Query: ${message}`;
             customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : null,
             whatsappOptIn: explicitOptIn,
             restaurantName: resolvedRestaurantName,
+            idempotencyKey: idempotencyKey || null,
             placedAt: normalizedOrder.date || new Date().toISOString()
           };
 
@@ -1973,12 +2353,12 @@ Current User Query: ${message}`;
             customer_phone: String(normalizedOrder.customerPhone || normalizedOrder.customer_phone || caller.phone || ''),
             customer_name: String(normalizedOrder.customerName || normalizedOrder.customer_name || 'Customer'),
             items: Array.isArray(normalizedOrder.items) ? normalizedOrder.items : [],
-            subtotal: Number(normalizedOrder.subtotal || 0),
-            discount: Number(normalizedOrder.discount || 0),
-            delivery_fee: Number(normalizedOrder.deliveryFee !== undefined ? normalizedOrder.deliveryFee : (normalizedOrder.delivery_fee || 0)),
-            packaging_fee: Number(normalizedOrder.packagingFee !== undefined ? normalizedOrder.packagingFee : (normalizedOrder.packaging_fee || 0)),
-            tax: Number(normalizedOrder.tax || 0),
-            tip: Number(normalizedOrder.tip || 0),
+            subtotal: catalogSubtotal,
+            discount: authoritativeDiscount,
+            delivery_fee: authoritativeDeliveryFee,
+            packaging_fee: authoritativePackagingFee,
+            tax: authoritativeTax,
+            tip: authoritativeTip,
             final_amount: computedFinalAmount,
             status: String(normalizedOrder.status || 'accepted'),
             address: addressObj,
@@ -2094,7 +2474,7 @@ Current User Query: ${message}`;
       let updates: Record<string, any> = rawUpdates;
       if (!caller.isAdmin) {
         updates = {};
-        const allowedCustomerStatuses = ['accepted', 'preparing', 'picked', 'on_the_way', 'delivered', 'cancelled'];
+        const allowedCustomerStatuses = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way', 'delivered', 'cancelled'];
         if (rawUpdates.status !== undefined) {
           const nextSt = String(rawUpdates.status).toLowerCase();
           if (!allowedCustomerStatuses.includes(nextSt)) {
@@ -2117,6 +2497,7 @@ Current User Query: ${message}`;
           'deliveryPartnerRatingComment',
           'instructions',
           'deliveryInstructions',
+          'cancellationReason',
           'trackingHistory',
           'deliveryPartnerStatus',
           'eta'
@@ -2127,7 +2508,20 @@ Current User Query: ${message}`;
       }
 
       const previousStatus = String(existing.status || '').toLowerCase();
-      const merged = { ...existing, ...updates, id: String(id), updated_at: new Date().toISOString() };
+      const merged: any = { ...existing, ...updates, id: String(id), updated_at: new Date().toISOString() };
+
+      // Preserve rejectionReason / cancellationReason inside address.checkout_data
+      if (updates.rejectionReason || updates.cancellationReason) {
+        const addrObj = typeof merged.address === 'object' && merged.address !== null
+          ? { ...merged.address }
+          : { formatted: String(merged.address || '') };
+        addrObj.checkout_data = {
+          ...(addrObj.checkout_data || {}),
+          ...(updates.rejectionReason ? { rejectionReason: String(updates.rejectionReason).trim() } : {}),
+          ...(updates.cancellationReason ? { cancellationReason: String(updates.cancellationReason).trim() } : {})
+        };
+        merged.address = addrObj;
+      }
 
       serverOrders.set(String(id), merged);
       persistServerOrders(serverOrders);
@@ -2145,7 +2539,9 @@ Current User Query: ${message}`;
           if (updates.paymentStatus) updatePayload.payment_status = updates.paymentStatus;
           if (updates.deliveryInstructions) updatePayload.instructions = updates.deliveryInstructions;
           if (caller.isAdmin && updates.finalAmount !== undefined) updatePayload.final_amount = updates.finalAmount;
-          if (caller.isAdmin && updates.address) updatePayload.address = updates.address;
+          if ((caller.isAdmin && updates.address) || updates.rejectionReason || updates.cancellationReason) {
+            updatePayload.address = merged.address;
+          }
 
           if (Object.keys(updatePayload).length > 0) {
             await dbClient
@@ -2176,7 +2572,7 @@ Current User Query: ${message}`;
     try {
       const caller = await resolveCallerIdentity(req);
       if (!caller.authenticated) {
-        return res.status(401).json({ success: false, error: 'Authentication required to delete an order.' });
+        return res.status(401).json({ success: false, error: 'Authentication required to remove an order.' });
       }
 
       const { id } = req.params;
@@ -2205,6 +2601,31 @@ Current User Query: ${message}`;
         return res.status(403).json({ success: false, error: 'Forbidden: You cannot delete another customer\'s order.' });
       }
 
+      // Soft-archive for customers so financial & Admin accounting records stay intact while hiding from customer history
+      if (!caller.isAdmin || req.query?.archiveOnly === 'true') {
+        const addrObj = typeof existing.address === 'object' && existing.address !== null
+          ? { ...existing.address }
+          : { formatted: String(existing.address || '') };
+        addrObj.checkout_data = {
+          ...(addrObj.checkout_data || {}),
+          hiddenByCustomer: true,
+          archivedAt: new Date().toISOString()
+        };
+        const archived = {
+          ...existing,
+          hiddenByCustomer: true,
+          address: addrObj
+        };
+        serverOrders.set(String(id), archived);
+        persistServerOrders(serverOrders);
+        try {
+          if (dbClient) {
+            await dbClient.from('orders').update({ address: addrObj }).eq('id', String(id));
+          }
+        } catch {}
+        return res.json({ success: true, archivedId: String(id), archived: true });
+      }
+
       serverOrders.delete(String(id));
       persistServerOrders(serverOrders);
 
@@ -2217,7 +2638,7 @@ Current User Query: ${message}`;
       return res.json({ success: true, deletedId: String(id) });
     } catch (e: any) {
       console.error('Exception in DELETE /api/orders/:id:', e);
-      return res.status(500).json({ success: false, error: 'Failed to delete order.' });
+      return res.status(500).json({ success: false, error: 'Failed to remove order.' });
     }
   });
 
@@ -3355,13 +3776,32 @@ Current User Query: ${message}`;
 
   // --- DELIVERY PARTNER / BOY MANAGEMENT APIS ---
   // Default delivery partner count is strictly 0 until added by an administrator
-  let serverDeliveryPartners: any[] = [];
+  let serverDeliveryPartners: any[] = loadDeliveryPartnersSync();
 
-  app.get("/api/delivery-partners", (_req, res) => {
+  app.get("/api/delivery-partners", requireAdminAuth, async (_req, res) => {
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client && serverDeliveryPartners.length === 0) {
+        const { data } = await client.from('app_settings').select('value').eq('key', 'delivery_partners').maybeSingle();
+        if (Array.isArray(data?.value)) {
+          serverDeliveryPartners = data.value;
+        }
+      }
+    } catch {}
     res.json(serverDeliveryPartners);
   });
 
-  app.post("/api/admin/delivery-partners", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/delivery-partners/sync", requireAdminAuth, async (req, res) => {
+    const { partners } = req.body || {};
+    if (!Array.isArray(partners)) {
+      return res.status(400).json({ success: false, error: 'partners array is required.' });
+    }
+    serverDeliveryPartners = partners;
+    await persistDeliveryPartners(serverDeliveryPartners);
+    res.json({ success: true, count: serverDeliveryPartners.length });
+  });
+
+  app.post("/api/admin/delivery-partners", requireAdminAuth, async (req, res) => {
     const { name, phone, vehicleType, bikeNumber, address } = req.body;
     if (!name || !phone) {
       return res.status(400).json({ error: "Partner name and mobile phone are required." });
@@ -3385,10 +3825,11 @@ Current User Query: ${message}`;
       earnings: []
     };
     serverDeliveryPartners = [newPartner, ...serverDeliveryPartners];
+    await persistDeliveryPartners(serverDeliveryPartners);
     res.status(201).json({ success: true, partner: newPartner });
   });
 
-  app.put("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+  app.put("/api/admin/delivery-partners/:id", requireAdminAuth, async (req, res) => {
     const { id } = req.params;
     const index = serverDeliveryPartners.findIndex((p: any) => String(p.id) === String(id));
     if (index === -1) return res.status(404).json({ error: "Delivery partner not found." });
@@ -3398,17 +3839,19 @@ Current User Query: ${message}`;
       ...req.body,
       id: serverDeliveryPartners[index].id
     };
+    await persistDeliveryPartners(serverDeliveryPartners);
     res.json({ success: true, partner: serverDeliveryPartners[index] });
   });
 
-  app.delete("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+  app.delete("/api/admin/delivery-partners/:id", requireAdminAuth, async (req, res) => {
     const { id } = req.params;
     serverDeliveryPartners = serverDeliveryPartners.filter((p: any) => String(p.id) !== String(id));
+    await persistDeliveryPartners(serverDeliveryPartners);
     res.json({ success: true, message: "Delivery partner deleted successfully." });
   });
 
   // --- ADMIN / SUPER ADMIN FULL CONTROLLED DATA RESET ---
-  app.post("/api/admin/reset-data", requireAdminAuth, (req, res) => {
+  app.post("/api/admin/reset-data", requireAdminAuth, async (req, res) => {
     const { confirmation, scope } = req.body;
     if (confirmation !== 'RESET') {
       return res.status(400).json({ 
@@ -3427,6 +3870,7 @@ Current User Query: ${message}`;
     if (!scope || scope === 'all_admin_data' || scope === 'delivery_partners') {
       // Resets delivery partners back to base 0 count
       serverDeliveryPartners = [];
+      await persistDeliveryPartners(serverDeliveryPartners);
     }
 
     res.json({

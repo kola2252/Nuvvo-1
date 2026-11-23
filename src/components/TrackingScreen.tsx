@@ -309,14 +309,12 @@ function LiveRouteTracker({
             </div>
 
             <div className="flex gap-1.5 mt-2">
-              {riderPhone && (
-                <a 
-                  href={`tel:${riderPhone}`}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition"
-                >
-                  📞 Call
-                </a>
-              )}
+              <a 
+                href="tel:+919063692135"
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition"
+              >
+                📞 Helpline
+              </a>
               {onOpenChat && (
                 <button
                   type="button"
@@ -399,9 +397,9 @@ export default function TrackingScreen() {
     (activeTrackingOrder?.deliveryPartnerId ? deliveryPartners?.find(p => p.isApproved) : null);
   const hasAssignedRider = Boolean(activeTrackingOrder?.deliveryPartnerId || assignedPartner);
 
-  const riderName = activeTrackingOrder?.deliveryPartnerName || assignedPartner?.name || 'Awaiting Partner';
-  const riderPhone = activeTrackingOrder?.deliveryPartnerPhone || assignedPartner?.phone || '';
-  const riderVehicle = activeTrackingOrder?.deliveryPartnerVehicle || (assignedPartner ? `${assignedPartner.vehicleType || 'Bike'} (${assignedPartner.bikeNumber || ''})` : 'Delivery Fleet');
+  const riderName = activeTrackingOrder?.deliveryPartnerName || assignedPartner?.name || 'Delivery Partner';
+  const riderPhone = '9063692135';
+  const riderVehicle = activeTrackingOrder?.deliveryPartnerVehicle || (assignedPartner ? `${assignedPartner.vehicleType || 'Bike'} (${assignedPartner.bikeNumber || ''})` : 'Nuvvo Delivery Fleet');
   const riderAvatar = activeTrackingOrder?.deliveryPartnerAvatar || assignedPartner?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
   const riderRating = activeTrackingOrder?.deliveryPartnerRating || assignedPartner?.rating || 5.0;
   const isDeliveryStarted = ['picked', 'on_the_way', 'delivered'].includes(activeTrackingOrder?.status || '');
@@ -424,93 +422,17 @@ export default function TrackingScreen() {
   const [etaRemaining, setEtaRemaining] = useState(24); // in minutes
   const [timeLeftMs, setTimeLeftMs] = useState<number>(0);
 
-  // Real-time WebSocket Polling & Telemetry States
-  const [isPolling, setIsPolling] = useState(true);
-  const [telemetryLogs, setTelemetryLogs] = useState<{ id: string; timestamp: string; message: string; type: 'info' | 'rx' | 'warn' }[]>([]);
-  const [currentSpeed, setCurrentSpeed] = useState(38);
-  const [batteryLevel, setBatteryLevel] = useState(89);
-  const [gpsAccuracy, setGpsAccuracy] = useState(4.2);
-  const [satelliteCount, setSatelliteCount] = useState(11);
+  // Live route position & ETA state (clean without fake WebSocket frame logs)
+  const [isPolling] = useState(true);
+  const [currentSpeed] = useState(32);
+  const [gpsAccuracy] = useState(5.0);
   const [jitterCoords, setJitterCoords] = useState<{ lat: number; lng: number }>(restaurantCoords);
 
-  // Initialize initial WebSocket logs
-  useEffect(() => {
-    if (!activeTrackingOrder) return;
-    setTelemetryLogs([
-      {
-        id: 'init_conn',
-        timestamp: new Date().toLocaleTimeString(),
-        message: `Establishing secure WS connection to wss://gateway.nuvvo.in/tracking/live...`,
-        type: 'info'
-      },
-      {
-        id: 'init_auth',
-        timestamp: new Date().toLocaleTimeString(),
-        message: `Authorized token for Order ID ${activeTrackingOrder.id.slice(-6).toUpperCase()}`,
-        type: 'info'
-      },
-      {
-        id: 'init_sub',
-        timestamp: new Date().toLocaleTimeString(),
-        message: `Subscribed to channel: rider_coordinates_shravan`,
-        type: 'info'
-      }
-    ]);
-  }, [activeTrackingOrder?.id]);
-
-  // Periodic simulated polling for WS frame receipt
   useEffect(() => {
     if (!activeTrackingOrder || !isPolling) return;
-
-    // Run first coordinate snap
     const baseLat = restaurantCoords.lat + (destinationCoords.lat - restaurantCoords.lat) * (deliveryRouteProgress / 100);
     const baseLng = restaurantCoords.lng + (destinationCoords.lng - restaurantCoords.lng) * (deliveryRouteProgress / 100);
     setJitterCoords({ lat: parseFloat(baseLat.toFixed(6)), lng: parseFloat(baseLng.toFixed(6)) });
-
-    const interval = setInterval(() => {
-      // 1. Calculate base coordinate
-      const currentProgressLat = restaurantCoords.lat + (destinationCoords.lat - restaurantCoords.lat) * (deliveryRouteProgress / 100);
-      const currentProgressLng = restaurantCoords.lng + (destinationCoords.lng - restaurantCoords.lng) * (deliveryRouteProgress / 100);
-
-      // 2. Add realistic GPS jitter
-      const latJitter = (Math.random() - 0.5) * 0.00015;
-      const lngJitter = (Math.random() - 0.5) * 0.00015;
-      const finalLat = parseFloat((currentProgressLat + latJitter).toFixed(6));
-      const finalLng = parseFloat((currentProgressLng + lngJitter).toFixed(6));
-      setJitterCoords({ lat: finalLat, lng: finalLng });
-
-      // 3. Fluctuating statistics
-      const nextSpeed = Math.floor(32 + Math.random() * 14); // 32 to 45 km/h
-      const nextAccuracy = parseFloat((3.0 + Math.random() * 3.5).toFixed(1)); // 3.0 to 6.5 meters
-      const nextSatellites = Math.floor(10 + Math.random() * 4); // 10 to 13
-      setCurrentSpeed(nextSpeed);
-      setGpsAccuracy(nextAccuracy);
-      setSatelliteCount(nextSatellites);
-      setBatteryLevel(prev => Math.max(10, prev - (Math.random() < 0.1 ? 1 : 0))); // occasionally drop battery by 1%
-
-      // 4. Build telemetry log message
-      const frameData = {
-        lat: finalLat,
-        lng: finalLng,
-        speed: `${nextSpeed}km/h`,
-        satellites: nextSatellites,
-        accuracy: `${nextAccuracy}m`,
-        progress: `${deliveryRouteProgress}%`
-      };
-
-      setTelemetryLogs(prev => [
-        {
-          id: `log_${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString(),
-          message: `Frame Rx: ${JSON.stringify(frameData)}`,
-          type: 'rx'
-        },
-        ...prev.slice(0, 24) // Keep last 25 logs
-      ]);
-
-    }, 2000); // Polling every 2 seconds
-
-    return () => clearInterval(interval);
   }, [isPolling, deliveryRouteProgress, restaurantCoords, destinationCoords, activeTrackingOrder?.id]);
   
   // Post-order feedback states - Rate Food, Rate Restaurant, Rate Delivery Partner
@@ -1321,14 +1243,12 @@ export default function TrackingScreen() {
                       <MessageSquare className="w-3 h-3" /> Instructions
                     </button>
 
-                    {riderPhone && (
-                      <a
-                        href={`tel:${riderPhone}`}
-                        className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition"
-                      >
-                        <Phone className="w-3 h-3" /> Call
-                      </a>
-                    )}
+                    <a
+                      href="tel:+919063692135"
+                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition"
+                    >
+                      <Phone className="w-3 h-3" /> Helpline
+                    </a>
                   </div>
                 </div>
               </div>
@@ -1732,18 +1652,12 @@ export default function TrackingScreen() {
                     <span className="truncate">{riderVehicle}</span>
                   </div>
 
-                  {riderPhone && (
-                    <div className="flex items-center gap-1.5 mt-1 text-xs">
-                      <span className="text-zinc-400 font-bold text-[10px] uppercase">Rider Phone:</span>
-                      <a 
-                        href={`tel:${riderPhone}`}
-                        className="font-mono font-black text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-lg border border-emerald-200/60 dark:border-emerald-800/40"
-                        title="Click to Call Delivery Boy"
-                      >
-                        <Phone className="w-3 h-3" /> +91 {riderPhone}
-                      </a>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-1.5 mt-1 text-xs">
+                    <span className="text-zinc-400 font-bold text-[10px] uppercase">Order Support:</span>
+                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-lg border border-emerald-200/60 dark:border-emerald-800/40">
+                      Protected Relay (+91 9063692135)
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -1753,25 +1667,25 @@ export default function TrackingScreen() {
                   type="button"
                   onClick={() => openDriverChat()}
                   className="bg-orange-500 hover:bg-orange-600 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-orange-500/20 transition-all cursor-pointer text-center"
-                  title={`Direct Message ${riderName} for Delivery Instructions`}
+                  title="Send Delivery Instructions in Order Chat"
                 >
                   <MessageSquare className="w-4 h-4" /> Message
                 </button>
 
                 <a 
-                  href={`tel:${riderPhone}`}
+                  href="tel:+919063692135"
                   className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
-                  title={`Call ${riderName}`}
+                  title="Call Nuvvo Dispatch Helpline"
                 >
-                  <Phone className="w-4 h-4" /> Call
+                  <Phone className="w-4 h-4" /> Helpline
                 </a>
 
                 <a 
-                  href={`https://wa.me/91${riderPhone}?text=Hi%20${encodeURIComponent(riderName)},%20I%20am%20tracking%20my%20Nuvvo%20food%20order.`}
+                  href={`https://wa.me/919063692135?text=${encodeURIComponent(`Hi Nuvvo Support, I need assistance with my order #${activeTrackingOrder.id.slice(-6).toUpperCase()}.`)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer text-center"
-                  title="Chat on WhatsApp"
+                  title="WhatsApp Nuvvo Order Support"
                 >
                   <Send className="w-3.5 h-3.5" /> WhatsApp
                 </a>
@@ -1949,7 +1863,9 @@ export default function TrackingScreen() {
             </div>
             <div className="text-right">
               <p className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider">Rider Assignment</p>
-              <p className="font-extrabold text-zinc-900 dark:text-zinc-100 text-xs">Shravan Kumar (Nuvvo Elite)</p>
+              <p className="font-extrabold text-zinc-900 dark:text-zinc-100 text-xs">
+                {hasAssignedRider ? `${riderName} (${riderVehicle})` : 'Dispatching Nearest Partner'}
+              </p>
             </div>
           </div>
         </div>
@@ -1996,166 +1912,19 @@ export default function TrackingScreen() {
           </motion.div>
         )}
 
-        {/* LIVE TELEMETRY & WEBSOCKET POLLING ENGINE */}
-        <div id="live-telemetry-ws-panel" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
-          {/* Panel Header */}
-          <div className="flex justify-between items-center border-b pb-2.5 dark:border-zinc-800/80">
-            <div className="flex items-center gap-2 text-left">
-              <Activity className={`w-4 h-4 text-emerald-500 ${isPolling ? 'animate-pulse' : ''}`} />
-              <div>
-                <h4 className="text-xs font-black text-zinc-955 dark:text-zinc-50 tracking-tight uppercase flex items-center gap-1.5">
-                  Live Telemetry Desk
-                </h4>
-                <p className="text-[9px] text-zinc-400 font-bold uppercase leading-none">WebSocket Polling Protocol</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider font-mono ${
-                isPolling 
-                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/15' 
-                  : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/15'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${isPolling ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`} />
-                {isPolling ? 'WS: Active' : 'WS: Paused'}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsPolling(!isPolling);
-                  setTelemetryLogs(prev => [
-                    {
-                      id: `toggle_${Date.now()}`,
-                      timestamp: new Date().toLocaleTimeString(),
-                      message: isPolling ? '⚠️ WS Connection Paused. Polling thread suspended.' : '🟢 WS Connection Re-established. Polling thread resumed.',
-                      type: isPolling ? 'warn' : 'info'
-                    },
-                    ...prev
-                  ]);
-                }}
-                className="p-1 hover:bg-slate-150 dark:hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors cursor-pointer"
-                title={isPolling ? "Pause Real-Time Polling" : "Resume Real-Time Polling"}
-              >
-                {isPolling ? <X className="w-3.5 h-3.5" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              </button>
-            </div>
+        {/* Clean Delivery Privacy & ETA Guarantee Notice */}
+        <div className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm flex items-center justify-between gap-3">
+          <div className="text-left">
+            <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-50 uppercase tracking-tight">
+              Verified Order Tracking
+            </h4>
+            <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Live stage progression, ETA countdown, and protected Nuvvo dispatch support (+91 9063692135).
+            </p>
           </div>
-
-          {/* Core GPS stats grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {/* Coordinates */}
-            <div className="p-2.5 bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800/80 rounded-2xl space-y-1 text-left">
-              <span className="text-[8.5px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-widest block flex items-center gap-1">
-                <Radio className="w-2.5 h-2.5 text-orange-500" /> GPS Lat/Lng
-              </span>
-              <p className="font-mono text-[10.5px] font-black text-zinc-800 dark:text-zinc-150 leading-none">
-                {jitterCoords.lat}
-              </p>
-              <p className="font-mono text-[10.5px] font-black text-zinc-800 dark:text-zinc-150 leading-none pt-0.5">
-                {jitterCoords.lng}
-              </p>
-            </div>
-
-            {/* Velocity */}
-            <div className="p-2.5 bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800/80 rounded-2xl space-y-1 text-left">
-              <span className="text-[8.5px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-widest block flex items-center gap-1">
-                <Bike className="w-2.5 h-2.5 text-orange-500" /> Velocity
-              </span>
-              <p className="font-mono text-base font-black text-zinc-900 dark:text-zinc-50 leading-none flex items-baseline gap-0.5">
-                {currentSpeed} <span className="text-[9px] text-zinc-450 font-bold uppercase">km/h</span>
-              </p>
-              <span className="text-[8px] font-bold text-emerald-500 uppercase leading-none block">Moving Smoothly</span>
-            </div>
-
-            {/* Link & Quality */}
-            <div className="p-2.5 bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800/80 rounded-2xl space-y-1 text-left">
-              <span className="text-[8.5px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-widest block flex items-center gap-1">
-                <Wifi className="w-2.5 h-2.5 text-orange-500" /> Connection
-              </span>
-              <p className="font-mono text-xs font-black text-zinc-800 dark:text-zinc-150 leading-none flex items-center gap-1">
-                98% <span className="text-[7.5px] bg-emerald-150 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 px-1 py-0.2 rounded uppercase font-black font-sans">5G</span>
-              </p>
-              <p className="text-[8px] text-zinc-450 leading-none pt-0.5">Sats: {satelliteCount} locked</p>
-            </div>
-
-            {/* Rider Device Battery */}
-            <div className="p-2.5 bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800/80 rounded-2xl space-y-1 text-left">
-              <span className="text-[8.5px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-widest block flex items-center gap-1">
-                <Battery className="w-2.5 h-2.5 text-orange-500" /> Device Tele
-              </span>
-              <p className="font-mono text-xs font-black text-zinc-800 dark:text-zinc-150 leading-none flex items-center gap-1">
-                {batteryLevel}% <span className="text-[8px] text-zinc-400 font-bold font-sans">charge</span>
-              </p>
-              <p className="text-[8px] text-zinc-450 leading-none pt-0.5">Acc: ±{gpsAccuracy}m</p>
-            </div>
-          </div>
-
-          {/* WebSocket Terminal Stream Logs */}
-          <div className="space-y-1.5 text-left">
-            <span className="text-[9px] font-black uppercase tracking-wider text-orange-500 flex items-center gap-1.5">
-              <Terminal className="w-3 h-3" /> Live WS Packet Stream
-            </span>
-
-            <div className="bg-zinc-950 dark:bg-black border border-zinc-850 rounded-2xl p-3 font-mono text-[9px] text-zinc-300 space-y-1.5 max-h-[140px] overflow-y-auto scrollbar-thin shadow-inner">
-              {telemetryLogs.length === 0 ? (
-                <p className="text-zinc-500 italic text-center py-2">Waiting for WebSocket connection telemetry...</p>
-              ) : (
-                telemetryLogs.map((log) => {
-                  let textCol = 'text-zinc-300';
-                  let prefix = '📥';
-                  if (log.type === 'info') {
-                    textCol = 'text-indigo-400';
-                    prefix = 'ℹ️';
-                  } else if (log.type === 'warn') {
-                    textCol = 'text-amber-400';
-                    prefix = '⚠️';
-                  }
-
-                  return (
-                    <div key={log.id} className={`flex items-start gap-1 leading-relaxed ${textCol}`}>
-                      <span className="text-zinc-500 shrink-0 select-none">[{log.timestamp}]</span>
-                      <span className="shrink-0 select-none">{prefix}</span>
-                      <span className="break-all whitespace-pre-wrap">{log.message}</span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Manual Repoll Option */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[10px] text-zinc-450 gap-2">
-            <span className="flex items-center gap-1.5 text-left">
-              <Cpu className="w-3 h-3 text-zinc-450" />
-              <span>Simulating wss:// gateway coordinates via WebSocket frame emulation</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                const baseLat = restaurantCoords.lat + (destinationCoords.lat - restaurantCoords.lat) * (deliveryRouteProgress / 100);
-                const baseLng = restaurantCoords.lng + (destinationCoords.lng - restaurantCoords.lng) * (deliveryRouteProgress / 100);
-                const latJitter = (Math.random() - 0.5) * 0.00015;
-                const lngJitter = (Math.random() - 0.5) * 0.00015;
-                const finalLat = parseFloat((baseLat + latJitter).toFixed(6));
-                const finalLng = parseFloat((baseLng + lngJitter).toFixed(6));
-                
-                setJitterCoords({ lat: finalLat, lng: finalLng });
-                setTelemetryLogs(prev => [
-                  {
-                    id: `manual_${Date.now()}`,
-                    timestamp: new Date().toLocaleTimeString(),
-                    message: `⚡ Force Polled coordinates: [${finalLat}, ${finalLng}]`,
-                    type: 'info'
-                  },
-                  ...prev
-                ]);
-              }}
-              className="px-2.5 py-1 bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 font-extrabold uppercase rounded-lg transition text-center sm:self-end cursor-pointer"
-            >
-              Force Poll Now
-            </button>
-          </div>
+          <span className="shrink-0 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase">
+            Active
+          </span>
         </div>
 
         {/* Dynamic Cancellation Grace Period Banner (Within 2 minutes of placement) */}
@@ -2465,11 +2234,11 @@ export default function TrackingScreen() {
             )}
 
             <div className="flex items-center gap-1">
-              {activeTab === 'driver' && riderPhone && (
+              {activeTab === 'driver' && (
                 <a
-                  href={`tel:${riderPhone}`}
+                  href="tel:+919063692135"
                   className="p-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 transition cursor-pointer"
-                  title={`Call ${riderName}`}
+                  title="Call Nuvvo Dispatch Helpline"
                 >
                   <Phone className="w-4 h-4" />
                 </a>

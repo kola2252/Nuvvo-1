@@ -136,12 +136,12 @@ export default function OrderHistoryScreen() {
     const list = combinedOrders.filter(order => {
       // Status filtering
       if (statusFilter === 'active') {
-        const isActive = ['accepted', 'preparing', 'picked', 'on_the_way'].includes(order.status);
+        const isActive = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(order.status);
         if (!isActive) return false;
       } else if (statusFilter === 'delivered') {
         if (order.status !== 'delivered') return false;
       } else if (statusFilter === 'cancelled') {
-        if (order.status !== 'cancelled') return false;
+        if (order.status !== 'cancelled' && order.status !== 'rejected') return false;
       }
 
       // Search query filtering
@@ -183,8 +183,14 @@ export default function OrderHistoryScreen() {
   };
 
   const handleReorder = (order: Order) => {
-    reorderItems(order);
-    setCurrentPage('cart');
+    const result = reorderItems(order);
+    if (result && result.addedCount === 0) {
+      setActionNotice('None of the dishes from this order are currently available to reorder.');
+      setTimeout(() => setActionNotice(null), 4000);
+    } else if (result && result.skippedNames.length > 0) {
+      setActionNotice(`Added ${result.addedCount} item(s). Skipped unavailable: ${result.skippedNames.join(', ')}`);
+      setTimeout(() => setActionNotice(null), 4500);
+    }
   };
 
   const handleTrackLive = (order: Order) => {
@@ -357,6 +363,14 @@ export default function OrderHistoryScreen() {
 
   const getStatusBadge = (status: OrderStatus) => {
     switch (status) {
+      case 'placed':
+        return {
+          label: 'Order Placed',
+          icon: Clock,
+          bg: 'bg-sky-50 dark:bg-sky-950/40',
+          text: 'text-sky-700 dark:text-sky-300',
+          border: 'border-sky-200 dark:border-sky-900/40'
+        };
       case 'accepted':
         return {
           label: 'Order Confirmed',
@@ -372,6 +386,14 @@ export default function OrderHistoryScreen() {
           bg: 'bg-amber-50 dark:bg-amber-950/40',
           text: 'text-amber-700 dark:text-amber-300',
           border: 'border-amber-200 dark:border-amber-900/40'
+        };
+      case 'ready':
+        return {
+          label: 'Ready for Pickup',
+          icon: ChefHat,
+          bg: 'bg-indigo-50 dark:bg-indigo-950/40',
+          text: 'text-indigo-700 dark:text-indigo-300',
+          border: 'border-indigo-200 dark:border-indigo-900/40'
         };
       case 'picked':
       case 'on_the_way':
@@ -389,6 +411,14 @@ export default function OrderHistoryScreen() {
           bg: 'bg-emerald-50 dark:bg-emerald-950/40',
           text: 'text-emerald-700 dark:text-emerald-300',
           border: 'border-emerald-200 dark:border-emerald-900/40'
+        };
+      case 'rejected':
+        return {
+          label: 'Rejected',
+          icon: XCircle,
+          bg: 'bg-rose-50 dark:bg-rose-950/40',
+          text: 'text-rose-700 dark:text-rose-300',
+          border: 'border-rose-200 dark:border-rose-900/40'
         };
       case 'cancelled':
         return {
@@ -560,9 +590,9 @@ export default function OrderHistoryScreen() {
             <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar text-xs flex-1">
               {[
                 { id: 'all', label: 'All Orders' },
-                { id: 'active', label: 'Active', badge: combinedOrders.filter(o => ['accepted', 'preparing', 'picked', 'on_the_way'].includes(o.status)).length },
+                { id: 'active', label: 'Active', badge: combinedOrders.filter(o => ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(o.status)).length },
                 { id: 'delivered', label: 'Delivered', badge: combinedOrders.filter(o => o.status === 'delivered').length },
-                { id: 'cancelled', label: 'Cancelled' }
+                { id: 'cancelled', label: 'Cancelled / Rejected' }
               ].map(tab => (
                 <button
                   key={tab.id}
@@ -652,7 +682,7 @@ export default function OrderHistoryScreen() {
               const badge = getStatusBadge(order.status);
               const BadgeIcon = badge.icon;
               const isExpanded = expandedOrderId === order.id;
-              const isActiveOrder = ['accepted', 'preparing', 'picked', 'on_the_way'].includes(order.status);
+              const isActiveOrder = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(order.status);
               const totalItemsCount = order.items.reduce((acc, i) => acc + (i.quantity || 1), 0);
               const relativeTime = getRelativeTime(order.date);
               const ratingState = ratingStates[order.id] || { 
@@ -1124,10 +1154,10 @@ export default function OrderHistoryScreen() {
         {selectedOrderForModal && (() => {
           const modalBadge = getStatusBadge(selectedOrderForModal.status);
           const ModalBadgeIcon = modalBadge.icon;
-          const isNotYetPrepared = selectedOrderForModal.status === 'accepted';
+          const isNotYetPrepared = selectedOrderForModal.status === 'placed' || selectedOrderForModal.status === 'accepted';
           const isPreparing = selectedOrderForModal.status === 'preparing';
-          const isCancellable = ['accepted', 'preparing'].includes(selectedOrderForModal.status);
-          const isCancelled = selectedOrderForModal.status === 'cancelled';
+          const isCancellable = ['placed', 'accepted', 'preparing'].includes(selectedOrderForModal.status);
+          const isCancelled = selectedOrderForModal.status === 'cancelled' || selectedOrderForModal.status === 'rejected';
           const isDelivered = selectedOrderForModal.status === 'delivered';
           const totalModalItems = selectedOrderForModal.items.reduce((acc, i) => acc + (i.quantity || 1), 0);
 
@@ -1193,10 +1223,14 @@ export default function OrderHistoryScreen() {
                           {modalBadge.label}
                         </span>
                         <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                          {isCancelled
-                            ? 'This order was cancelled. Payment refunded if charged.'
+                          {selectedOrderForModal.status === 'rejected'
+                            ? `This order could not be fulfilled.${selectedOrderForModal.rejectionReason ? ` Reason: ${selectedOrderForModal.rejectionReason}` : ''}`
+                            : isCancelled
+                            ? `This order was cancelled. Payment refunded if charged.${selectedOrderForModal.cancellationReason ? ` (${selectedOrderForModal.cancellationReason})` : ''}`
                             : isDelivered
                             ? 'Delivered securely to your address.'
+                            : selectedOrderForModal.status === 'ready'
+                            ? 'Prepared and packed — ready for rider pickup.'
                             : isPreparing
                             ? 'Freshly preparing in the kitchen.'
                             : isNotYetPrepared
@@ -1223,8 +1257,14 @@ export default function OrderHistoryScreen() {
                           { key: 'picked', label: 'On Way', icon: Truck },
                           { key: 'delivered', label: 'Delivered', icon: CheckCircle }
                         ].map((step, idx) => {
-                          const statusOrder = ['accepted', 'preparing', 'picked', 'on_the_way', 'delivered'];
-                          const currentIdx = statusOrder.indexOf(selectedOrderForModal.status === 'on_the_way' ? 'picked' : selectedOrderForModal.status);
+                          const statusOrder = ['accepted', 'preparing', 'picked', 'delivered'];
+                          const normalizedStatus =
+                            selectedOrderForModal.status === 'placed'
+                              ? 'accepted'
+                              : selectedOrderForModal.status === 'ready' || selectedOrderForModal.status === 'on_the_way'
+                              ? 'picked'
+                              : selectedOrderForModal.status;
+                          const currentIdx = statusOrder.indexOf(normalizedStatus);
                           const isDone = currentIdx >= idx;
                           const isCurrent = currentIdx === idx;
                           const StepIcon = step.icon;
@@ -1504,7 +1544,7 @@ export default function OrderHistoryScreen() {
 
                   <div className="flex items-center gap-2">
                     {/* Live Tracking shortcut */}
-                    {['accepted', 'preparing', 'picked', 'on_the_way'].includes(selectedOrderForModal.status) && (
+                    {['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(selectedOrderForModal.status) && (
                       <button
                         type="button"
                         onClick={() => {

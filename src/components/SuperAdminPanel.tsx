@@ -568,24 +568,7 @@ export default function SuperAdminPanel() {
     });
   }, [restaurants, vendorSearch, vendorFilterType, vendorFilterStatus]);
 
-  // Generate beautiful, realistic mock order data for the last 7 days if real orders are scarce
-  const seedOrders = [
-    { id: 'seed_1', finalAmount: 850, date: '2026-06-15T12:30:00.000Z', items: [{ foodItem: { name: 'Kodi Pulav' }, quantity: 2 }, { foodItem: { name: 'Andhra Meals' }, quantity: 1 }] },
-    { id: 'seed_2', finalAmount: 420, date: '2026-06-15T19:15:00.000Z', items: [{ foodItem: { name: 'Special Chicken Biryani' }, quantity: 1 }, { foodItem: { name: 'Masala Dosa' }, quantity: 2 }] },
-    { id: 'seed_3', finalAmount: 650, date: '2026-06-16T13:10:00.000Z', items: [{ foodItem: { name: 'Guntur Spicy Chicken' }, quantity: 1 }, { foodItem: { name: 'Andhra Meals' }, quantity: 2 }] },
-    { id: 'seed_4', finalAmount: 1100, date: '2026-06-16T20:05:00.000Z', items: [{ foodItem: { name: 'Special Chicken Biryani' }, quantity: 3 }] },
-    { id: 'seed_5', finalAmount: 310, date: '2026-06-17T08:45:00.000Z', items: [{ foodItem: { name: 'Idli & Vada Combo' }, quantity: 3 }] },
-    { id: 'seed_6', finalAmount: 980, date: '2026-06-17T13:40:00.000Z', items: [{ foodItem: { name: 'Kodi Pulav' }, quantity: 2 }, { foodItem: { name: 'Guntur Spicy Chicken' }, quantity: 1 }] },
-    { id: 'seed_7', finalAmount: 1450, date: '2026-06-17T21:15:00.000Z', items: [{ foodItem: { name: 'Paneer Butter Masala' }, quantity: 2 }, { foodItem: { name: 'Special Chicken Biryani' }, quantity: 2 }] },
-    { id: 'seed_8', finalAmount: 720, date: '2026-06-18T12:00:00.000Z', items: [{ foodItem: { name: 'Andhra Meals' }, quantity: 3 }] },
-    { id: 'seed_9', finalAmount: 1250, date: '2026-06-18T19:45:00.000Z', items: [{ foodItem: { name: 'Special Chicken Biryani' }, quantity: 2 }, { foodItem: { name: 'Natu Kodi Fry' }, quantity: 1 }] },
-    { id: 'seed_10', finalAmount: 510, date: '2026-06-19T13:20:00.000Z', items: [{ foodItem: { name: 'Kodi Pulav' }, quantity: 1 }, { foodItem: { name: 'Masala Dosa' }, quantity: 2 }] },
-    { id: 'seed_11', finalAmount: 1580, date: '2026-06-19T20:30:00.000Z', items: [{ foodItem: { name: 'Special Chicken Biryani' }, quantity: 4 }, { foodItem: { name: 'Guntur Spicy Chicken' }, quantity: 1 }] },
-    { id: 'seed_12', finalAmount: 890, date: '2026-06-20T12:45:00.000Z', items: [{ foodItem: { name: 'Kodi Pulav' }, quantity: 2 }] },
-    { id: 'seed_13', finalAmount: 1750, date: '2026-06-20T19:00:00.000Z', items: [{ foodItem: { name: 'Special Chicken Biryani' }, quantity: 3 }, { foodItem: { name: 'Natu Kodi Fry' }, quantity: 2 }] },
-    { id: 'seed_14', finalAmount: 620, date: '2026-06-21T09:15:00.000Z', items: [{ foodItem: { name: 'Idli & Vada Combo' }, quantity: 4 }] },
-    { id: 'seed_15', finalAmount: 1150, date: '2026-06-21T13:00:00.000Z', items: [{ foodItem: { name: 'Andhra Meals' }, quantity: 4 }, { foodItem: { name: 'Guntur Spicy Chicken' }, quantity: 1 }] }
-  ];
+  const seedOrders: any[] = [];
 
   const parseDateAndHour = (dateStr: string) => {
     let d = new Date(dateStr);
@@ -628,10 +611,15 @@ export default function SuperAdminPanel() {
   };
 
   const reportMetrics = useMemo(() => {
-    const allProcessedOrders: any[] = [...seedOrders, ...(orders || [])];
+    const allProcessedOrders: any[] = [...(orders || [])];
 
-    // Daily revenue aggregation
-    const last7Days = ['2026-06-15', '2026-06-16', '2026-06-17', '2026-06-18', '2026-06-19', '2026-06-20', '2026-06-21'];
+    // Daily revenue aggregation across the real trailing 7 days
+    const last7Days: string[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      last7Days.push(formatDateStr(d));
+    }
     const revenueMap: { [key: string]: number } = {};
     last7Days.forEach(day => {
       revenueMap[day] = 0;
@@ -721,43 +709,39 @@ export default function SuperAdminPanel() {
     const statsAverageOrderValue = statsTotalOrdersCount > 0 ? Math.round(statsTotalRevenue / statsTotalOrdersCount) : 0;
     const statsTotalItemsSold = Object.values(itemMap).reduce((sum, qty) => sum + qty, 0);
 
-    // Generate last 30 days array up to June 21, 2026
+    // Generate last 30 days array up to today
     const last30Days: string[] = [];
     for (let i = 29; i >= 0; i--) {
-      const d = new Date(2026, 5, 21); // June 21, 2026
+      const d = new Date();
       d.setDate(d.getDate() - i);
       last30Days.push(formatDateStr(d));
     }
 
-    // 30 Days Order Volume & Revenue Aggregation
+    // 30 Days Real Order Volume & Revenue Aggregation (zero synthetic baselines)
     const orderVolumeMap: { [key: string]: number } = {};
     const revenue30DaysMap: { [key: string]: number } = {};
+    const customers30DaysMap: { [key: string]: Set<string> } = {};
 
-    // Initialize with a realistic baseline showing natural day-to-day variance and an upward trend for "Growth"
-    last30Days.forEach((day, index) => {
-      const trendBase = 6 + Math.floor(index * 0.45); // ranges from 6 to 19 baseline orders per day
-      const dayOfWeek = new Date(day).getDay();
-      const weekendMultiplier = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.4 : 1.0;
-      const randomNoise = (index % 4 === 0 ? 3 : index % 4 === 1 ? -2 : index % 4 === 2 ? 1 : 0);
-      orderVolumeMap[day] = Math.max(3, Math.round(trendBase * weekendMultiplier + randomNoise));
-      revenue30DaysMap[day] = orderVolumeMap[day] * 420; // Average ₹420 per order
+    last30Days.forEach(day => {
+      orderVolumeMap[day] = 0;
+      revenue30DaysMap[day] = 0;
+      customers30DaysMap[day] = new Set();
     });
 
-    // Now aggregate real orders on top
     allProcessedOrders.forEach(o => {
-      if (o.status === 'cancelled') return;
+      if (o.status === 'cancelled' || o.status === 'rejected') return;
       const d = parseDateAndHour(o.date);
       const formatted = formatDateStr(d);
       if (orderVolumeMap[formatted] !== undefined) {
         orderVolumeMap[formatted] += 1;
-        revenue30DaysMap[formatted] += o.finalAmount;
+        revenue30DaysMap[formatted] += Number(o.finalAmount || 0);
+        if (o.customerId) customers30DaysMap[formatted].add(String(o.customerId));
       }
     });
 
     const growthMetricsData = last30Days.map(day => {
       const rawDate = new Date(day);
-      const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
-      const label = rawDate.toLocaleDateString('en-US', options);
+      const label = rawDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       return {
         dateKey: day,
         day: label,
@@ -766,64 +750,57 @@ export default function SuperAdminPanel() {
       };
     });
 
-    // Calculate 30-day cumulative stats for display
     const totalVolume30Days = Object.values(orderVolumeMap).reduce((a, b) => a + b, 0);
     const totalRevenue30Days = Object.values(revenue30DaysMap).reduce((a, b) => a + b, 0);
     const avgOrdersPerDay = Math.round((totalVolume30Days / 30) * 10) / 10;
-    const growthRatePercent = 28.4; // Realistic month-over-month rate for visual polish
+    const prev15Rev = last30Days.slice(0, 15).reduce((sum, d) => sum + (revenue30DaysMap[d] || 0), 0);
+    const recent15Rev = last30Days.slice(15).reduce((sum, d) => sum + (revenue30DaysMap[d] || 0), 0);
+    const growthRatePercent = prev15Rev > 0
+      ? Math.round(((recent15Rev - prev15Rev) / prev15Rev) * 1000) / 10
+      : (recent15Rev > 0 ? 100 : 0);
 
-    // 30 Days Comprehensive Daily Trends Dataset for the custom data visualization panel
-    const comprehensiveTrendsData = last30Days.map((day, idx) => {
+    const comprehensiveTrendsData = last30Days.map(day => {
       const rawDate = new Date(day);
-      const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
-      const label = rawDate.toLocaleDateString('en-US', options);
-      const revenue = revenue30DaysMap[day] || 0;
-      const ordersCount = orderVolumeMap[day] || 0;
-      // Active User Growth trend (simulates registered customers active count with organic variance)
-      const activeUsers = Math.round(110 + (idx * 5.2) + (ordersCount * 1.6) + (idx % 3 === 0 ? 14 : idx % 3 === 1 ? -10 : 4));
-      
+      const label = rawDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       return {
         dateKey: day,
         day: label,
-        revenue,
-        orders: ordersCount,
-        activeUsers
+        revenue: revenue30DaysMap[day] || 0,
+        orders: orderVolumeMap[day] || 0,
+        activeUsers: customers30DaysMap[day]?.size || 0
       };
     });
 
-    // REPORT DATE FILTER MATCHING ALGORITHM
-    // Reference date: June 21, 2026
+    // REPORT DATE FILTER MATCHING ALGORITHM (anchored to current clock)
     const getFilterDateRange = () => {
-      let start = new Date(2026, 5, 21);
-      let end = new Date(2026, 5, 21);
+      const now = new Date();
+      let start = new Date(now);
+      let end = new Date(now);
 
       switch (reportFilter) {
         case 'today':
-          start = new Date(2026, 5, 21);
           break;
         case 'yesterday':
-          start = new Date(2026, 5, 20);
-          end = new Date(2026, 5, 20);
+          start.setDate(now.getDate() - 1);
+          end.setDate(now.getDate() - 1);
           break;
         case 'last7':
-          start = new Date(2026, 5, 15);
-          break;
         case 'thisWeek':
-          start = new Date(2026, 5, 15);
+          start.setDate(now.getDate() - 6);
           break;
         case 'lastWeek':
-          start = new Date(2026, 5, 8);
-          end = new Date(2026, 5, 14);
+          start.setDate(now.getDate() - 13);
+          end.setDate(now.getDate() - 7);
           break;
         case 'thisMonth':
-          start = new Date(2026, 5, 1);
+          start = new Date(now.getFullYear(), now.getMonth(), 1);
           break;
         case 'lastMonth':
-          start = new Date(2026, 4, 1);
-          end = new Date(2026, 4, 31);
+          start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          end = new Date(now.getFullYear(), now.getMonth(), 0);
           break;
         case 'thisYear':
-          start = new Date(2026, 0, 1);
+          start = new Date(now.getFullYear(), 0, 1);
           break;
         case 'custom':
           start = new Date(reportCustomStart);
@@ -837,66 +814,63 @@ export default function SuperAdminPanel() {
 
     const { start: reportQueryStart, end: reportQueryEnd } = getFilterDateRange();
 
-    // Filter orders based on active date bounds
     const filteredReportOrders = allProcessedOrders.filter(o => {
       const odate = parseDateAndHour(o.date);
       return odate >= reportQueryStart && odate <= reportQueryEnd;
     });
 
-    // Calculate dynamic stats
-    const repTotalRevenue = filteredReportOrders
-      .filter(o => o.status !== 'cancelled')
-      .reduce((sum, o) => sum + (o.finalAmount || 0), 0) || Math.round(statsTotalRevenue * 0.75);
-
-    // Derived revenue splits
+    const nonCancelledOrders = filteredReportOrders.filter(o => o.status !== 'cancelled' && o.status !== 'rejected');
+    const repTotalRevenue = nonCancelledOrders.reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
     const repNetRevenue = Math.round(repTotalRevenue * 0.75);
-    const repPlatformFees = Math.round(repTotalRevenue * 0.05);
-    const repDeliveryCharges = Math.round(repTotalRevenue * 0.10);
+    const repPlatformFees = nonCancelledOrders.reduce((sum, o) => sum + Number(o.tax || 0), 0);
+    const repDeliveryCharges = nonCancelledOrders.reduce((sum, o) => sum + Number(o.deliveryFee || 0), 0);
     const repRestaurantCommissions = Math.round(repTotalRevenue * 0.18);
-    const repRiderPayments = Math.round(repDeliveryCharges * 0.85 + repTotalRevenue * 0.02);
-    const repRefundAmounts = Math.round(filteredReportOrders.filter(o => o.status === 'cancelled').reduce((sum, o) => sum + (o.finalAmount || 0), 0) * 0.9) || 350;
-    const repProfitEstimate = Math.max(0, Math.round(repPlatformFees + repRestaurantCommissions - repRefundAmounts * 0.2));
+    const repRiderPayments = Math.round(repDeliveryCharges * 0.85);
+    const repRefundAmounts = filteredReportOrders
+      .filter(o => o.status === 'cancelled' || o.status === 'rejected')
+      .reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
+    const repProfitEstimate = Math.max(0, Math.round(repPlatformFees + repRestaurantCommissions));
 
-    // Order Counts
-    const repTotalOrders = filteredReportOrders.length || 23;
-    const repCompletedOrders = filteredReportOrders.filter(o => o.status === 'delivered').length || Math.round(repTotalOrders * 0.82);
-    const repCancelledOrders = filteredReportOrders.filter(o => o.status === 'cancelled').length || Math.round(repTotalOrders * 0.08);
-    const repPendingOrders = repTotalOrders - repCompletedOrders - repCancelledOrders;
+    const repTotalOrders = filteredReportOrders.length;
+    const repCompletedOrders = filteredReportOrders.filter(o => o.status === 'delivered').length;
+    const repCancelledOrders = filteredReportOrders.filter(o => o.status === 'cancelled' || o.status === 'rejected').length;
+    const repPendingOrders = Math.max(0, repTotalOrders - repCompletedOrders - repCancelledOrders);
     const repRefundedOrders = repCancelledOrders;
-    const repAverageOrderValue = repCompletedOrders > 0 ? Math.round(repTotalRevenue / repCompletedOrders) : 480;
+    const repAverageOrderValue = nonCancelledOrders.length > 0 ? Math.round(repTotalRevenue / nonCancelledOrders.length) : 0;
 
-    // Restaurant Performance analytics
-    const defaultRestaurants = [
-      { name: 'Chirala Spicy Hub', cuisine: 'Biryani, Andhra Meals', active: true },
-      { name: 'Royal Biryani House', cuisine: 'Mughlai & Rice', active: true },
-      { name: 'Grand Andhra Mess', cuisine: 'Pure South Indian Meals', active: true },
-      { name: 'Pizza Paradise Chirala', cuisine: 'Pizzas & Desserts', active: true },
-      { name: 'Ice Cream Parlour Central', cuisine: 'Waffles & Scoops', active: true }
-    ];
-
-    const mergedRestaurantsList = (restaurants && restaurants.length > 0) ? restaurants : defaultRestaurants;
+    // Real Restaurant Performance analytics
+    const mergedRestaurantsList = restaurants || [];
     const restaurantStatsMap: { [key: string]: { name: string; revenue: number; ordersCount: number; isNew: boolean } } = {};
-    
-    mergedRestaurantsList.forEach((r: any, idx) => {
-      restaurantStatsMap[r.name] = {
+    mergedRestaurantsList.forEach((r: any) => {
+      restaurantStatsMap[r.id] = {
         name: r.name,
-        revenue: Math.round(repTotalRevenue * (idx === 0 ? 0.45 : idx === 1 ? 0.25 : idx === 2 ? 0.15 : idx === 3 ? 0.10 : 0.05)),
-        ordersCount: Math.round(repTotalOrders * (idx === 0 ? 0.45 : idx === 1 ? 0.25 : idx === 2 ? 0.15 : idx === 3 ? 0.10 : 0.05)),
-        isNew: idx >= 3
+        revenue: 0,
+        ordersCount: 0,
+        isNew: false
       };
+    });
+    nonCancelledOrders.forEach(o => {
+      const rid = o.restaurantId || o.items?.[0]?.foodItem?.restaurantId;
+      const rname = o.restaurantName || 'Nuvvo Kitchen';
+      const key = rid || rname;
+      if (!restaurantStatsMap[key]) {
+        restaurantStatsMap[key] = { name: rname, revenue: 0, ordersCount: 0, isNew: false };
+      }
+      restaurantStatsMap[key].revenue += Number(o.finalAmount || 0);
+      restaurantStatsMap[key].ordersCount += 1;
     });
 
     const topRestaurants = Object.values(restaurantStatsMap).sort((a, b) => b.revenue - a.revenue);
     const lowestPerformingRestaurants = [...topRestaurants].reverse();
     const newRestaurants = topRestaurants.filter(r => r.isNew);
 
-    // Riders report calculations - strictly 0 delivery boys default until Admin adds them
+    // Real Riders calculations
     const mergedRidersList = deliveryPartners || [];
     const totalRiders = mergedRidersList.length;
     const activeRiders = mergedRidersList.filter((r: any) => r.status === 'Active' || r.isAvailable).length;
     const inactiveRiders = Math.max(0, totalRiders - activeRiders);
-    const completedDeliveries = mergedRidersList.reduce((sum, r: any) => sum + (r.deliveries || 0), 0) + repCompletedOrders;
-    const averageDeliveryTime = totalRiders > 0 ? 23.4 : 0;
+    const completedDeliveries = mergedRidersList.reduce((sum, r: any) => sum + (r.deliveries || r.completedOrdersCount || 0), 0) || repCompletedOrders;
+    const averageDeliveryTime = repCompletedOrders > 0 ? 24 : 0;
 
     const topPerformingRiders = mergedRidersList
       .map((r: any) => ({
@@ -906,58 +880,95 @@ export default function SuperAdminPanel() {
       }))
       .sort((a, b) => b.deliveries - a.deliveries);
 
-    // Customer metrics
-    const totalCustomerPool = 245 + repTotalOrders;
-    const repNewCustomers = Math.round(repTotalOrders * 0.35) || 12;
-    const repReturningCustomers = (repTotalOrders - repNewCustomers) || 24;
-    const referralUsers = Math.round(totalCustomerPool * 0.14) || 35;
-    const walletUsagePercent = 48; // 48% transactions are paid through digital wallets
-    
-    const topCustomersList = [
-      { name: 'Narendranath Kolamudi', phone: '9985472814', orders: 18, amount: 7200 },
-      { name: 'Satish Guntur', phone: '9100234188', orders: 12, amount: 4800 },
-      { name: 'Ramya Sree', phone: '8247012356', orders: 9, amount: 3100 },
-      { name: 'Venkata Chari', phone: '8885621300', orders: 7, amount: 2450 }
-    ];
+    // Real Customer metrics
+    const customerMap = new Map<string, { name: string; phone: string; orders: number; amount: number }>();
+    allProcessedOrders.forEach(o => {
+      if (o.status === 'cancelled' || o.status === 'rejected') return;
+      const cid = String(o.customerId || o.customerPhone || 'unknown');
+      const existing = customerMap.get(cid) || {
+        name: o.customerName || 'Customer',
+        phone: o.customerPhone || 'N/A',
+        orders: 0,
+        amount: 0
+      };
+      existing.orders += 1;
+      existing.amount += Number(o.finalAmount || 0);
+      customerMap.set(cid, existing);
+    });
+    const totalCustomerPool = customerMap.size;
+    let repNewCustomers = 0;
+    let repReturningCustomers = 0;
+    customerMap.forEach(c => {
+      if (c.orders > 1) repReturningCustomers += 1;
+      else repNewCustomers += 1;
+    });
+    const referralUsers = 0;
+    const walletOrdersCount = filteredReportOrders.filter(o =>
+      String(o.paymentMethod || '').toLowerCase().includes('wallet') ||
+      String(o.paymentMethod || '').toLowerCase().includes('upi')
+    ).length;
+    const walletUsagePercent = repTotalOrders > 0 ? Math.round((walletOrdersCount / repTotalOrders) * 100) : 0;
 
-    // Franchise Applications
-    const defaultFranchises = [
-      { name: 'Bapatla Master Kitchen', applicantName: 'Koteswara Rao', status: 'approved' },
-      { name: 'Chirala IPC Bypass', applicantName: 'Suresh Kumar', status: 'pending' },
-      { name: 'Vetapalem Express Foodway', applicantName: 'Prasada Rao', status: 'approved' },
-      { name: 'Karamchedu Deluxe Diner', applicantName: 'Anitha Reddy', status: 'rejected' }
-    ];
-    const repFranchiseApplications = defaultFranchises; 
-    const newFranchiseApps = repFranchiseApplications.filter(f => f.status === 'pending').length;
-    const approvedFranchiseApps = repFranchiseApplications.filter(f => f.status === 'approved').length;
-    const rejectedFranchiseApps = repFranchiseApplications.filter(f => f.status === 'rejected').length;
+    const topCustomersList = Array.from(customerMap.values())
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+
+    // Real Franchise Applications
+    const repFranchiseApplications = franchiseApplications || [];
+    const newFranchiseApps = repFranchiseApplications.filter((f: any) => f.status === 'Submitted' || f.status === 'Under Review' || f.status === 'Pending').length;
+    const approvedFranchiseApps = repFranchiseApplications.filter((f: any) => f.status === 'Approved' || f.status === 'approved').length;
+    const rejectedFranchiseApps = repFranchiseApplications.filter((f: any) => f.status === 'Rejected' || f.status === 'rejected').length;
     const convertedFranchisesLeadsCount = approvedFranchiseApps;
 
-    // Item classification
+    // Real Top Food Item Classification
+    const catCountMap: Record<string, number> = {};
+    allProcessedOrders.forEach(o => {
+      if (o.status === 'cancelled' || o.status === 'rejected') return;
+      (o.items || []).forEach((it: any) => {
+        const cat = it.foodItem?.category || 'Other';
+        catCountMap[cat] = (catCountMap[cat] || 0) + (it.quantity || 1);
+      });
+    });
+    const topCategoryName = Object.entries(catCountMap).sort((a, b) => b[1] - a[1])[0]?.[0] || 'No Orders Yet';
     const topFoodItemClassification = {
-      biryani: 'Special Chicken Biryani',
-      pizza: 'Paneer Crust Supreme Pizza',
-      burger: 'Crunchy Veg Tandoori Burger',
-      iceCream: 'Spiced Mango Shrikhand Sundae',
-      mostOrderedFood: 'Special Chicken Biryani',
-      mostOrderedCategory: 'Authentic Pulavs & Biryanis'
+      biryani: topSellingData.find(d => d.name.toLowerCase().includes('biryani'))?.name || 'No Orders Yet',
+      pizza: topSellingData.find(d => d.name.toLowerCase().includes('pizza'))?.name || 'No Orders Yet',
+      burger: topSellingData.find(d => d.name.toLowerCase().includes('burger'))?.name || 'No Orders Yet',
+      iceCream: topSellingData.find(d => d.name.toLowerCase().includes('ice') || d.name.toLowerCase().includes('dessert'))?.name || 'No Orders Yet',
+      mostOrderedFood: topSellingData[0]?.name || 'No Orders Yet',
+      mostOrderedCategory: topCategoryName
     };
 
-    // 12-Month comparison datasets for comparative charts
-    const monthlyRevenueCompareData = [
-      { month: 'Jan', ActiveSales: 124000, PriorSales: 110000, Margin: '12%' },
-      { month: 'Feb', ActiveSales: 135000, PriorSales: 115000, Margin: '17%' },
-      { month: 'Mar', ActiveSales: 148000, PriorSales: 120000, Margin: '23%' },
-      { month: 'Apr', ActiveSales: 165000, PriorSales: 130000, Margin: '26%' },
-      { month: 'May', ActiveSales: 182000, PriorSales: 145000, Margin: '25%' },
-      { month: 'Jun (Current)', ActiveSales: repTotalRevenue, PriorSales: 155000, Margin: '29%' }
-    ];
+    // Real monthly comparison (last 6 months grouped from real orders)
+    const monthlyBucketMap: Record<string, { label: string; sales: number }> = {};
+    for (let m = 5; m >= 0; m--) {
+      const dt = new Date();
+      dt.setMonth(dt.getMonth() - m, 1);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      monthlyBucketMap[key] = {
+        label: dt.toLocaleDateString('en-US', { month: 'short' }),
+        sales: 0
+      };
+    }
+    allProcessedOrders.forEach(o => {
+      if (o.status === 'cancelled' || o.status === 'rejected') return;
+      const d = parseDateAndHour(o.date);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (monthlyBucketMap[key]) {
+        monthlyBucketMap[key].sales += Number(o.finalAmount || 0);
+      }
+    });
+    const monthlyRevenueCompareData = Object.values(monthlyBucketMap).map(b => ({
+      month: b.label,
+      ActiveSales: b.sales,
+      PriorSales: 0,
+      Margin: b.sales > 0 ? '18%' : '0%'
+    }));
 
-    // Customer & Restaurant cumulative growth trend values
-    const growthTrendsDataset = last30Days.map((day, idx) => ({
+    const growthTrendsDataset = last30Days.map(day => ({
       day: day.substring(8),
-      Customers: 120 + Math.floor(idx * 4.5),
-      Restaurants: mergedRestaurantsList.length + (idx < 10 ? -2 : idx < 20 ? -1 : 0)
+      Customers: customers30DaysMap[day]?.size || 0,
+      Restaurants: mergedRestaurantsList.length
     }));
 
     return {
@@ -1022,7 +1033,7 @@ export default function SuperAdminPanel() {
       reportQueryStart,
       reportQueryEnd
     };
-  }, [orders, reportFilter, reportCustomStart, reportCustomEnd, restaurants, deliveryPartners]);
+  }, [orders, reportFilter, reportCustomStart, reportCustomEnd, restaurants, deliveryPartners, franchiseApplications]);
 
   const {
     allProcessedOrders,
@@ -1361,28 +1372,32 @@ export default function SuperAdminPanel() {
                 {/* 1. LIVE BUSINESS OVERVIEW - BENTO GRID */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-5">
                   {(() => {
-                    const todayStr = '2026-06-23';
                     const realTodayStr = new Date().toISOString().substring(0, 10);
-                    const todayOrders = orders.filter(o => o.date.startsWith(todayStr) || o.date.startsWith(realTodayStr));
-                    const todayRevenueVal = todayOrders.filter(o => o.status !== 'cancelled').reduce((sum, o) => sum + o.finalAmount, 0) || 12850;
-                    const todayOrdersCountVal = todayOrders.length || 18;
+                    const todayOrders = orders.filter(o => (o.date || '').startsWith(realTodayStr));
+                    const activeTodayOrders = todayOrders.filter(o => o.status !== 'cancelled' && o.status !== 'rejected');
+                    const todayRevenueVal = activeTodayOrders.reduce((sum, o) => sum + (Number(o.finalAmount) || 0), 0);
+                    const todayOrdersCountVal = todayOrders.length;
+                    const deliveredTodayCount = todayOrders.filter(o => o.status === 'delivered').length;
+                    const deliveredTodayPct = todayOrdersCountVal > 0 ? Math.round((deliveredTodayCount / todayOrdersCountVal) * 100) : 0;
+
                     const openRestCount = restaurants.filter(r => r.isApproved && r.isActive).length;
                     const activeRiderCount = (deliveryPartners || []).filter(p => p.isApproved && p.status !== 'Offline').length;
-                    
-                    const defaultFranchises = [
-                      { id: 'fran_1', fullName: 'Venkat Reddy', proposedLocation: 'Perala High Road', status: 'Pending' },
-                      { id: 'fran_2', fullName: 'Suresh Kumar', proposedLocation: 'RTC Bus Stand', status: 'Pending' }
-                    ];
-                    const activeFranchiseLeads = franchiseApplications && franchiseApplications.length > 0
-                      ? franchiseApplications
-                      : defaultFranchises;
-                    const pendingFranchiseLeadsCount = activeFranchiseLeads.filter(f => f.status === 'Pending').length;
-                    const activeCustomersCount = new Set(orders.map(o => o.customerId)).size || 42;
 
-                    const codOrders = todayOrders.filter(o => o.paymentMethod === 'COD');
-                    const onlineOrders = todayOrders.filter(o => o.paymentMethod !== 'COD');
-                    const codRevenue = codOrders.reduce((sum, o) => sum + o.finalAmount, 0);
-                    const onlineRevenue = onlineOrders.reduce((sum, o) => sum + o.finalAmount, 0);
+                    const liveFranchiseLeads = franchiseApplications || [];
+                    const pendingFranchiseLeadsCount = liveFranchiseLeads.filter(
+                      f => f.status === 'Submitted' || f.status === 'Under Review' || f.status === 'Verification Pending'
+                    ).length;
+                    const activeCustomersCount = new Set(orders.map(o => o.customerId).filter(Boolean)).size;
+
+                    const codOrders = activeTodayOrders.filter(o => o.paymentMethod === 'COD');
+                    const onlineOrders = activeTodayOrders.filter(o => o.paymentMethod !== 'COD');
+                    const codRevenue = codOrders.reduce((sum, o) => sum + (Number(o.finalAmount) || 0), 0);
+                    const onlineRevenue = onlineOrders.reduce((sum, o) => sum + (Number(o.finalAmount) || 0), 0);
+
+                    const visibleReviews = (restaurantReviews || []).filter(r => !r.isHidden);
+                    const avgRating = visibleReviews.length > 0
+                      ? (visibleReviews.reduce((sum, r) => sum + (Number(r.rating) || 0), 0) / visibleReviews.length).toFixed(1)
+                      : null;
 
                     return (
                       <>
@@ -1400,12 +1415,12 @@ export default function SuperAdminPanel() {
                           </div>
                           <div className="mt-4 pt-3 border-t border-slate-100 dark:border-zinc-800/60 grid grid-cols-2 gap-2 text-[10px]">
                             <div>
-                              <span className="text-zinc-400 block font-semibold">UPI/Cards</span>
-                              <strong className="text-zinc-700 dark:text-zinc-300 font-mono font-bold">₹{(onlineRevenue || (todayRevenueVal * 0.7)).toLocaleString('en-IN')}</strong>
+                              <span className="text-zinc-400 block font-semibold">UPI / Online</span>
+                              <strong className="text-zinc-700 dark:text-zinc-300 font-mono font-bold">₹{onlineRevenue.toLocaleString('en-IN')}</strong>
                             </div>
                             <div>
                               <span className="text-zinc-400 block font-semibold">Cash On Delivery</span>
-                              <strong className="text-zinc-700 dark:text-zinc-300 font-mono font-bold">₹{(codRevenue || (todayRevenueVal * 0.3)).toLocaleString('en-IN')}</strong>
+                              <strong className="text-zinc-700 dark:text-zinc-300 font-mono font-bold">₹{codRevenue.toLocaleString('en-IN')}</strong>
                             </div>
                           </div>
                         </div>
@@ -1421,11 +1436,11 @@ export default function SuperAdminPanel() {
                           </div>
                           <div className="mt-3">
                             <div className="w-full bg-slate-100 dark:bg-zinc-800 h-1.5 rounded-full overflow-hidden">
-                              <div className="bg-orange-500 h-1.5 rounded-full" style={{ width: '85%' }}></div>
+                              <div className="bg-orange-500 h-1.5 rounded-full transition-all" style={{ width: `${deliveredTodayPct}%` }}></div>
                             </div>
                             <div className="flex justify-between text-[9px] text-zinc-400 font-bold mt-1.5">
-                              <span>85% DELIVERED</span>
-                              <span>Target: 25</span>
+                              <span>{deliveredTodayPct}% DELIVERED</span>
+                              <span>Total All-Time: {orders.length}</span>
                             </div>
                           </div>
                         </div>
@@ -1473,7 +1488,9 @@ export default function SuperAdminPanel() {
                             <h4 className="text-3xl font-black text-zinc-900 dark:text-zinc-50 font-mono tracking-tight font-sans">{pendingFranchiseLeadsCount} <span className="text-[11px] text-amber-500 font-black uppercase tracking-wide">Pending</span></h4>
                           </div>
                           <div className="text-[9.5px] text-zinc-400 truncate font-semibold block">
-                            Latest: {activeFranchiseLeads.slice(0, 2).map(f => f.fullName).join(', ')}
+                            {liveFranchiseLeads.length > 0
+                              ? `Latest: ${liveFranchiseLeads.slice(0, 2).map(f => f.fullName).join(', ')}`
+                              : 'No franchise inquiries submitted yet'}
                           </div>
                         </div>
 
@@ -1483,11 +1500,11 @@ export default function SuperAdminPanel() {
                             <CheckCircle className="w-6 h-6 text-teal-500" />
                           </div>
                           <div>
-                            <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold block mb-1">Unique Active Customers</span>
+                            <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-bold block mb-1">Unique Ordering Customers</span>
                             <h4 className="text-3xl font-black text-zinc-900 dark:text-zinc-50 font-mono tracking-tight font-sans">{activeCustomersCount}</h4>
                           </div>
                           <span className="text-[9.5px] text-teal-600 dark:text-teal-400 font-extrabold block">
-                            ⭐ 94.8% customer satisfaction rate
+                            {avgRating ? `★ ${avgRating}/5 from ${visibleReviews.length} live reviews` : `${orders.length} total persisted orders`}
                           </span>
                         </div>
                       </>
@@ -1860,10 +1877,10 @@ export default function SuperAdminPanel() {
                                 {isPending ? (
                                   <button
                                     onClick={() => {
-                                      partner.isApproved = true;
-                                      partner.status = 'Available';
+                                      if (updateRiderStatus) {
+                                        updateRiderStatus(partner.id, true, 'Available');
+                                      }
                                       addAuditLog && (addAuditLog as any)(`Approved rider recruitment: ${partner.name}`, 'rider', partner.id);
-                                      alert(`Rider ${partner.name} approved successfully!`);
                                       setActiveSection('command');
                                     }}
                                     className="bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-[9px] px-2.5 py-1.5 rounded-lg uppercase cursor-pointer"
@@ -2107,23 +2124,22 @@ export default function SuperAdminPanel() {
                       {(() => {
                         let amount = statsTotalRevenue;
                         let desc = 'Gross weekly volume across 15 completed orders';
-                        let percentage = '+12.4%';
+                        let percentage = '';
 
                         if (revenueInterval === 'today') {
-                          const todayStr = '2026-06-23';
                           const realTodayStr = new Date().toISOString().substring(0, 10);
-                          const todayOrders = orders.filter(o => o.date.startsWith(todayStr) || o.date.startsWith(realTodayStr));
-                          amount = todayOrders.filter(o => o.status !== 'cancelled').reduce((sum, o) => sum + o.finalAmount, 0) || 12850;
-                          desc = 'Gross sales processed in the past 24 hours';
-                          percentage = '+14.2%';
+                          const todayOrders = orders.filter(o => (o.date || '').startsWith(realTodayStr));
+                          amount = todayOrders.filter(o => o.status !== 'cancelled' && o.status !== 'rejected').reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
+                          desc = 'Gross sales recorded today';
+                          percentage = 'Today';
                         } else if (revenueInterval === 'monthly') {
-                          amount = statsTotalRevenue * 4.2;
-                          desc = 'Consolidated monthly volume projections';
-                          percentage = '+18.9%';
+                          amount = totalRevenue30Days;
+                          desc = 'Trailing 30-day live order volume';
+                          percentage = '30 Days';
                         } else if (revenueInterval === 'yearly') {
-                          amount = statsTotalRevenue * 50;
-                          desc = 'Estimated yearly run rate (Chirala Territory)';
-                          percentage = '+22.5%';
+                          amount = orders.filter(o => o.status !== 'cancelled' && o.status !== 'rejected').reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
+                          desc = 'Cumulative live platform gross revenue';
+                          percentage = 'All Time';
                         }
 
                         return (
@@ -2131,7 +2147,7 @@ export default function SuperAdminPanel() {
                             <span className="text-[8.5px] uppercase text-zinc-400 block font-mono">Dynamic Revenue Captured</span>
                             <div className="flex items-baseline gap-2 mt-0.5">
                               <strong className="text-lg font-black text-zinc-900 dark:text-zinc-50 font-mono">₹{Math.round(amount).toLocaleString('en-IN')}</strong>
-                              <span className="text-[9px] text-emerald-500 font-extrabold">{percentage}</span>
+                              {percentage && <span className="text-[9px] text-emerald-500 font-extrabold">{percentage}</span>}
                             </div>
                             <p className="text-[9px] text-zinc-500 mt-0.5 leading-tight">{desc}</p>
                           </div>
@@ -2173,15 +2189,10 @@ export default function SuperAdminPanel() {
                       <div className="space-y-3">
                         {/* A. NEW FRANCHISE APPLICATION APPLICATION ALERT */}
                         {(() => {
-                          const defaultFranchises = [
-                            { id: 'fran_1', fullName: 'Venkat Reddy', proposedLocation: 'Perala High Road', status: 'Pending' },
-                            { id: 'fran_2', fullName: 'Suresh Kumar', proposedLocation: 'RTC Bus Stand', status: 'Pending' }
-                          ];
-                          const activeFranchises = franchiseApplications && franchiseApplications.length > 0
-                            ? franchiseApplications
-                            : defaultFranchises;
-                          
-                          const pendingFranchises = activeFranchises.filter(f => f.status === 'Pending');
+                          const activeFranchises = franchiseApplications || [];
+                          const pendingFranchises = activeFranchises.filter(
+                            f => f.status === 'Submitted' || f.status === 'Under Review' || f.status === 'Verification Pending'
+                          );
                           if (pendingFranchises.length === 0) return null;
 
                           return pendingFranchises.map(fran => (
@@ -2195,13 +2206,8 @@ export default function SuperAdminPanel() {
                               <div className="flex items-center gap-1.5 pt-0.5">
                                 <button
                                   onClick={() => {
-                                    if (updateFranchiseStatus) {
-                                      updateFranchiseStatus(fran.id, 'Approved');
-                                    } else {
-                                      fran.status = 'Approved';
-                                    }
+                                    updateFranchiseStatus?.(fran.id, 'Approved');
                                     addAuditLog && addAuditLog(`Approved franchise application from ${fran.fullName}`, 'operations');
-                                    alert(`Franchise Application for ${fran.fullName} approved and marked active!`);
                                     setActiveSection('command');
                                   }}
                                   className="bg-orange-555 text-white font-extrabold text-[8.5px] px-2.5 py-1 rounded uppercase cursor-pointer"
@@ -2210,12 +2216,7 @@ export default function SuperAdminPanel() {
                                 </button>
                                 <button
                                   onClick={() => {
-                                    if (updateFranchiseStatus) {
-                                      updateFranchiseStatus(fran.id, 'Rejected');
-                                    } else {
-                                      fran.status = 'Rejected';
-                                    }
-                                    alert(`Franchise Application from ${fran.fullName} declined.`);
+                                    updateFranchiseStatus?.(fran.id, 'Rejected');
                                     setActiveSection('command');
                                   }}
                                   className="bg-zinc-150 dark:bg-zinc-800 hover:bg-zinc-200 text-zinc-600 dark:text-zinc-400 font-extrabold text-[8.5px] px-2 py-1 rounded uppercase cursor-pointer"
@@ -2242,10 +2243,10 @@ export default function SuperAdminPanel() {
                               </p>
                               <button
                                 onClick={() => {
-                                  rider.isApproved = true;
-                                  rider.status = 'Available';
+                                  if (updateRiderStatus) {
+                                    updateRiderStatus(rider.id, true, 'Available');
+                                  }
                                   addAuditLog && (addAuditLog as any)(`Approved rider recruitment: ${rider.name}`, 'rider', rider.id);
-                                  alert(`Delivery Partner ${rider.name} verified and activated successfully!`);
                                   setActiveSection('command');
                                 }}
                                 className="bg-indigo-650 text-white font-extrabold text-[8.5px] px-2.5 py-1 rounded uppercase cursor-pointer"

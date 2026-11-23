@@ -38,7 +38,9 @@ export default function AccountScreen() {
     deleteCustomerAccount,
     resendCustomerVerificationEmail,
     changeCustomerPassword,
-    requestCustomerPasswordReset
+    requestCustomerPasswordReset,
+    supportTickets,
+    submitSupportTicket
   } = useApp();
 
   // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
@@ -146,6 +148,40 @@ export default function AccountScreen() {
   const [pwdChangeSuccess, setPwdChangeSuccess] = useState('');
   const [isSendingProfileReset, setIsSendingProfileReset] = useState(false);
   const [profileResetNotice, setProfileResetNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Customer Support & Help Center state
+  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+  const [ticketCategory, setTicketCategory] = useState<'Order Issue' | 'Payment / Refund' | 'Delivery Delay' | 'Account / App' | 'General'>('Order Issue');
+  const [ticketOrderId, setTicketOrderId] = useState('');
+  const [ticketSubject, setTicketSubject] = useState('');
+  const [ticketDescription, setTicketDescription] = useState('');
+  const [isSubmittingTicket, setIsSubmittingTicket] = useState(false);
+  const [ticketNotice, setTicketNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleSupportTicketSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTicketNotice(null);
+    if (!ticketSubject.trim() || !ticketDescription.trim()) {
+      setTicketNotice({ type: 'error', text: 'Please fill in both subject and issue description.' });
+      return;
+    }
+    setIsSubmittingTicket(true);
+    const res = await submitSupportTicket({
+      category: ticketCategory,
+      orderId: ticketOrderId || undefined,
+      subject: ticketSubject.trim(),
+      description: ticketDescription.trim()
+    });
+    setIsSubmittingTicket(false);
+    if (res.success) {
+      setTicketSubject('');
+      setTicketDescription('');
+      setTicketOrderId('');
+      setTicketNotice({ type: 'success', text: 'Support ticket submitted! Our Chirala operations desk will reply shortly.' });
+    } else {
+      setTicketNotice({ type: 'error', text: res.error || 'Unable to submit ticket. Please try again.' });
+    }
+  };
 
   const handleChangeCustomerPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4139,6 +4175,155 @@ Thank you for dining with Nuvvo Gourmet!`;
                   : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400'
               }`}>
                 {profileResetNotice.text}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HELP, FAQ & CUSTOMER SUPPORT TICKETS */}
+        {user && (
+          <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-xs space-y-4 text-left">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-orange-500 shrink-0" />
+                <div>
+                  <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-100 uppercase tracking-tight">
+                    Help, FAQ &amp; Customer Support
+                  </h4>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                    Chirala Support Desk • Helpline +91 9063692135
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => clickToWhatsAppSupport('Hi Nuvvo Support Desk, I need help with my order.')}
+                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-black cursor-pointer self-start sm:self-auto"
+              >
+                WhatsApp Support Desk
+              </button>
+            </div>
+
+            {/* Quick Collapsible FAQs */}
+            <div className="space-y-1.5">
+              {[
+                {
+                  q: 'How do delivery fees and free delivery work?',
+                  a: 'Orders above the free-delivery threshold (default ₹400 in Chirala) qualify for ₹0 delivery fee. Smaller orders incur the standard delivery fee displayed transparently in your cart before payment.'
+                },
+                {
+                  q: 'When can I cancel an order?',
+                  a: 'You can cancel an order directly from Order History while it is still Confirmed or In Kitchen. Prepaid refunds are initiated back to your original payment source.'
+                },
+                {
+                  q: 'How do I report a missing item or delivery issue?',
+                  a: 'Select the affected order below and raise a support ticket. Our Chirala operations team reviews every ticket and responds directly here.'
+                }
+              ].map((faq, idx) => (
+                <div key={idx} className="rounded-2xl border border-slate-100 dark:border-zinc-800 bg-slate-50/70 dark:bg-zinc-800/40 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOpenFaqIndex(openFaqIndex === idx ? null : idx)}
+                    className="w-full px-3.5 py-2.5 flex items-center justify-between text-left text-xs font-bold text-zinc-800 dark:text-zinc-200 cursor-pointer"
+                  >
+                    <span>{faq.q}</span>
+                    {openFaqIndex === idx ? <ChevronUp className="w-4 h-4 text-orange-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />}
+                  </button>
+                  {openFaqIndex === idx && (
+                    <p className="px-3.5 pb-3 text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                      {faq.a}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Raise Support Ticket Form */}
+            <form onSubmit={handleSupportTicketSubmit} className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-zinc-800">
+              <p className="text-[11px] font-black uppercase tracking-wider text-zinc-500">Raise a Support Ticket</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <select
+                  value={ticketCategory}
+                  onChange={e => setTicketCategory(e.target.value as any)}
+                  className="bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="Order Issue">Order / Missing Item</option>
+                  <option value="Delivery Delay">Delivery Delay / Rider</option>
+                  <option value="Payment / Refund">Payment / Refund</option>
+                  <option value="Account / App">Account / Address</option>
+                  <option value="General">General Inquiry</option>
+                </select>
+                <select
+                  value={ticketOrderId}
+                  onChange={e => setTicketOrderId(e.target.value)}
+                  className="bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs font-bold text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="">Related Order (Optional)</option>
+                  {orders.slice(0, 10).map(o => (
+                    <option key={o.id} value={o.id}>
+                      #{o.id.slice(-6).toUpperCase()} — ₹{o.finalAmount}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <input
+                type="text"
+                value={ticketSubject}
+                onChange={e => setTicketSubject(e.target.value)}
+                placeholder="Short summary (e.g., Need update on order delivery)"
+                className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+              />
+              <textarea
+                rows={2}
+                value={ticketDescription}
+                onChange={e => setTicketDescription(e.target.value)}
+                placeholder="Describe your issue or feedback..."
+                className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+              />
+              {ticketNotice && (
+                <div className={`p-2.5 rounded-xl text-[11px] font-bold border ${
+                  ticketNotice.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400'
+                }`}>
+                  {ticketNotice.text}
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={isSubmittingTicket}
+                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white text-xs font-black rounded-xl transition cursor-pointer"
+              >
+                {isSubmittingTicket ? 'Submitting...' : 'Submit Support Ticket'}
+              </button>
+            </form>
+
+            {/* Customer Ticket History */}
+            {supportTickets.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-zinc-800">
+                <p className="text-[11px] font-black uppercase tracking-wider text-zinc-500">Your Support Tickets ({supportTickets.length})</p>
+                {supportTickets.slice(0, 5).map(t => (
+                  <div key={t.id} className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/70 dark:border-zinc-700/60 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100 truncate">{t.subject}</span>
+                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        t.status === 'resolved'
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : t.status === 'in_progress'
+                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                          : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'
+                      }`}>
+                        {t.status.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t.description}</p>
+                    {t.adminReply && (
+                      <div className="mt-1.5 p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/40 text-[11px] text-emerald-800 dark:text-emerald-300">
+                        <strong className="font-black">Support Reply:</strong> {t.adminReply}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

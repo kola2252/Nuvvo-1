@@ -4,7 +4,8 @@
  *
  * Customer Forgot Password Endpoint: POST /api/auth/forgot-password
  * Sends a secure Supabase Auth password recovery email (supporting Username or Email resolution
- * strictly on backend) with rate limiting and non-enumerating responses.
+ * strictly on backend) with rate limiting, SMTP fallback via Supabase Admin generateLink,
+ * and clear error reporting.
  */
 
 import {
@@ -13,10 +14,12 @@ import {
   sendJsonResponse,
   getClientIp,
   checkCustomerAuthRateLimit,
+  recordCustomerAuthFailure,
   findLocalCustomerByUsername,
   getAppRedirectOrigin,
   fallbackUsernamesRegistry
 } from "../../lib/auth-utils";
+import { isSmtpConfigured, sendPasswordRecoveryEmail } from "../../lib/email-service";
 import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
@@ -43,10 +46,10 @@ export default async function handler(req: any, res: any) {
     const clientIp = getClientIp(req);
     const rateKey = `${clientIp}:${rawIdentifier.toLowerCase()}`;
     const rateCheck = checkCustomerAuthRateLimit("forgot_password", rateKey, {
-      maxAttempts: 3,
+      maxAttempts: 5,
       windowMs: 15 * 60 * 1000,
       blockMs: 15 * 60 * 1000,
-      incrementOnCheck: true
+      incrementOnCheck: false
     });
 
     if (!rateCheck.allowed) {
@@ -55,11 +58,13 @@ export default async function handler(req: any, res: any) {
       }
       return sendJsonResponse(res, 429, {
         success: false,
+        retryAfterSeconds: rateCheck.retryAfterSeconds || 60,
         error: rateCheck.error || "Too many password reset requests. Please wait a few minutes and try again."
       });
     }
 
     let resolvedEmail = "";
+    let customerName = "";
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
 
     if (rawIdentifier.includes("@")) {
@@ -70,10 +75,11 @@ export default async function handler(req: any, res: any) {
         try {
           const { data } = await adminClient
             .from("customer_profiles")
-            .select("email")
+            .select("email, full_name")
             .ilike("username", cleanUsername)
             .maybeSingle();
           if (data?.email) resolvedEmail = normalizeEmail(data.email);
+          if (data?.full_name) customerName = String(data.full_name).trim();
         } catch {}
 
         if (!resolvedEmail) {
@@ -91,42 +97,142 @@ export default async function handler(req: any, res: any) {
 
       if (!resolvedEmail) {
         const local = findLocalCustomerByUsername(cleanUsername);
-        if (local?.email) resolvedEmail = normalizeEmail(local.email);
+        if (local?.email) {
+          resolvedEmail = normalizeEmail(local.email);
+          if (local.fullName) customerName = String(local.fullName).trim();
+        }
       }
       if (!resolvedEmail) {
         resolvedEmail = fallbackUsernamesRegistry.get(cleanUsername) || "";
       }
     }
 
-    // Send recovery email only if resolved, while returning a uniform message to avoid enumeration
-    if (resolvedEmail) {
-      const publicSupabase = getPublicSupabaseServerClient();
-      const targetRedirect = getAppRedirectOrigin(req, redirectTo);
+    if (!resolvedEmail) {
+      recordCustomerAuthFailure("forgot_password", rateKey, {
+        maxAttempts: 5,
+        windowMs: 15 * 60 * 1000,
+        blockMs: 15 * 60 * 1000
+      });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        cooldownSeconds: 60,
+        message:
+          "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+
+    const publicSupabase = getPublicSupabaseServerClient();
+    const baseOrigin = getAppRedirectOrigin(req, redirectTo);
+    const targetRedirect = `${baseOrigin.replace(/\/+$/, "")}/?type=recovery`;
+
+    // 1. Primary path: Supabase Auth built-in resetPasswordForEmail
+    let primaryError: any = null;
+    try {
       const { error } = await publicSupabase.auth.resetPasswordForEmail(resolvedEmail, {
         redirectTo: targetRedirect
       });
+      primaryError = error;
 
-      if (error) {
-        const lowerErr = String(error.message || "").toLowerCase();
-        if (error.status === 429 || lowerErr.includes("rate limit")) {
-          return sendJsonResponse(res, 429, {
-            success: false,
-            error: "Email recovery rate limit reached. Please wait a few minutes before retrying."
+      // Retry without custom query/redirect if Supabase rejected the redirect URL format
+      if (primaryError && String(primaryError.message || "").toLowerCase().includes("redirect")) {
+        const retryRes = await publicSupabase.auth.resetPasswordForEmail(resolvedEmail);
+        primaryError = retryRes.error;
+      }
+    } catch (sdkErr: any) {
+      primaryError = { message: sdkErr?.message || "Supabase Auth request failed", status: 502 };
+    }
+
+    if (!primaryError) {
+      recordCustomerAuthFailure("forgot_password", rateKey, {
+        maxAttempts: 5,
+        windowMs: 15 * 60 * 1000,
+        blockMs: 15 * 60 * 1000
+      });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        provider: "supabase_auth",
+        cooldownSeconds: 60,
+        message:
+          "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+
+    // 2. Fallback path: Generate official Supabase recovery link via Admin API and deliver over configured custom SMTP
+    if (adminClient && isServiceRole && isSmtpConfigured()) {
+      try {
+        const { data: linkData, error: linkError } = await adminClient.auth.admin.generateLink({
+          type: "recovery",
+          email: resolvedEmail,
+          options: { redirectTo: targetRedirect }
+        });
+
+        const actionLink = linkData?.properties?.action_link;
+        if (!linkError && actionLink) {
+          const mailRes = await sendPasswordRecoveryEmail(resolvedEmail, actionLink, customerName || undefined);
+          if (mailRes.success) {
+            recordCustomerAuthFailure("forgot_password", rateKey, {
+              maxAttempts: 5,
+              windowMs: 15 * 60 * 1000,
+              blockMs: 15 * 60 * 1000
+            });
+            return sendJsonResponse(res, 200, {
+              success: true,
+              provider: "smtp",
+              cooldownSeconds: 60,
+              message:
+                "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+            });
+          }
+        } else if (linkError && String(linkError.message || "").toLowerCase().includes("not found")) {
+          // Preserve non-enumeration when no Auth user exists for that email
+          recordCustomerAuthFailure("forgot_password", rateKey, {
+            maxAttempts: 5,
+            windowMs: 15 * 60 * 1000,
+            blockMs: 15 * 60 * 1000
+          });
+          return sendJsonResponse(res, 200, {
+            success: true,
+            message:
+              "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
           });
         }
-        if (lowerErr.includes("error sending")) {
-          return sendJsonResponse(res, 502, {
-            success: false,
-            error: "Supabase Auth could not send the recovery email. Please configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings."
-          });
-        }
+      } catch (fallbackErr: any) {
+        console.warn("[Forgot Password SMTP Fallback Warning]:", fallbackErr?.message || fallbackErr);
       }
     }
 
-    return sendJsonResponse(res, 200, {
-      success: true,
-      message:
-        "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+    // 3. Accurate error reporting (do not record server/SMTP outages against user's rate limit)
+    const errMsg = String(primaryError?.message || "");
+    const lowerErr = errMsg.toLowerCase();
+    console.warn("[Forgot Password Dispatch Failed]:", primaryError?.status, errMsg);
+
+    if (primaryError?.status === 429 || lowerErr.includes("rate limit")) {
+      return sendJsonResponse(res, 429, {
+        success: false,
+        retryAfterSeconds: 60,
+        error: "Email recovery rate limit reached. Please wait a few minutes before retrying."
+      });
+    }
+
+    if (lowerErr.includes("user not found") || lowerErr.includes("not found")) {
+      return sendJsonResponse(res, 200, {
+        success: true,
+        message:
+          "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+
+    if (lowerErr.includes("error sending") || primaryError?.status === 500 || primaryError?.status === 502) {
+      return sendJsonResponse(res, 502, {
+        success: false,
+        error:
+          "Unable to send the password reset email because email delivery (Supabase Auth Custom SMTP or server SMTP) is currently unavailable. Please configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings, or set EMAIL_USER, EMAIL_PASS, and SUPABASE_SERVICE_ROLE_KEY on the server."
+      });
+    }
+
+    return sendJsonResponse(res, primaryError?.status >= 400 && primaryError?.status < 600 ? primaryError.status : 400, {
+      success: false,
+      error: errMsg || "Unable to initiate password reset for this account. Please verify your email address and try again."
     });
   } catch (err: any) {
     console.error("[Forgot Password Error]:", err?.message || err);

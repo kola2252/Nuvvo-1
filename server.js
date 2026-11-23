@@ -4825,6 +4825,148 @@ async function retryFailedNotification(notificationId, orderResolver) {
     existingRecordToRetry: target
   });
 }
+async function retryFailedWebhookEvent(webhookEventId, orderResolver) {
+  loadLocalStores();
+  const cleanId = String(webhookEventId || "").trim();
+  if (!cleanId) {
+    return {
+      found: false,
+      success: false,
+      status: "invalid_id",
+      webhookEventId: cleanId,
+      error: "Webhook event ID is required."
+    };
+  }
+  let webhookEvent = inMemoryWebhookEvents.get(cleanId);
+  if (!webhookEvent) {
+    try {
+      const { client } = getAdminSupabaseServerClient();
+      if (client) {
+        const { data } = await client.from("whatsapp_webhook_events").select("*").eq("id", cleanId).maybeSingle();
+        if (data) {
+          webhookEvent = data;
+        }
+      }
+    } catch {
+    }
+  }
+  if (!webhookEvent) {
+    return {
+      found: false,
+      success: false,
+      status: "not_found",
+      webhookEventId: cleanId,
+      error: "Webhook event record not found."
+    };
+  }
+  let targetNotification;
+  if (webhookEvent.matched_notification_id) {
+    targetNotification = inMemoryOutbox.get(webhookEvent.matched_notification_id);
+    if (!targetNotification) {
+      try {
+        const { client } = getAdminSupabaseServerClient();
+        if (client) {
+          const { data } = await client.from("order_notifications").select("*").eq("id", webhookEvent.matched_notification_id).maybeSingle();
+          if (data) targetNotification = data;
+        }
+      } catch {
+      }
+    }
+  }
+  if (!targetNotification) {
+    const candidateWamids = Array.from(
+      new Set(
+        [webhookEvent.wamid || "", ...extractWebhookPayloadWamids(webhookEvent.raw_payload)].map((v) => String(v || "").trim()).filter(Boolean)
+      )
+    );
+    if (candidateWamids.length > 0) {
+      for (const rec of inMemoryOutbox.values()) {
+        if (rec.message_id && candidateWamids.includes(rec.message_id)) {
+          targetNotification = rec;
+          break;
+        }
+      }
+      if (!targetNotification) {
+        try {
+          const { client } = getAdminSupabaseServerClient();
+          if (client) {
+            const { data } = await client.from("order_notifications").select("*").in("message_id", candidateWamids).limit(1);
+            if (Array.isArray(data) && data.length > 0) {
+              targetNotification = data[0];
+            }
+          }
+        } catch {
+        }
+      }
+    }
+  }
+  if (!targetNotification && webhookEvent.matched_order_id) {
+    const orderNotifs = await listOrderNotifications({
+      orderId: webhookEvent.matched_order_id,
+      limit: 20
+    });
+    targetNotification = orderNotifs.find((n) => n.status === "failed") || orderNotifs[0];
+  }
+  if (targetNotification && (!webhookEvent.matched_notification_id || !webhookEvent.matched_order_id)) {
+    webhookEvent.matched_notification_id = webhookEvent.matched_notification_id || targetNotification.id;
+    webhookEvent.matched_order_id = webhookEvent.matched_order_id || targetNotification.order_id;
+    await saveRawWebhookEventRecord(webhookEvent);
+  }
+  if (targetNotification) {
+    const retryResult = await retryFailedNotification(targetNotification.id, orderResolver);
+    return {
+      found: true,
+      success: retryResult.success,
+      status: retryResult.status,
+      webhookEventId: webhookEvent.id,
+      notificationId: retryResult.notificationId || targetNotification.id,
+      orderId: retryResult.orderId || targetNotification.order_id,
+      messageId: retryResult.messageId,
+      error: retryResult.error,
+      result: retryResult
+    };
+  }
+  if (webhookEvent.matched_order_id) {
+    const order = await orderResolver(webhookEvent.matched_order_id);
+    if (!order) {
+      return {
+        found: true,
+        success: false,
+        status: "order_not_found",
+        webhookEventId: webhookEvent.id,
+        orderId: webhookEvent.matched_order_id,
+        error: `Order ${webhookEvent.matched_order_id} could not be resolved for resend.`
+      };
+    }
+    const dualResult = await dispatchOrderWhatsAppNotifications(order);
+    return {
+      found: true,
+      success: dualResult.overallSuccess,
+      status: dualResult.overallSuccess ? "submitted" : "failed",
+      webhookEventId: webhookEvent.id,
+      orderId: webhookEvent.matched_order_id,
+      messageId: dualResult.adminNotification.messageId || dualResult.customerNotification.messageId,
+      error: dualResult.overallSuccess ? void 0 : dualResult.adminNotification.error || dualResult.customerNotification.error || "Resend failed.",
+      result: dualResult
+    };
+  }
+  if (webhookEvent.signature_valid === false || webhookEvent.event_type === "invalid_signature") {
+    return {
+      found: true,
+      success: false,
+      status: "unlinked_invalid_signature",
+      webhookEventId: webhookEvent.id,
+      error: "Cannot resend: this webhook event failed HMAC signature verification and has no linked notification or order."
+    };
+  }
+  return {
+    found: true,
+    success: false,
+    status: "unlinked",
+    webhookEventId: webhookEvent.id,
+    error: "Cannot resend: no matching WhatsApp notification or order was found for this webhook event."
+  };
+}
 async function listOrderNotifications(options) {
   const limit = options?.limit || 100;
   const merged = /* @__PURE__ */ new Map();
@@ -6435,15 +6577,67 @@ async function handler13(req, res) {
           error: "Incorrect password. Account deletion aborted for security."
         });
       }
+      const authEmail = normalizeEmail(supabaseAuthUser.email || "");
       const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+      const dbClient = adminClient || publicSupabase;
+      let profileUsername = "";
+      let profilePhone = "";
+      try {
+        const { data: existingProfile } = await dbClient.from("customer_profiles").select("username, phone").eq("id", supabaseAuthUser.id).maybeSingle();
+        if (existingProfile?.username) profileUsername = String(existingProfile.username).toLowerCase();
+        if (existingProfile?.phone) profilePhone = String(existingProfile.phone);
+      } catch {
+      }
+      try {
+        await dbClient.from("orders").update({
+          customer_name: "Former Customer (Deleted)",
+          customer_phone: "0000000000",
+          customer_email: null,
+          customer_whatsapp: null,
+          instructions: "Account deleted by customer"
+        }).eq("customer_id", supabaseAuthUser.id);
+      } catch {
+      }
+      try {
+        await dbClient.from("customer_whatsapp_preferences").delete().eq("customer_id", supabaseAuthUser.id);
+      } catch {
+      }
+      try {
+        await dbClient.from("customer_profiles").delete().eq("id", supabaseAuthUser.id);
+      } catch {
+      }
       if (adminClient && isServiceRole) {
-        await adminClient.from("customer_profiles").delete().eq("id", supabaseAuthUser.id);
+        if (authEmail) {
+          try {
+            await adminClient.from("app_settings").delete().eq("key", `account_${authEmail}`);
+          } catch {
+          }
+        }
+        if (profileUsername) {
+          try {
+            const { data: currentSettings } = await adminClient.from("app_settings").select("value").eq("key", "customer_usernames").maybeSingle();
+            const usernamesMap = currentSettings?.value || {};
+            if (usernamesMap[profileUsername]) {
+              delete usernamesMap[profileUsername];
+              await adminClient.from("app_settings").upsert([{
+                key: "customer_usernames",
+                value: usernamesMap,
+                updated_at: (/* @__PURE__ */ new Date()).toISOString()
+              }], { onConflict: "key" });
+            }
+          } catch {
+          }
+        }
         await adminClient.auth.admin.deleteUser(supabaseAuthUser.id).catch(() => {
         });
       }
+      if (authEmail) fallbackCustomerAccounts.delete(authEmail);
+      if (profileUsername) fallbackUsernamesRegistry.delete(profileUsername);
+      void profilePhone;
       return sendJsonResponse(res, 200, {
         success: true,
-        message: "Your customer account and profile data have been permanently deleted."
+        requiresSignOut: true,
+        message: "Your customer account and profile data have been permanently deleted and historical records anonymized."
       });
     }
     const sessionEmail = normalizeEmail(verified.payload.email || "");
@@ -8085,6 +8279,161 @@ function verifySignedSessionToken(token) {
   }
   return { valid: false };
 }
+function requireAdminAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : req.body?.adminToken || req.query?.adminToken || "";
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Active administrator authorization required." });
+  }
+  const verified = verifySignedSessionToken(token);
+  if (!verified.valid) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Invalid or expired administrator session." });
+  }
+  if (verified.role !== "admin" && verified.role !== "super_admin") {
+    return res.status(403).json({ success: false, error: "Forbidden: Only an Admin or Super Admin can access or modify these settings." });
+  }
+  req.user = { phone: verified.phone, role: verified.role };
+  next();
+}
+var STORE_OPS_FILE = path4.join(process.cwd(), ".server_store_operations.json");
+var DEFAULT_STORE_OPERATIONS = {
+  isCustomConfigActive: false,
+  deliveryFee: 39,
+  freeDeliveryAbove: 400,
+  minOrderAmount: 0,
+  taxRatePercent: 5,
+  packagingFee: 0,
+  pauseNewOrders: false,
+  pauseReason: "",
+  openingHoursLabel: "07:00 AM - 11:00 PM",
+  serviceableAreas: ["Chirala Town Center", "Perala", "Kothapet", "Vodarevu", "Ramapuram", "Bypass Road", "Station Road"],
+  lastUpdated: ""
+};
+function loadStoreOperationsSync() {
+  try {
+    if (!process.env.VERCEL && fs4.existsSync(STORE_OPS_FILE)) {
+      const parsed = JSON.parse(fs4.readFileSync(STORE_OPS_FILE, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        return { ...DEFAULT_STORE_OPERATIONS, ...parsed };
+      }
+    }
+  } catch {
+  }
+  return { ...DEFAULT_STORE_OPERATIONS };
+}
+var serverStoreOperations = loadStoreOperationsSync();
+async function getActiveStoreOperations() {
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { data } = await client.from("app_settings").select("value").eq("key", "store_operations").maybeSingle();
+      if (data?.value && typeof data.value === "object") {
+        serverStoreOperations = { ...DEFAULT_STORE_OPERATIONS, ...data.value };
+      }
+    }
+  } catch {
+  }
+  return serverStoreOperations;
+}
+async function persistStoreOperations(cfg) {
+  serverStoreOperations = { ...DEFAULT_STORE_OPERATIONS, ...cfg, lastUpdated: (/* @__PURE__ */ new Date()).toISOString() };
+  try {
+    if (!process.env.VERCEL) {
+      fs4.writeFileSync(STORE_OPS_FILE, JSON.stringify(serverStoreOperations, null, 2), "utf8");
+    }
+  } catch {
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from("app_settings").upsert([{
+        key: "store_operations",
+        value: serverStoreOperations,
+        description: "Admin-configured store delivery fees, min order, serviceable areas & pause mode",
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      }], { onConflict: "key" });
+    }
+  } catch {
+  }
+  return serverStoreOperations;
+}
+var SUPPORT_TICKETS_FILE = path4.join(process.cwd(), ".server_support_tickets.json");
+function loadSupportTicketsSync() {
+  try {
+    if (!process.env.VERCEL && fs4.existsSync(SUPPORT_TICKETS_FILE)) {
+      const parsed = JSON.parse(fs4.readFileSync(SUPPORT_TICKETS_FILE, "utf8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+  }
+  return [];
+}
+var serverSupportTickets = loadSupportTicketsSync();
+async function getActiveSupportTickets() {
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      const { data } = await client.from("app_settings").select("value").eq("key", "support_tickets").maybeSingle();
+      if (Array.isArray(data?.value)) {
+        serverSupportTickets = data.value;
+      }
+    }
+  } catch {
+  }
+  return serverSupportTickets;
+}
+async function persistSupportTickets(tickets) {
+  serverSupportTickets = tickets;
+  try {
+    if (!process.env.VERCEL) {
+      fs4.writeFileSync(SUPPORT_TICKETS_FILE, JSON.stringify(serverSupportTickets, null, 2), "utf8");
+    }
+  } catch {
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from("app_settings").upsert([{
+        key: "support_tickets",
+        value: serverSupportTickets,
+        description: "Customer support complaints and resolution history",
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      }], { onConflict: "key" });
+    }
+  } catch {
+  }
+}
+var DELIVERY_PARTNERS_FILE = path4.join(process.cwd(), ".server_delivery_partners.json");
+function loadDeliveryPartnersSync() {
+  try {
+    if (!process.env.VERCEL && fs4.existsSync(DELIVERY_PARTNERS_FILE)) {
+      const parsed = JSON.parse(fs4.readFileSync(DELIVERY_PARTNERS_FILE, "utf8"));
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+  }
+  return [];
+}
+async function persistDeliveryPartners(partners) {
+  try {
+    if (!process.env.VERCEL) {
+      fs4.writeFileSync(DELIVERY_PARTNERS_FILE, JSON.stringify(partners, null, 2), "utf8");
+    }
+  } catch {
+  }
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client) {
+      await client.from("app_settings").upsert([{
+        key: "delivery_partners",
+        value: partners,
+        description: "Registered Nuvvo delivery partners fleet",
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      }], { onConflict: "key" });
+    }
+  } catch {
+  }
+}
 var INITIAL_HOTELS = [
   {
     id: "hotel_1",
@@ -8164,20 +8513,20 @@ app.use(express.urlencoded({ extended: true }));
 app.use((_req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
   if (_req.method === "OPTIONS") {
     return res.status(200).end();
   }
   next();
 });
 app.use(apiInterceptorMiddleware);
-app.get("/api/admin/api-logs", (_req, res) => {
+app.get("/api/admin/api-logs", requireAdminAuth, (_req, res) => {
   return res.json({
     success: true,
     ...getApiTelemetrySummary()
   });
 });
-app.get("/api/admin/email-logs", async (req, res) => {
+app.get("/api/admin/email-logs", requireAdminAuth, async (req, res) => {
   const recipient = typeof req.query.recipient === "string" ? req.query.recipient : void 0;
   const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 50;
   const result = await getRecentEmailLogs({
@@ -8189,6 +8538,88 @@ app.get("/api/admin/email-logs", async (req, res) => {
     success: true,
     ...result
   });
+});
+app.get("/api/store-operations", async (_req, res) => {
+  const config = await getActiveStoreOperations();
+  return res.json({ success: true, config });
+});
+app.put("/api/admin/store-operations", requireAdminAuth, async (req, res) => {
+  const body = req.body || {};
+  const nextConfig = {
+    isCustomConfigActive: body.isCustomConfigActive !== void 0 ? Boolean(body.isCustomConfigActive) : true,
+    deliveryFee: Math.max(0, Number(body.deliveryFee ?? serverStoreOperations.deliveryFee ?? 39)),
+    freeDeliveryAbove: Math.max(0, Number(body.freeDeliveryAbove ?? serverStoreOperations.freeDeliveryAbove ?? 400)),
+    minOrderAmount: Math.max(0, Number(body.minOrderAmount ?? serverStoreOperations.minOrderAmount ?? 0)),
+    taxRatePercent: Math.max(0, Math.min(28, Number(body.taxRatePercent ?? serverStoreOperations.taxRatePercent ?? 5))),
+    packagingFee: Math.max(0, Number(body.packagingFee ?? serverStoreOperations.packagingFee ?? 0)),
+    pauseNewOrders: Boolean(body.pauseNewOrders),
+    pauseReason: String(body.pauseReason || "").trim().slice(0, 200),
+    openingHoursLabel: String(body.openingHoursLabel || serverStoreOperations.openingHoursLabel || "07:00 AM - 11:00 PM").trim().slice(0, 80),
+    serviceableAreas: Array.isArray(body.serviceableAreas) ? body.serviceableAreas.map((a) => String(a).trim()).filter(Boolean) : serverStoreOperations.serviceableAreas,
+    lastUpdated: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const saved = await persistStoreOperations(nextConfig);
+  return res.json({ success: true, config: saved });
+});
+app.get("/api/support-tickets", async (req, res) => {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.authenticated) {
+    return res.status(401).json({ success: false, error: "Authentication required to view support tickets." });
+  }
+  const tickets = await getActiveSupportTickets();
+  if (caller.isAdmin) {
+    return res.json({ success: true, tickets });
+  }
+  const ownTickets = tickets.filter((t) => String(t.customerId || "") === caller.userId);
+  return res.json({ success: true, tickets: ownTickets });
+});
+app.post("/api/support-tickets", async (req, res) => {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.authenticated) {
+    return res.status(401).json({ success: false, error: "Authentication required to submit a support ticket." });
+  }
+  const { subject, description, category, orderId, customerName, customerPhone } = req.body || {};
+  if (!subject || !String(subject).trim() || !description || !String(description).trim()) {
+    return res.status(400).json({ success: false, error: "Subject and description are required." });
+  }
+  const tickets = await getActiveSupportTickets();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const allowedCategories = ["Order Issue", "Payment / Refund", "Delivery Delay", "Account / App", "General"];
+  const ticket = {
+    id: `tkt_${Date.now()}_${crypto7.randomBytes(2).toString("hex")}`,
+    customerId: caller.userId,
+    customerName: String(customerName || caller.email || caller.phone || "Customer").trim().slice(0, 80),
+    customerEmail: caller.email || "",
+    customerPhone: String(customerPhone || caller.phone || "").trim().slice(0, 20),
+    orderId: orderId ? String(orderId).trim().slice(0, 64) : void 0,
+    category: allowedCategories.includes(category) ? category : "General",
+    subject: String(subject).trim().slice(0, 120),
+    description: String(description).trim().slice(0, 1e3),
+    status: "open",
+    createdAt: now,
+    updatedAt: now
+  };
+  await persistSupportTickets([ticket, ...tickets]);
+  return res.status(201).json({ success: true, ticket });
+});
+app.put("/api/admin/support-tickets/:id", requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { status, adminReply } = req.body || {};
+  const tickets = await getActiveSupportTickets();
+  const idx = tickets.findIndex((t) => String(t.id) === String(id));
+  if (idx === -1) {
+    return res.status(404).json({ success: false, error: "Support ticket not found." });
+  }
+  const allowedStatuses = ["open", "in_progress", "resolved"];
+  const nextStatus = allowedStatuses.includes(status) ? status : tickets[idx].status;
+  tickets[idx] = {
+    ...tickets[idx],
+    status: nextStatus,
+    adminReply: adminReply !== void 0 ? String(adminReply).trim().slice(0, 500) : tickets[idx].adminReply,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  await persistSupportTickets(tickets);
+  return res.json({ success: true, ticket: tickets[idx] });
 });
 app.post("/api/recommendations", async (req, res) => {
   const { orders, catalog } = req.body;
@@ -8972,22 +9403,6 @@ app.post(["/api/auth/verify-role", "/auth/verify-role"], (req, res) => {
     isAuthorizedAdmin: verified.role === "admin" || verified.role === "super_admin"
   });
 });
-function requireAdminAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : req.body?.adminToken || req.query?.adminToken || "";
-  if (!token) {
-    return res.status(401).json({ success: false, error: "Unauthorized: Active administrator authorization required." });
-  }
-  const verified = verifySignedSessionToken(token);
-  if (!verified.valid) {
-    return res.status(401).json({ success: false, error: "Unauthorized: Invalid or expired administrator session." });
-  }
-  if (verified.role !== "admin" && verified.role !== "super_admin") {
-    return res.status(403).json({ success: false, error: "Forbidden: Only an Admin or Super Admin can access or modify these settings." });
-  }
-  req.user = { phone: verified.phone, role: verified.role };
-  next();
-}
 app.get("/api/admin/diagnostics/supabase", requireAdminAuth, async (_req, res) => {
   try {
     const diagnostic = await checkServerSupabaseDiagnostics();
@@ -9243,9 +9658,10 @@ app.get("/api/orders", async (req, res) => {
       }
     }
     const orderMap = /* @__PURE__ */ new Map();
+    const isHiddenForNonAdmin = (ord) => !caller.isAdmin && Boolean(ord?.hiddenByCustomer || ord?.hidden_by_customer || ord?.address?.checkout_data?.hiddenByCustomer);
     for (const [id, order] of serverOrders.entries()) {
       if (!caller.isAdmin) {
-        if (isOrderOwnedByCaller(order, caller)) {
+        if (isOrderOwnedByCaller(order, caller) && !isHiddenForNonAdmin(order)) {
           orderMap.set(String(id), order);
         }
         continue;
@@ -9280,7 +9696,7 @@ app.get("/api/orders", async (req, res) => {
       const { data, error } = await query.order("created_at", { ascending: false });
       if (!error && Array.isArray(data)) {
         for (const row of data) {
-          if (caller.isAdmin || isOrderOwnedByCaller(row, caller)) {
+          if (caller.isAdmin || isOrderOwnedByCaller(row, caller) && !isHiddenForNonAdmin(row)) {
             orderMap.set(String(row.id), row);
           }
         }
@@ -9311,20 +9727,117 @@ app.post("/api/orders", async (req, res) => {
         return res.status(403).json({ success: false, error: "Forbidden: Cannot place an order under another customer ID." });
       }
     }
+    const storeOps = await getActiveStoreOperations();
+    if (storeOps.isCustomConfigActive && storeOps.pauseNewOrders && !caller.isAdmin) {
+      return res.status(503).json({
+        success: false,
+        code: "STORE_PAUSED",
+        error: storeOps.pauseReason || "Orders are temporarily paused by the store administrator. Please check back shortly."
+      });
+    }
     if (!Array.isArray(order.items) || order.items.length === 0) {
       return res.status(400).json({ success: false, error: "Order must contain at least one food item." });
     }
-    const computedFinalAmount = Number(order.finalAmount !== void 0 ? order.finalAmount : order.final_amount ?? 0);
-    if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
-      return res.status(400).json({ success: false, error: "Invalid order total amount." });
+    const headerIdem = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"].trim() : "";
+    const idempotencyKey = headerIdem || (order.idempotencyKey ? String(order.idempotencyKey).trim() : "");
+    if (idempotencyKey) {
+      for (const existingOrd of serverOrders.values()) {
+        if (existingOrd?.idempotencyKey === idempotencyKey && isOrderOwnedByCaller(existingOrd, caller)) {
+          return res.status(200).json({
+            success: true,
+            deduplicated: true,
+            orderId: existingOrd.id,
+            supabaseSaved: true,
+            order: existingOrd
+          });
+        }
+      }
     }
     if (!order.id) {
       order.id = `order_${Date.now()}_${crypto7.randomBytes(2).toString("hex")}`;
     }
     const authoritativeCustomerId = caller.isAdmin ? suppliedCustomerId || caller.userId : caller.userId;
     const existingServerOrder = serverOrders.get(String(order.id));
-    if (existingServerOrder && !isOrderOwnedByCaller(existingServerOrder, caller)) {
-      return res.status(403).json({ success: false, error: "Forbidden: Order ID belongs to another customer." });
+    if (existingServerOrder) {
+      if (!isOrderOwnedByCaller(existingServerOrder, caller)) {
+        return res.status(403).json({ success: false, error: "Forbidden: Order ID belongs to another customer." });
+      }
+      return res.status(200).json({
+        success: true,
+        deduplicated: true,
+        orderId: existingServerOrder.id,
+        supabaseSaved: true,
+        order: existingServerOrder
+      });
+    }
+    let catalogSubtotal = 0;
+    const catalogMap = new Map(serverDishes);
+    try {
+      const publicClient = getPublicSupabaseServerClient();
+      const itemIds = order.items.map((it) => String(it?.foodItem?.id || it?.id || "").trim()).filter(Boolean);
+      if (itemIds.length > 0 && publicClient) {
+        const { data: dbDishes } = await publicClient.from("food_items").select("id,name,price,is_available").in("id", itemIds);
+        if (Array.isArray(dbDishes)) {
+          for (const row of dbDishes) {
+            catalogMap.set(String(row.id), {
+              ...catalogMap.get(String(row.id)) || {},
+              id: String(row.id),
+              name: row.name,
+              price: Number(row.price),
+              is_available: row.is_available,
+              isAvailable: row.is_available !== false
+            });
+          }
+        }
+      }
+    } catch {
+    }
+    for (const item of order.items) {
+      const qty = Math.floor(Number(item?.quantity || 0));
+      if (!Number.isFinite(qty) || qty <= 0 || qty > 99) {
+        return res.status(400).json({ success: false, error: "Invalid item quantity." });
+      }
+      const itemId = String(item?.foodItem?.id || item?.id || "").trim();
+      const catalogDish = itemId ? catalogMap.get(itemId) : null;
+      if (catalogDish && (catalogDish.isAvailable === false || catalogDish.is_available === false)) {
+        return res.status(400).json({
+          success: false,
+          code: "ITEM_UNAVAILABLE",
+          error: `"${catalogDish.name || "Selected dish"}" is currently out of stock.`
+        });
+      }
+      const clientBasePrice = Number(
+        item?.foodItem?.discountPrice && item.foodItem.discountPrice < item.foodItem.price ? item.foodItem.discountPrice : item?.foodItem?.price ?? item?.price ?? 0
+      );
+      const authoritativeBasePrice = catalogDish ? catalogDish.discountPrice && catalogDish.discountPrice < catalogDish.price ? Number(catalogDish.discountPrice) : Number(catalogDish.price) : Math.max(0, clientBasePrice);
+      let customizationExtra = 0;
+      if (item?.selectedCustomizations && typeof item.selectedCustomizations === "object") {
+        for (const choice of Object.values(item.selectedCustomizations)) {
+          if (choice && typeof choice.price === "number" && choice.price > 0) {
+            customizationExtra += Math.min(choice.price, 500);
+          }
+        }
+      }
+      catalogSubtotal += (authoritativeBasePrice + customizationExtra) * qty;
+    }
+    if (storeOps.isCustomConfigActive && storeOps.minOrderAmount > 0 && catalogSubtotal < storeOps.minOrderAmount && !caller.isAdmin) {
+      return res.status(400).json({
+        success: false,
+        code: "BELOW_MIN_ORDER",
+        error: `Minimum order subtotal is \u20B9${storeOps.minOrderAmount}. Current subtotal is \u20B9${catalogSubtotal}.`
+      });
+    }
+    const requestedDiscount = Math.max(0, Number(order.discount || 0));
+    const authoritativeDiscount = Math.min(catalogSubtotal, requestedDiscount);
+    const subtotalAfterDiscount = Math.max(0, catalogSubtotal - authoritativeDiscount);
+    const authoritativeDeliveryFee = caller.isAdmin && order.deliveryFee !== void 0 ? Math.max(0, Number(order.deliveryFee)) : storeOps.isCustomConfigActive ? catalogSubtotal > storeOps.freeDeliveryAbove ? 0 : storeOps.deliveryFee : catalogSubtotal > 400 ? 0 : 39;
+    const authoritativePackagingFee = caller.isAdmin && order.packagingFee !== void 0 ? Math.max(0, Number(order.packagingFee)) : storeOps.isCustomConfigActive ? storeOps.packagingFee : 0;
+    const taxRate = storeOps.isCustomConfigActive ? storeOps.taxRatePercent : 5;
+    const authoritativeTax = Math.round(catalogSubtotal * (taxRate / 100));
+    const authoritativeTip = Math.max(0, Math.min(5e3, Number(order.tip || 0)));
+    const computedFinalAmount = caller.isAdmin && order.finalAmount !== void 0 ? Math.max(0, Number(order.finalAmount)) : Math.max(0, subtotalAfterDiscount + authoritativeDeliveryFee + authoritativePackagingFee + authoritativeTax + authoritativeTip);
+    if (Number.isNaN(computedFinalAmount) || computedFinalAmount < 0) {
+      return res.status(400).json({ success: false, error: "Invalid order total amount." });
     }
     const checkoutMeta = order.address && typeof order.address === "object" && order.address.checkout_data || {};
     const resolvedCustomerEmail = String(
@@ -9345,6 +9858,17 @@ app.post("/api/orders", async (req, res) => {
       customer_email: resolvedCustomerEmail,
       restaurantName: resolvedRestaurantName,
       restaurant_name: resolvedRestaurantName,
+      subtotal: catalogSubtotal,
+      discount: authoritativeDiscount,
+      deliveryFee: authoritativeDeliveryFee,
+      delivery_fee: authoritativeDeliveryFee,
+      packagingFee: authoritativePackagingFee,
+      packaging_fee: authoritativePackagingFee,
+      tax: authoritativeTax,
+      tip: authoritativeTip,
+      finalAmount: computedFinalAmount,
+      final_amount: computedFinalAmount,
+      idempotencyKey: idempotencyKey || void 0,
       customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : "",
       customer_whatsapp: parsedWa?.valid ? parsedWa.e164 : "",
       whatsappOptIn: explicitOptIn,
@@ -9391,6 +9915,7 @@ app.post("/api/orders", async (req, res) => {
           customerWhatsappNumber: parsedWa?.valid ? parsedWa.e164 : null,
           whatsappOptIn: explicitOptIn,
           restaurantName: resolvedRestaurantName,
+          idempotencyKey: idempotencyKey || null,
           placedAt: normalizedOrder.date || (/* @__PURE__ */ new Date()).toISOString()
         };
         const basePayload = {
@@ -9399,12 +9924,12 @@ app.post("/api/orders", async (req, res) => {
           customer_phone: String(normalizedOrder.customerPhone || normalizedOrder.customer_phone || caller.phone || ""),
           customer_name: String(normalizedOrder.customerName || normalizedOrder.customer_name || "Customer"),
           items: Array.isArray(normalizedOrder.items) ? normalizedOrder.items : [],
-          subtotal: Number(normalizedOrder.subtotal || 0),
-          discount: Number(normalizedOrder.discount || 0),
-          delivery_fee: Number(normalizedOrder.deliveryFee !== void 0 ? normalizedOrder.deliveryFee : normalizedOrder.delivery_fee || 0),
-          packaging_fee: Number(normalizedOrder.packagingFee !== void 0 ? normalizedOrder.packagingFee : normalizedOrder.packaging_fee || 0),
-          tax: Number(normalizedOrder.tax || 0),
-          tip: Number(normalizedOrder.tip || 0),
+          subtotal: catalogSubtotal,
+          discount: authoritativeDiscount,
+          delivery_fee: authoritativeDeliveryFee,
+          packaging_fee: authoritativePackagingFee,
+          tax: authoritativeTax,
+          tip: authoritativeTip,
           final_amount: computedFinalAmount,
           status: String(normalizedOrder.status || "accepted"),
           address: addressObj,
@@ -9492,7 +10017,7 @@ app.put("/api/orders/:id", async (req, res) => {
     let updates = rawUpdates;
     if (!caller.isAdmin) {
       updates = {};
-      const allowedCustomerStatuses = ["accepted", "preparing", "picked", "on_the_way", "delivered", "cancelled"];
+      const allowedCustomerStatuses = ["placed", "accepted", "preparing", "ready", "picked", "on_the_way", "delivered", "cancelled"];
       if (rawUpdates.status !== void 0) {
         const nextSt = String(rawUpdates.status).toLowerCase();
         if (!allowedCustomerStatuses.includes(nextSt)) {
@@ -9515,6 +10040,7 @@ app.put("/api/orders/:id", async (req, res) => {
         "deliveryPartnerRatingComment",
         "instructions",
         "deliveryInstructions",
+        "cancellationReason",
         "trackingHistory",
         "deliveryPartnerStatus",
         "eta"
@@ -9525,6 +10051,15 @@ app.put("/api/orders/:id", async (req, res) => {
     }
     const previousStatus = String(existing.status || "").toLowerCase();
     const merged = { ...existing, ...updates, id: String(id), updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    if (updates.rejectionReason || updates.cancellationReason) {
+      const addrObj = typeof merged.address === "object" && merged.address !== null ? { ...merged.address } : { formatted: String(merged.address || "") };
+      addrObj.checkout_data = {
+        ...addrObj.checkout_data || {},
+        ...updates.rejectionReason ? { rejectionReason: String(updates.rejectionReason).trim() } : {},
+        ...updates.cancellationReason ? { cancellationReason: String(updates.cancellationReason).trim() } : {}
+      };
+      merged.address = addrObj;
+    }
     serverOrders.set(String(id), merged);
     persistServerOrders(serverOrders);
     try {
@@ -9537,7 +10072,9 @@ app.put("/api/orders/:id", async (req, res) => {
         if (updates.paymentStatus) updatePayload.payment_status = updates.paymentStatus;
         if (updates.deliveryInstructions) updatePayload.instructions = updates.deliveryInstructions;
         if (caller.isAdmin && updates.finalAmount !== void 0) updatePayload.final_amount = updates.finalAmount;
-        if (caller.isAdmin && updates.address) updatePayload.address = updates.address;
+        if (caller.isAdmin && updates.address || updates.rejectionReason || updates.cancellationReason) {
+          updatePayload.address = merged.address;
+        }
         if (Object.keys(updatePayload).length > 0) {
           await dbClient.from("orders").update(updatePayload).eq("id", id);
         }
@@ -9562,7 +10099,7 @@ app.delete("/api/orders/:id", async (req, res) => {
   try {
     const caller = await resolveCallerIdentity(req);
     if (!caller.authenticated) {
-      return res.status(401).json({ success: false, error: "Authentication required to delete an order." });
+      return res.status(401).json({ success: false, error: "Authentication required to remove an order." });
     }
     const { id } = req.params;
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
@@ -9581,6 +10118,28 @@ app.delete("/api/orders/:id", async (req, res) => {
     if (!isOrderOwnedByCaller(existing, caller)) {
       return res.status(403).json({ success: false, error: "Forbidden: You cannot delete another customer's order." });
     }
+    if (!caller.isAdmin || req.query?.archiveOnly === "true") {
+      const addrObj = typeof existing.address === "object" && existing.address !== null ? { ...existing.address } : { formatted: String(existing.address || "") };
+      addrObj.checkout_data = {
+        ...addrObj.checkout_data || {},
+        hiddenByCustomer: true,
+        archivedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      const archived = {
+        ...existing,
+        hiddenByCustomer: true,
+        address: addrObj
+      };
+      serverOrders.set(String(id), archived);
+      persistServerOrders(serverOrders);
+      try {
+        if (dbClient) {
+          await dbClient.from("orders").update({ address: addrObj }).eq("id", String(id));
+        }
+      } catch {
+      }
+      return res.json({ success: true, archivedId: String(id), archived: true });
+    }
     serverOrders.delete(String(id));
     persistServerOrders(serverOrders);
     try {
@@ -9592,7 +10151,7 @@ app.delete("/api/orders/:id", async (req, res) => {
     return res.json({ success: true, deletedId: String(id) });
   } catch (e) {
     console.error("Exception in DELETE /api/orders/:id:", e);
-    return res.status(500).json({ success: false, error: "Failed to delete order." });
+    return res.status(500).json({ success: false, error: "Failed to remove order." });
   }
 });
 app.get("/api/payment/phonepe/status", (_req, res) => {
@@ -10187,6 +10746,30 @@ app.post("/api/admin/whatsapp/retry/:notificationId", requireAdminAuth, async (r
     return res.status(500).json({ success: false, error: err?.message || "Failed to retry notification." });
   }
 });
+app.post("/api/admin/whatsapp/webhook-events/:webhookEventId/retry", requireAdminAuth, async (req, res) => {
+  try {
+    const rawWebhookEventId = String(req.params.webhookEventId || "").trim();
+    if (!rawWebhookEventId || rawWebhookEventId.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(rawWebhookEventId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid webhook event ID format."
+      });
+    }
+    const outcome = await retryFailedWebhookEvent(rawWebhookEventId, resolveOrderForNotificationRetry);
+    if (!outcome.found) {
+      return res.status(404).json(outcome);
+    }
+    if (outcome.status === "unlinked" || outcome.status === "unlinked_invalid_signature" || outcome.status === "order_not_found") {
+      return res.status(422).json(outcome);
+    }
+    return res.json(outcome);
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || "Failed to retry webhook event."
+    });
+  }
+});
 app.post("/api/admin/order-notifications/resend/:orderId", requireAdminAuth, async (req, res) => {
   const { orderId } = req.params;
   const order = await resolveOrderForNotificationRetry(String(orderId));
@@ -10496,11 +11079,30 @@ app.post("/api/admin/dishes/seed", requireAdminAuth, async (_req, res) => {
     message: `Menu catalog seeded with ${serverDishes.size} dishes successfully.`
   });
 });
-var serverDeliveryPartners = [];
-app.get("/api/delivery-partners", (_req, res) => {
+var serverDeliveryPartners = loadDeliveryPartnersSync();
+app.get("/api/delivery-partners", requireAdminAuth, async (_req, res) => {
+  try {
+    const { client } = getAdminSupabaseServerClient();
+    if (client && serverDeliveryPartners.length === 0) {
+      const { data } = await client.from("app_settings").select("value").eq("key", "delivery_partners").maybeSingle();
+      if (Array.isArray(data?.value)) {
+        serverDeliveryPartners = data.value;
+      }
+    }
+  } catch {
+  }
   res.json(serverDeliveryPartners);
 });
-app.post("/api/admin/delivery-partners", requireAdminAuth, (req, res) => {
+app.put("/api/admin/delivery-partners/sync", requireAdminAuth, async (req, res) => {
+  const { partners } = req.body || {};
+  if (!Array.isArray(partners)) {
+    return res.status(400).json({ success: false, error: "partners array is required." });
+  }
+  serverDeliveryPartners = partners;
+  await persistDeliveryPartners(serverDeliveryPartners);
+  res.json({ success: true, count: serverDeliveryPartners.length });
+});
+app.post("/api/admin/delivery-partners", requireAdminAuth, async (req, res) => {
   const { name, phone, vehicleType, bikeNumber, address } = req.body;
   if (!name || !phone) {
     return res.status(400).json({ error: "Partner name and mobile phone are required." });
@@ -10524,9 +11126,10 @@ app.post("/api/admin/delivery-partners", requireAdminAuth, (req, res) => {
     earnings: []
   };
   serverDeliveryPartners = [newPartner, ...serverDeliveryPartners];
+  await persistDeliveryPartners(serverDeliveryPartners);
   res.status(201).json({ success: true, partner: newPartner });
 });
-app.put("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+app.put("/api/admin/delivery-partners/:id", requireAdminAuth, async (req, res) => {
   const { id } = req.params;
   const index = serverDeliveryPartners.findIndex((p) => String(p.id) === String(id));
   if (index === -1) return res.status(404).json({ error: "Delivery partner not found." });
@@ -10535,14 +11138,16 @@ app.put("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
     ...req.body,
     id: serverDeliveryPartners[index].id
   };
+  await persistDeliveryPartners(serverDeliveryPartners);
   res.json({ success: true, partner: serverDeliveryPartners[index] });
 });
-app.delete("/api/admin/delivery-partners/:id", requireAdminAuth, (req, res) => {
+app.delete("/api/admin/delivery-partners/:id", requireAdminAuth, async (req, res) => {
   const { id } = req.params;
   serverDeliveryPartners = serverDeliveryPartners.filter((p) => String(p.id) !== String(id));
+  await persistDeliveryPartners(serverDeliveryPartners);
   res.json({ success: true, message: "Delivery partner deleted successfully." });
 });
-app.post("/api/admin/reset-data", requireAdminAuth, (req, res) => {
+app.post("/api/admin/reset-data", requireAdminAuth, async (req, res) => {
   const { confirmation, scope } = req.body;
   if (confirmation !== "RESET") {
     return res.status(400).json({
@@ -10555,6 +11160,7 @@ app.post("/api/admin/reset-data", requireAdminAuth, (req, res) => {
   }
   if (!scope || scope === "all_admin_data" || scope === "delivery_partners") {
     serverDeliveryPartners = [];
+    await persistDeliveryPartners(serverDeliveryPartners);
   }
   res.json({
     success: true,

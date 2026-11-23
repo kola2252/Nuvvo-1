@@ -241,6 +241,107 @@ export async function sendEmailOtp(
   }
 }
 
+/**
+ * Sends a password recovery link email via configured Nodemailer SMTP transport.
+ */
+export async function sendPasswordRecoveryEmail(
+  recipientEmail: string,
+  recoveryLink: string,
+  userName?: string
+): Promise<EmailSendResult> {
+  const transporter = createEmailTransporter();
+
+  if (!transporter) {
+    return {
+      success: false,
+      configured: false,
+      provider: 'not_configured',
+      error: "Email delivery credentials (EMAIL_USER & EMAIL_PASS) are not configured on the server."
+    };
+  }
+
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "no-reply@nuvvo.delivery";
+  const greetingName = userName ? `Hello ${userName},` : "Hello,";
+
+  const mailOptions = {
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
+    to: recipientEmail,
+    subject: "Reset Your Nuvvo Password",
+    text: `${greetingName}\n\nWe received a request to reset your Nuvvo account password.\n\nClick the link below to set a new password:\n${recoveryLink}\n\nIf you did not request a password reset, you can safely ignore this email.\n\nThank you,\nNuvvo Team`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Reset Your Nuvvo Password</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 30px 15px;">
+          <tr>
+            <td align="center">
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                <tr>
+                  <td align="center" style="background: linear-gradient(135deg, #ea580c, #f97316); padding: 28px 20px; color: #ffffff;">
+                    <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">NUVVO</h1>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.9;">Password Recovery</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 32px 28px;">
+                    <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 18px; font-weight: 700;">Reset Your Password</h2>
+                    <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.6;">
+                      ${greetingName} Click the button below to choose a new password for your Nuvvo account:
+                    </p>
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin: 24px 0;">
+                      <tr>
+                        <td align="center">
+                          <a href="${recoveryLink}" style="display: inline-block; background: linear-gradient(135deg, #ea580c, #f97316); color: #ffffff; text-decoration: none; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 12px;">
+                            Reset Password
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                    <p style="margin: 0 0 12px 0; color: #64748b; font-size: 12px; line-height: 1.5;">
+                      If the button above does not work, copy and paste this secure link into your browser:
+                    </p>
+                    <p style="margin: 0 0 16px 0; color: #ea580c; font-size: 11px; word-break: break-all; font-family: monospace;">
+                      ${recoveryLink}
+                    </p>
+                    <p style="margin: 0; color: #94a3b8; font-size: 11px;">
+                      If you did not request this password reset, you can safely ignore this email.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      configured: true,
+      provider: 'nodemailer_smtp',
+      messageId: info.messageId
+    };
+  } catch (err: any) {
+    console.error("[Nodemailer Recovery Error]:", err?.message || err);
+    return {
+      success: false,
+      configured: true,
+      provider: 'nodemailer_smtp',
+      error: `SMTP delivery failed: ${err?.message || "Unknown error"}. Check EMAIL_USER and EMAIL_PASS.`
+    };
+  }
+}
+
 export interface OrderEmailItem {
   name: string;
   quantity: number;

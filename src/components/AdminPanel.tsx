@@ -35,7 +35,10 @@ export default function AdminPanel() {
     restaurants, registerNewRestaurantRequest, approveRestaurant, isAdmin, isSuperAdmin, setCurrentPage,
     updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings,
     logs, clearLogs,
-    requestAdminSaveConfirmation
+    requestAdminSaveConfirmation,
+    storeOperationsConfig, updateStoreOperationsConfig,
+    toggleCouponActive,
+    supportTickets, fetchSupportTickets, updateSupportTicket
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'settings' | 'whatsapp' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>(() => {
@@ -80,6 +83,38 @@ export default function AdminPanel() {
 
   // Application Logs Removal Notice
   const [logNotice, setLogNotice] = useState<string | null>(null);
+
+  // Store Operations Config state
+  const [opsCustomActive, setOpsCustomActive] = useState<boolean>(Boolean(storeOperationsConfig?.isCustomConfigActive));
+  const [opsPauseOrders, setOpsPauseOrders] = useState<boolean>(Boolean(storeOperationsConfig?.pauseNewOrders));
+  const [opsPauseReason, setOpsPauseReason] = useState<string>(storeOperationsConfig?.pauseReason || '');
+  const [opsDeliveryFee, setOpsDeliveryFee] = useState<string>(String(storeOperationsConfig?.deliveryFee ?? 39));
+  const [opsFreeAbove, setOpsFreeAbove] = useState<string>(String(storeOperationsConfig?.freeDeliveryAbove ?? 400));
+  const [opsMinOrder, setOpsMinOrder] = useState<string>(String(storeOperationsConfig?.minOrderAmount ?? 0));
+  const [opsTaxPercent, setOpsTaxPercent] = useState<string>(String(storeOperationsConfig?.taxRatePercent ?? 5));
+  const [opsPackagingFee, setOpsPackagingFee] = useState<string>(String(storeOperationsConfig?.packagingFee ?? 0));
+  const [opsOpeningHours, setOpsOpeningHours] = useState<string>(storeOperationsConfig?.openingHoursLabel || '07:00 AM - 11:00 PM');
+  const [opsAreasText, setOpsAreasText] = useState<string>((storeOperationsConfig?.serviceableAreas || []).join(', '));
+  const [opsSaveMessage, setOpsSaveMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!storeOperationsConfig) return;
+    setOpsCustomActive(Boolean(storeOperationsConfig.isCustomConfigActive));
+    setOpsPauseOrders(Boolean(storeOperationsConfig.pauseNewOrders));
+    setOpsPauseReason(storeOperationsConfig.pauseReason || '');
+    setOpsDeliveryFee(String(storeOperationsConfig.deliveryFee ?? 39));
+    setOpsFreeAbove(String(storeOperationsConfig.freeDeliveryAbove ?? 400));
+    setOpsMinOrder(String(storeOperationsConfig.minOrderAmount ?? 0));
+    setOpsTaxPercent(String(storeOperationsConfig.taxRatePercent ?? 5));
+    setOpsPackagingFee(String(storeOperationsConfig.packagingFee ?? 0));
+    setOpsOpeningHours(storeOperationsConfig.openingHoursLabel || '07:00 AM - 11:00 PM');
+    setOpsAreasText((storeOperationsConfig.serviceableAreas || []).join(', '));
+  }, [storeOperationsConfig]);
+
+  // Customer Support Ticket Desk state
+  const [ticketReplies, setTicketReplies] = useState<Record<string, string>>({});
+  const [savingTicketId, setSavingTicketId] = useState<string | null>(null);
+  const [ticketDeskNotice, setTicketDeskNotice] = useState<string | null>(null);
 
   const handleResetSingleSetting = (
     label: string, 
@@ -371,7 +406,11 @@ export default function AdminPanel() {
 
   // COUPON FORM STATE
   const [newCouponCode, setNewCouponCode] = useState('');
+  const [newCouponType, setNewCouponType] = useState<'percentage' | 'flat'>('percentage');
   const [newCouponVal, setNewCouponVal] = useState('15');
+  const [newCouponMinOrder, setNewCouponMinOrder] = useState('150');
+  const [newCouponExpiry, setNewCouponExpiry] = useState('2026-12-31');
+  const [newCouponMaxUses, setNewCouponMaxUses] = useState('');
   const [newCouponDesc, setNewCouponDesc] = useState('');
 
   const revenueSum = useMemo(() => {
@@ -468,22 +507,29 @@ export default function AdminPanel() {
   const handleAddCoupon = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCouponCode.trim()) return;
+    const minOrderVal = Math.max(0, parseFloat(newCouponMinOrder) || 0);
+    const maxUsesNum = newCouponMaxUses.trim() ? Math.max(1, parseInt(newCouponMaxUses, 10) || 0) : undefined;
 
     requestAdminSaveConfirmation({
       title: `Create Promo Coupon: "${newCouponCode.toUpperCase()}"`,
       itemType: 'Promotional Discount (కూపన్ కోడ్ సేవ్)',
-      description: `Value: ${newCouponVal}% Off • Min Order: ₹150 • Description: ${newCouponDesc}`,
+      description: `Value: ${newCouponType === 'flat' ? `₹${newCouponVal}` : `${newCouponVal}%`} Off • Min Order: ₹${minOrderVal} • Expires: ${newCouponExpiry || 'No expiry'}`,
       onConfirm: () => {
         addCoupon({
           code: newCouponCode.toUpperCase(),
-          discountType: 'percentage',
+          discountType: newCouponType,
           value: parseFloat(newCouponVal),
           description: newCouponDesc,
-          minOrder: 150,
-          expiryDate: '2026-12-31'
+          minOrder: minOrderVal,
+          expiryDate: newCouponExpiry || undefined,
+          maxUses: maxUsesNum,
+          isActive: true,
+          usedCount: 0
         });
         setNewCouponCode('');
-        setNewCouponVal('10');
+        setNewCouponVal('15');
+        setNewCouponMinOrder('150');
+        setNewCouponMaxUses('');
         setNewCouponDesc('');
       }
     });
@@ -1213,6 +1259,237 @@ export default function AdminPanel() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* STORE OPERATIONS, DELIVERY FEES, MIN ORDER & SERVICEABLE AREAS */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                    <Settings className="w-4 h-4 text-orange-500" />
+                    <span>Store Operations, Fees &amp; Serviceable Areas</span>
+                  </h4>
+                  <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400">
+                    Chirala baseline defaults (₹39 delivery, free &gt; ₹400, 5% GST, ₹0 packaging) stay intact unless Custom Overrides are enabled.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={opsCustomActive}
+                    onChange={e => setOpsCustomActive(e.target.checked)}
+                    className="w-4 h-4 accent-orange-600 rounded"
+                  />
+                  <span>Enable Custom Operations</span>
+                </label>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/80 dark:border-zinc-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black text-zinc-900 dark:text-zinc-100">Emergency Order Pause</p>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                    Temporarily pause new customer checkouts (requires Custom Operations enabled).
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold text-rose-600 dark:text-rose-400 cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={opsPauseOrders}
+                    onChange={e => {
+                      setOpsPauseOrders(e.target.checked);
+                      if (e.target.checked) setOpsCustomActive(true);
+                    }}
+                    className="w-4 h-4 accent-rose-600 rounded"
+                  />
+                  <span>{opsPauseOrders ? 'Orders Paused' : 'Accepting Orders'}</span>
+                </label>
+              </div>
+
+              {opsPauseOrders && (
+                <input
+                  type="text"
+                  value={opsPauseReason}
+                  onChange={e => setOpsPauseReason(e.target.value)}
+                  placeholder="Pause notice shown to customers (e.g., Heavy rain in Chirala, resuming in 30 mins)"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-rose-200 dark:border-rose-800 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Delivery Fee (₹)</label>
+                  <input type="number" min="0" value={opsDeliveryFee} onChange={e => setOpsDeliveryFee(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Free Delivery Above (₹)</label>
+                  <input type="number" min="0" value={opsFreeAbove} onChange={e => setOpsFreeAbove(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Min Order Amount (₹)</label>
+                  <input type="number" min="0" value={opsMinOrder} onChange={e => setOpsMinOrder(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Tax / GST (%)</label>
+                  <input type="number" min="0" max="28" step="0.5" value={opsTaxPercent} onChange={e => setOpsTaxPercent(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Packaging Fee (₹)</label>
+                  <input type="number" min="0" value={opsPackagingFee} onChange={e => setOpsPackagingFee(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Operating Hours</label>
+                  <input type="text" value={opsOpeningHours} onChange={e => setOpsOpeningHours(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-bold" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-zinc-500 mb-1">Serviceable Areas (comma-separated)</label>
+                <input
+                  type="text"
+                  value={opsAreasText}
+                  onChange={e => setOpsAreasText(e.target.value)}
+                  placeholder="Chirala Town, Perala, Kothapet, Ramapuram Beach, Vodarevu"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                  {opsSaveMessage || ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const areas = opsAreasText.split(',').map(s => s.trim()).filter(Boolean);
+                    requestAdminSaveConfirmation({
+                      title: 'Save Store Operations Configuration',
+                      itemType: 'Store Operations',
+                      description: `Custom Active: ${opsCustomActive ? 'Yes' : 'No (Baseline ₹39 / >₹400 free / 5% GST)'} • Pause: ${opsPauseOrders ? 'Yes' : 'No'}`,
+                      onConfirm: async () => {
+                        await updateStoreOperationsConfig({
+                          isCustomConfigActive: opsCustomActive,
+                          pauseNewOrders: opsPauseOrders,
+                          pauseReason: opsPauseReason.trim(),
+                          deliveryFee: Math.max(0, Number(opsDeliveryFee) || 0),
+                          freeDeliveryAbove: Math.max(0, Number(opsFreeAbove) || 0),
+                          minOrderAmount: Math.max(0, Number(opsMinOrder) || 0),
+                          taxRatePercent: Math.max(0, Number(opsTaxPercent) || 0),
+                          packagingFee: Math.max(0, Number(opsPackagingFee) || 0),
+                          openingHoursLabel: opsOpeningHours.trim() || '07:00 AM - 11:00 PM',
+                          serviceableAreas: areas
+                        });
+                        setOpsSaveMessage('Store operations synced to backend.');
+                        setTimeout(() => setOpsSaveMessage(null), 4000);
+                      }
+                    });
+                  }}
+                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Operations Config</span>
+                </button>
+              </div>
+            </div>
+
+            {/* CUSTOMER SUPPORT TICKETS DESK */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                    <MessageSquare className="w-4 h-4 text-orange-500" />
+                    <span>Customer Support Tickets Desk ({supportTickets.length})</span>
+                  </h4>
+                  <p className="text-[10px] text-zinc-400">Review customer issues, reply directly, and resolve tickets</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchSupportTickets()}
+                  className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-zinc-800 text-xs font-bold text-zinc-600 dark:text-zinc-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              {ticketDeskNotice && (
+                <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                  {ticketDeskNotice}
+                </div>
+              )}
+
+              {supportTickets.length === 0 ? (
+                <p className="text-xs text-zinc-500 py-4 text-center">No customer support tickets submitted yet.</p>
+              ) : (
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {supportTickets.map(ticket => (
+                    <div key={ticket.id} className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/80 dark:border-zinc-700/80 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <span className="font-black text-zinc-900 dark:text-zinc-100">{ticket.subject}</span>
+                          <span className="text-[10px] text-zinc-500 block">
+                            {ticket.customerName} {ticket.customerPhone ? `• ${ticket.customerPhone}` : ''} {ticket.orderId ? `• Order #${ticket.orderId.slice(-6).toUpperCase()}` : ''}
+                          </span>
+                        </div>
+                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          ticket.status === 'resolved'
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                            : ticket.status === 'in_progress'
+                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                            : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'
+                        }`}>
+                          {ticket.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{ticket.description}</p>
+                      <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                        <input
+                          type="text"
+                          value={ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : (ticket.adminReply || '')}
+                          onChange={e => setTicketReplies(prev => ({ ...prev, [ticket.id]: e.target.value }))}
+                          placeholder="Write reply to customer..."
+                          className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-1.5 text-xs"
+                        />
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={savingTicketId === ticket.id}
+                            onClick={async () => {
+                              setSavingTicketId(ticket.id);
+                              const reply = ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : ticket.adminReply;
+                              const res = await updateSupportTicket(ticket.id, { status: 'in_progress', adminReply: reply });
+                              setSavingTicketId(null);
+                              if (res.success) {
+                                setTicketDeskNotice(`Updated ticket "${ticket.subject}".`);
+                                setTimeout(() => setTicketDeskNotice(null), 3000);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] cursor-pointer"
+                          >
+                            Reply
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingTicketId === ticket.id}
+                            onClick={async () => {
+                              setSavingTicketId(ticket.id);
+                              const reply = ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : ticket.adminReply;
+                              const res = await updateSupportTicket(ticket.id, { status: 'resolved', adminReply: reply });
+                              setSavingTicketId(null);
+                              if (res.success) {
+                                setTicketDeskNotice(`Marked ticket "${ticket.subject}" as resolved.`);
+                                setTimeout(() => setTicketDeskNotice(null), 3000);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer"
+                          >
+                            Resolve
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* APPLICATION ACTIVITY AUDIT LOGS & REMOVE LOGS SECTION */}
@@ -3126,7 +3403,7 @@ export default function AdminPanel() {
               </h4>
               
               <form onSubmit={handleAddCoupon} className="space-y-3 text-xs">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   <div>
                     <label className="block text-zinc-500 mb-0.5 font-bold">Voucher Code</label>
                     <input 
@@ -3139,15 +3416,61 @@ export default function AdminPanel() {
                     />
                   </div>
                   <div>
-                    <label className="block text-zinc-500 mb-0.5 font-bold">Discount Percentage (%)</label>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Discount Type</label>
+                    <select
+                      value={newCouponType}
+                      onChange={e => setNewCouponType(e.target.value as 'percentage' | 'flat')}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold outline-none focus:border-orange-500"
+                    >
+                      <option value="percentage">Percentage (%)</option>
+                      <option value="flat">Flat Amount (₹)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">
+                      {newCouponType === 'flat' ? 'Discount Amount (₹)' : 'Discount Percentage (%)'}
+                    </label>
                     <input 
                       type="number" 
                       required 
                       min="1"
-                      max="100"
+                      max={newCouponType === 'percentage' ? '100' : '5000'}
                       value={newCouponVal}
                       onChange={e => setNewCouponVal(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono text-center font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Min Order (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={newCouponMinOrder}
+                      onChange={e => setNewCouponMinOrder(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Expiry Date</label>
+                    <input
+                      type="date"
+                      value={newCouponExpiry}
+                      onChange={e => setNewCouponExpiry(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Max Uses (Opt.)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Unlimited"
+                      value={newCouponMaxUses}
+                      onChange={e => setNewCouponMaxUses(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
                     />
                   </div>
                 </div>
@@ -3180,7 +3503,7 @@ export default function AdminPanel() {
                   <Percent className="w-3.5 h-3.5 text-orange-500" /> Active Promo Codes ({couponsList.length})
                 </h4>
                 {couponsList.length > 0 && (
-                  <span className="text-[10px] text-zinc-400">Click &ldquo;Clear&rdquo; to remove any promo</span>
+                  <span className="text-[10px] text-zinc-400">Pause or remove any promo</span>
                 )}
               </div>
               
@@ -3200,38 +3523,63 @@ export default function AdminPanel() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {couponsList.map(item => (
-                    <div 
-                      key={item.code} 
-                      className="p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl flex items-center justify-between border border-slate-200/70 dark:border-zinc-700/60 hover:border-orange-500/40 transition gap-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-black text-xs border border-orange-500 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded bg-white dark:bg-zinc-900 tracking-wider">
-                            {item.code}
-                          </span>
-                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
-                            {item.value}% OFF
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1 font-medium truncate">
-                          {item.description}
-                        </p>
-                      </div>
-
-                      <button 
-                        type="button"
-                        onClick={() => {
-                          removeCoupon(item.code);
-                        }}
-                        className="text-xs bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 px-2.5 py-1.5 rounded-xl font-bold transition flex items-center gap-1 shrink-0 cursor-pointer active:scale-95"
-                        title={`Clear promo code ${item.code}`}
+                  {couponsList.map(item => {
+                    const isPaused = item.isActive === false;
+                    return (
+                      <div 
+                        key={item.code} 
+                        className={`p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl flex items-center justify-between border border-slate-200/70 dark:border-zinc-700/60 hover:border-orange-500/40 transition gap-3 ${isPaused ? 'opacity-70' : ''}`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Clear</span>
-                      </button>
-                    </div>
-                  ))}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-black text-xs border border-orange-500 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded bg-white dark:bg-zinc-900 tracking-wider">
+                              {item.code}
+                            </span>
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
+                              {item.discountType === 'flat' ? `₹${item.value} OFF` : `${item.value}% OFF`}
+                            </span>
+                            <span className="text-[10px] font-bold text-zinc-500">Min ₹{item.minOrder}</span>
+                            {item.expiryDate && (
+                              <span className="text-[10px] font-mono text-zinc-400">Exp {item.expiryDate}</span>
+                            )}
+                            {typeof item.maxUses === 'number' && (
+                              <span className="text-[10px] font-mono text-indigo-500">
+                                Uses {item.usedCount || 0}/{item.maxUses}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1 font-medium truncate">
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleCouponActive(item.code)}
+                            className={`text-[11px] px-2.5 py-1.5 rounded-xl font-bold transition cursor-pointer ${
+                              isPaused
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                            }`}
+                          >
+                            {isPaused ? 'Activate' : 'Pause'}
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              removeCoupon(item.code);
+                            }}
+                            className="text-xs bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 px-2.5 py-1.5 rounded-xl font-bold transition flex items-center gap-1 shrink-0 cursor-pointer active:scale-95"
+                            title={`Clear promo code ${item.code}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Clear</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

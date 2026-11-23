@@ -43,7 +43,11 @@ export function buildSupabaseOrderPayload(order: Order): Record<string, any> {
     whatsappOptIn: Boolean(order.whatsappOptIn),
     whatsappOptInAt: order.whatsappOptInAt || null,
     restaurantName: order.restaurantName || null,
-    placedAt: order.date || new Date().toISOString()
+    placedAt: order.date || new Date().toISOString(),
+    rejectionReason: order.rejectionReason || null,
+    cancellationReason: order.cancellationReason || null,
+    idempotencyKey: order.idempotencyKey || null,
+    hiddenByCustomer: Boolean(order.hiddenByCustomer)
   };
 
   return {
@@ -142,7 +146,11 @@ export function mapSupabaseRowToOrder(row: any): Order {
     pointsEarned: checkoutData.pointsEarned,
     pointsRedeemed: checkoutData.pointsRedeemed,
     rating: row.rating ? Number(row.rating) : (checkoutData.rating ? Number(checkoutData.rating) : undefined),
-    feedback: row.feedback || checkoutData.feedback
+    feedback: row.feedback || checkoutData.feedback,
+    rejectionReason: row.rejection_reason || row.rejectionReason || checkoutData.rejectionReason || undefined,
+    cancellationReason: row.cancellation_reason || row.cancellationReason || checkoutData.cancellationReason || undefined,
+    idempotencyKey: row.idempotency_key || checkoutData.idempotencyKey || undefined,
+    hiddenByCustomer: Boolean(row.hidden_by_customer || row.hiddenByCustomer || checkoutData.hiddenByCustomer)
   };
 }
 
@@ -182,7 +190,11 @@ export async function fetchUserOrdersFromSupabase(
         if (resp.ok) {
           const rows = await resp.json();
           if (Array.isArray(rows)) {
-            return { data: rows.map(mapSupabaseRowToOrder), error: null, fromSupabase: true };
+            return {
+              data: rows.map(mapSupabaseRowToOrder).filter(o => !o.hiddenByCustomer),
+              error: null,
+              fromSupabase: true
+            };
           }
         }
       } catch {}
@@ -206,7 +218,11 @@ export async function fetchUserOrdersFromSupabase(
         }
 
         if (data && Array.isArray(data)) {
-          return { data: data.map(mapSupabaseRowToOrder), error: null, fromSupabase: true };
+          return {
+            data: data.map(mapSupabaseRowToOrder).filter(o => !o.hiddenByCustomer),
+            error: null,
+            fromSupabase: true
+          };
         }
 
         return { data: [], error: null, fromSupabase: true };
@@ -296,6 +312,7 @@ export async function saveOrderToSupabase(order: Order): Promise<{ success: bool
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
+      if (order.idempotencyKey) headers['Idempotency-Key'] = order.idempotencyKey;
       const resp = await fetch('/api/orders', {
         method: 'POST',
         headers,
@@ -424,22 +441,14 @@ export async function cancelOrderInSupabase(
     const token = await getActiveAuthToken();
 
     if (clearFromHistory) {
-      const { error: delError } = await supabase
-        .from('orders')
-        .delete()
-        .eq('id', orderId);
-
-      if (delError && delError.code !== 'PGRST205') {
-        console.warn('[Supabase Orders] cancel delete error:', delError.message);
-      }
-
+      // Soft-archive for customer view via authenticated backend DELETE (which hides row for customer while preserving accounting records)
       try {
         const headers: Record<string, string> = {};
         if (token) headers.Authorization = `Bearer ${token}`;
-        fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+        await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
           method: 'DELETE',
           headers
-        }).catch(() => {});
+        });
       } catch {}
 
       invalidateOrders();
@@ -448,7 +457,8 @@ export async function cancelOrderInSupabase(
 
     const patchPayload: Partial<Order> = {
       status: 'cancelled',
-      paymentStatus: 'refund_initiated'
+      paymentStatus: 'refund_initiated',
+      ...(options?.cancellationReason ? { cancellationReason: options.cancellationReason } : {})
     };
 
     const res = await updateOrderInSupabase(orderId, patchPayload);

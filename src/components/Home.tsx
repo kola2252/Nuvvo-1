@@ -36,11 +36,14 @@ export default function Home() {
     favoriteFoods,
     toggleFavoriteFood,
     setCurrentPage,
-    language
+    language,
+    getRestaurantOpenStatus
   } = useApp();
 
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [vegOnly, setVegOnly] = useState<boolean>(false);
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All');
+  const [selectedRestaurantId, setSelectedRestaurantId] = useState<string>('All');
+  const [dietFilter, setDietFilter] = useState<'all' | 'veg' | 'non-veg'>('all');
   const [showAddressModal, setShowAddressModal] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
@@ -64,6 +67,23 @@ export default function Home() {
 
   const categories = ['All', 'Biryani', 'Starters', 'Fast Food', 'Desserts', 'Beverages', 'Thali'];
 
+  // Dynamic subcategories for the currently selected category
+  const subcategories = useMemo(() => {
+    if (selectedCategory === 'All') return [];
+    const set = new Set<string>();
+    for (const item of foodCatalog) {
+      if (item.category?.toLowerCase() === selectedCategory.toLowerCase() && item.subcategory?.trim()) {
+        set.add(item.subcategory.trim());
+      }
+    }
+    return Array.from(set);
+  }, [foodCatalog, selectedCategory]);
+
+  // Restaurants browse list
+  const visibleRestaurants = useMemo(() => {
+    return (restaurants || []).filter(r => r.isApproved !== false);
+  }, [restaurants]);
+
   // Map cart items by foodId for quick lookup
   const cartItemMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -74,18 +94,29 @@ export default function Home() {
     return map;
   }, [cart]);
 
-  // Filtered dishes based on category, veg indicator, and search query
+  // Filtered dishes based on category, subcategory, restaurant, diet indicator, and search query
   const filteredDishes = useMemo(() => {
     return foodCatalog.filter((item) => {
-      // Category filter
       if (selectedCategory !== 'All') {
         const matchesCat = item.category?.toLowerCase() === selectedCategory.toLowerCase() ||
                            item.subcategory?.toLowerCase() === selectedCategory.toLowerCase();
         if (!matchesCat) return false;
       }
 
-      // Veg only toggle
-      if (vegOnly && item.vegIndicator !== 'veg') {
+      if (selectedSubcategory !== 'All') {
+        if ((item.subcategory || '').toLowerCase() !== selectedSubcategory.toLowerCase()) {
+          return false;
+        }
+      }
+
+      if (selectedRestaurantId !== 'All') {
+        if (item.restaurantId !== selectedRestaurantId) return false;
+      }
+
+      if (dietFilter === 'veg' && item.vegIndicator !== 'veg') {
+        return false;
+      }
+      if (dietFilter === 'non-veg' && item.vegIndicator !== 'non-veg') {
         return false;
       }
 
@@ -95,12 +126,13 @@ export default function Home() {
         const matchesName = item.name.toLowerCase().includes(q);
         const matchesDesc = (item.description || '').toLowerCase().includes(q);
         const matchesCat = (item.category || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesDesc && !matchesCat) return false;
+        const matchesSub = (item.subcategory || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesDesc && !matchesCat && !matchesSub) return false;
       }
 
       return true;
     });
-  }, [foodCatalog, selectedCategory, vegOnly, searchQuery]);
+  }, [foodCatalog, selectedCategory, selectedSubcategory, selectedRestaurantId, dietFilter, searchQuery]);
 
   return (
     <div className="min-h-screen min-h-[100dvh] pb-28 w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3">
@@ -178,7 +210,10 @@ export default function Home() {
             return (
               <button
                 key={cat}
-                onClick={() => setSelectedCategory(cat)}
+                onClick={() => {
+                  setSelectedCategory(cat);
+                  setSelectedSubcategory('All');
+                }}
                 className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${
                   isSelected
                     ? 'bg-orange-600 text-white shadow-sm shadow-orange-500/20'
@@ -191,18 +226,105 @@ export default function Home() {
           })}
         </div>
 
-        <button
-          onClick={() => setVegOnly(!vegOnly)}
-          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-bold shrink-0 border cursor-pointer transition-all ${
-            vegOnly
-              ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
-              : 'bg-white dark:bg-zinc-900 text-zinc-500 dark:text-zinc-400 border-slate-200 dark:border-zinc-800'
-          }`}
-        >
-          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-          <span>Veg</span>
-        </button>
+        <div className="flex items-center gap-1 shrink-0 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-full p-0.5">
+          {([
+            { id: 'all', label: 'All' },
+            { id: 'veg', label: 'Veg', dot: 'bg-emerald-500' },
+            { id: 'non-veg', label: 'Non-Veg', dot: 'bg-rose-500' }
+          ] as const).map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setDietFilter(opt.id)}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-all ${
+                dietFilter === opt.id
+                  ? opt.id === 'veg'
+                    ? 'bg-emerald-600 text-white'
+                    : opt.id === 'non-veg'
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900'
+                  : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'
+              }`}
+            >
+              {'dot' in opt && <span className={`w-1.5 h-1.5 rounded-full ${dietFilter === opt.id ? 'bg-white' : opt.dot}`} />}
+              <span>{opt.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Dynamic Subcategory Filter Pills */}
+      {subcategories.length > 0 && (
+        <div className="mb-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          <button
+            type="button"
+            onClick={() => setSelectedSubcategory('All')}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer border transition-all ${
+              selectedSubcategory === 'All'
+                ? 'bg-orange-100 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 border-orange-300 dark:border-orange-800'
+                : 'bg-white dark:bg-zinc-900 text-zinc-500 border-slate-200 dark:border-zinc-800'
+            }`}
+          >
+            All {selectedCategory}
+          </button>
+          {subcategories.map(sub => (
+            <button
+              key={sub}
+              type="button"
+              onClick={() => setSelectedSubcategory(sub)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer border transition-all ${
+                selectedSubcategory === sub
+                  ? 'bg-orange-100 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 border-orange-300 dark:border-orange-800'
+                  : 'bg-white dark:bg-zinc-900 text-zinc-500 border-slate-200 dark:border-zinc-800'
+              }`}
+            >
+              {sub}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Partner Kitchens / Restaurant Filter Strip */}
+      {visibleRestaurants.length > 0 && (
+        <div className="mb-3 flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+          <button
+            type="button"
+            onClick={() => setSelectedRestaurantId('All')}
+            className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold shrink-0 border cursor-pointer transition-all ${
+              selectedRestaurantId === 'All'
+                ? 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-900 dark:border-zinc-100'
+                : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-800'
+            }`}
+          >
+            All Kitchens ({visibleRestaurants.length})
+          </button>
+          {visibleRestaurants.map(rest => {
+            const restStatus = getRestaurantOpenStatus(rest);
+            const isOpen = restStatus.status === 'open';
+            const isSelected = selectedRestaurantId === rest.id;
+            return (
+              <button
+                key={rest.id}
+                type="button"
+                onClick={() => setSelectedRestaurantId(isSelected ? 'All' : rest.id)}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold shrink-0 border flex items-center gap-1.5 cursor-pointer transition-all ${
+                  isSelected
+                    ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
+                    : 'bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 border-slate-200 dark:border-zinc-800 hover:border-orange-300'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isOpen ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                <span className="truncate max-w-[140px]">{rest.name}</span>
+                {!isOpen && (
+                  <span className={`text-[9px] font-black uppercase ${isSelected ? 'text-orange-100' : 'text-rose-500'}`}>
+                    Closed
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Food Items Catalog */}
       <section className="mt-4">
@@ -231,11 +353,19 @@ export default function Home() {
             {filteredDishes.map((dish) => {
               const qtyInCart = cartItemMap.get(dish.id) || 0;
               const isFav = favoriteFoods.includes(dish.id);
+              const dishRest = dish.restaurantId ? restaurants.find(r => r.id === dish.restaurantId) : undefined;
+              const isKitchenClosed = Boolean(dishRest && getRestaurantOpenStatus(dishRest).status !== 'open');
+              const isOutOfStock = dish.isAvailable === false || dish.is_available === false;
+              const canOrder = !isOutOfStock && !isKitchenClosed;
+              const hasDiscount = Boolean(dish.discountPrice && dish.discountPrice < dish.price);
+              const displayPrice = hasDiscount ? dish.discountPrice! : dish.price;
 
               return (
                 <div
                   key={dish.id}
-                  className="bg-white dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-800/80 rounded-3xl p-3 flex gap-3 shadow-xs hover:shadow-md transition-all group relative"
+                  className={`bg-white dark:bg-zinc-900 border border-slate-200/80 dark:border-zinc-800/80 rounded-3xl p-3 flex gap-3 shadow-xs hover:shadow-md transition-all group relative ${
+                    !canOrder ? 'opacity-80' : ''
+                  }`}
                 >
                   {/* Dish Thumbnail */}
                   <div 
@@ -245,13 +375,18 @@ export default function Home() {
                     <LazyImage
                       src={dish.image}
                       alt={dish.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${!canOrder ? 'grayscale-[45%]' : ''}`}
                     />
                     {dish.vegIndicator && (
                       <span className={`absolute top-1.5 left-1.5 w-4 h-4 rounded-md border flex items-center justify-center bg-white/90 dark:bg-zinc-900/90 ${
                         dish.vegIndicator === 'veg' ? 'border-emerald-600' : 'border-red-600'
                       }`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${dish.vegIndicator === 'veg' ? 'bg-emerald-600' : 'bg-red-600'}`} />
+                      </span>
+                    )}
+                    {!canOrder && (
+                      <span className="absolute bottom-1.5 left-1.5 right-1.5 text-center py-0.5 rounded-md bg-zinc-900/85 text-white text-[9px] font-black uppercase tracking-wider">
+                        {isOutOfStock ? 'Out of Stock' : 'Kitchen Closed'}
                       </span>
                     )}
                   </div>
@@ -264,7 +399,12 @@ export default function Home() {
                           {dish.name}
                         </h3>
                       </div>
-                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 line-clamp-2 mt-1 leading-relaxed">
+                      {dishRest && (
+                        <p className="text-[10px] font-bold text-orange-600 dark:text-orange-400 truncate mt-0.5">
+                          {dishRest.name}
+                        </p>
+                      )}
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 line-clamp-2 mt-0.5 leading-relaxed">
                         {dish.description}
                       </p>
                     </div>
@@ -273,11 +413,11 @@ export default function Home() {
                       <div>
                         <div className="flex items-baseline gap-1.5">
                           <span className="text-sm font-black text-zinc-900 dark:text-zinc-100">
-                            ₹{dish.price}
+                            ₹{displayPrice}
                           </span>
-                          {dish.discountPrice && dish.discountPrice < dish.price && (
+                          {hasDiscount && (
                             <span className="text-[11px] text-zinc-400 line-through">
-                              ₹{dish.discountPrice}
+                              ₹{dish.price}
                             </span>
                           )}
                         </div>
@@ -303,25 +443,35 @@ export default function Home() {
                           </button>
                           <span className="px-2 text-xs font-black">{qtyInCart}</span>
                           <button
+                            disabled={!canOrder}
                             onClick={(e) => {
                               e.stopPropagation();
                               addToCart(dish);
                             }}
-                            className="p-1.5 hover:bg-orange-700 transition-colors cursor-pointer"
+                            className="p-1.5 hover:bg-orange-700 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             <Plus className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       ) : (
                         <button
+                          disabled={!canOrder}
                           onClick={(e) => {
                             e.stopPropagation();
                             addToCart(dish);
                           }}
-                          className="px-3 py-1.5 bg-orange-50 hover:bg-orange-600 text-orange-600 hover:text-white dark:bg-orange-950/40 dark:text-orange-400 dark:hover:bg-orange-600 dark:hover:text-white border border-orange-200 dark:border-orange-800 rounded-xl text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95 flex items-center gap-1"
+                          className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1 ${
+                            canOrder
+                              ? 'bg-orange-50 hover:bg-orange-600 text-orange-600 hover:text-white dark:bg-orange-950/40 dark:text-orange-400 dark:hover:bg-orange-600 dark:hover:text-white border border-orange-200 dark:border-orange-800 cursor-pointer shadow-xs active:scale-95'
+                              : 'bg-slate-100 dark:bg-zinc-800 text-zinc-400 border border-slate-200 dark:border-zinc-700 cursor-not-allowed'
+                          }`}
                         >
-                          <Plus className="w-3 h-3" />
-                          ADD
+                          {canOrder ? (
+                            <>
+                              <Plus className="w-3 h-3" />
+                              ADD
+                            </>
+                          ) : isOutOfStock ? 'Unavailable' : 'Closed'}
                         </button>
                       )}
                     </div>

@@ -20,18 +20,20 @@ import { getUserScopedItem } from '../utils/userScopedStorage';
 
 export default function CartScreen() {
   const { 
-    cart, updateCartQuantity, removeFromCart, currentAddress,
+    cart, updateCartQuantity, removeFromCart, clearCart, currentAddress,
     appliedCoupon, applyCouponCode, removeCouponCode, couponsList,
     deliveryPartnerTip, setDeliveryPartnerTip,
     orderInstructions, setOrderInstructions,
     createNewOrder, setActiveTrackingOrder, setCurrentPage, setSelectedFoodItem,
     user, updateUserProfile, validateDeliveryLocation,
     nuvvoPoints, pointsToRedeem, redeemPointsForDiscount, cancelPointsRedemption,
-    restaurants,
+    restaurants, storePaymentSettings, storeOperationsConfig,
     pageHistory, goBack, closePage
   } = useApp();
 
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'payment'>('cart');
+  const [confirmClearCart, setConfirmClearCart] = useState(false);
+  const [cartCheckoutError, setCartCheckoutError] = useState('');
   const [showAddrModal, setShowAddrModal] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [couponInput, setCouponInput] = useState('');
@@ -40,7 +42,11 @@ export default function CartScreen() {
   const [pointsInput, setPointsInput] = useState('');
   const [pointsError, setPointsError] = useState('');
   const [showCouponsDialog, setShowCouponsDialog] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('UPI');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>(() => {
+    if (storePaymentSettings?.enableCod !== false) return 'COD';
+    if (storePaymentSettings?.enableUpi !== false) return 'UPI';
+    return 'Wallet';
+  });
   const [lastPaymentDetails, setLastPaymentDetails] = useState<any>(null);
   const [phonePeNumber, setPhonePeNumber] = useState(() => user?.phone || '');
 
@@ -158,9 +164,17 @@ export default function CartScreen() {
     pointsDiscount = Math.min(subtotal - discount, pointsToRedeem);
   }
 
-  const deliveryFee = subtotal > 400 ? 0 : 39; // Free delivery threshold
-  const packagingFee = 0; // Packing charges removed (100% Free Packaging)
-  const tax = Math.round(subtotal * 0.05); // 5% GST on hotel foods
+  const useCustomOps = Boolean(storeOperationsConfig?.isCustomConfigActive);
+  const opsDeliveryFee = useCustomOps ? Number(storeOperationsConfig.deliveryFee ?? 39) : 39;
+  const opsFreeAbove = useCustomOps ? Number(storeOperationsConfig.freeDeliveryAbove ?? 400) : 400;
+  const opsPackagingFee = useCustomOps ? Number(storeOperationsConfig.packagingFee ?? 0) : 0;
+  const taxRatePercent = useCustomOps ? Number(storeOperationsConfig.taxRatePercent ?? 5) : 5;
+  const minOrderAmount = useCustomOps ? Number(storeOperationsConfig.minOrderAmount ?? 0) : 0;
+  const isOrdersPaused = Boolean(useCustomOps && storeOperationsConfig.pauseNewOrders);
+
+  const deliveryFee = subtotal > opsFreeAbove ? 0 : opsDeliveryFee;
+  const packagingFee = opsPackagingFee;
+  const tax = Math.round(subtotal * (taxRatePercent / 100));
   const finalAmount = Math.max(0, subtotal - discount - pointsDiscount + deliveryFee + packagingFee + tax + deliveryPartnerTip);
 
   const handleApplyCoupon = (e?: React.FormEvent, directCode?: string) => {
@@ -510,7 +524,41 @@ export default function CartScreen() {
         
         {/* CART ITEMS LIST */}
         <div className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-4">
-          <h3 className="text-xs font-bold font-mono tracking-widest text-zinc-400 uppercase">Items Selected</h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-bold font-mono tracking-widest text-zinc-400 uppercase">
+              Items Selected ({cart.reduce((acc, c) => acc + c.quantity, 0)})
+            </h3>
+            {confirmClearCart ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearCart();
+                    setConfirmClearCart(false);
+                  }}
+                  className="text-[10px] font-black px-2.5 py-1 rounded-lg bg-rose-600 text-white cursor-pointer"
+                >
+                  Confirm Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearCart(false)}
+                  className="text-[10px] font-bold px-2 py-1 rounded-lg bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 cursor-pointer"
+                >
+                  Keep
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmClearCart(true)}
+                className="text-[11px] font-bold text-rose-500 hover:text-rose-600 flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Cart</span>
+              </button>
+            )}
+          </div>
           
           <div className="divide-y divide-slate-100 dark:divide-zinc-800 space-y-3">
             {cart.map((item, idx) => (
@@ -941,11 +989,15 @@ export default function CartScreen() {
 
           <div className="flex justify-between text-xs text-zinc-650 dark:text-zinc-400">
             <span>Packaging Charges</span>
-            <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold uppercase text-[11px]">FREE</span>
+            <span className="font-mono">
+              {packagingFee === 0 ? (
+                <strong className="text-emerald-600 dark:text-emerald-400 uppercase text-[11px]">FREE</strong>
+              ) : `₹${packagingFee}`}
+            </span>
           </div>
 
           <div className="flex justify-between text-xs text-zinc-650 dark:text-zinc-400">
-            <span>Goverment Taxes (5% GST)</span>
+            <span>Government Taxes ({taxRatePercent}% GST)</span>
             <span className="font-mono">₹{tax}</span>
           </div>
 
@@ -1208,19 +1260,49 @@ export default function CartScreen() {
           )}
         </div>
 
+        {isOrdersPaused && (
+          <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs font-bold text-rose-700 dark:text-rose-300 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{storeOperationsConfig.pauseReason || 'Ordering is temporarily paused by store operations. Please check back shortly.'}</span>
+          </div>
+        )}
+
+        {!isOrdersPaused && minOrderAmount > 0 && subtotal < minOrderAmount && (
+          <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-xs font-bold text-amber-800 dark:text-amber-300 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>Minimum order subtotal is ₹{minOrderAmount}. Add ₹{minOrderAmount - subtotal} more to proceed.</span>
+          </div>
+        )}
+
+        {cartCheckoutError && (
+          <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs font-bold text-rose-700 dark:text-rose-300">
+            {cartCheckoutError}
+          </div>
+        )}
+
         {/* LAUNCH PROCEED TO PAYMENT CALL */}
         <button
           id="proceed-to-payment-action-btn"
+          disabled={isOrdersPaused || (minOrderAmount > 0 && subtotal < minOrderAmount)}
           onClick={() => {
+            setCartCheckoutError('');
+            if (isOrdersPaused) {
+              setCartCheckoutError(storeOperationsConfig.pauseReason || 'Ordering is temporarily paused by store operations.');
+              return;
+            }
+            if (minOrderAmount > 0 && subtotal < minOrderAmount) {
+              setCartCheckoutError(`Minimum order subtotal is ₹${minOrderAmount}.`);
+              return;
+            }
             if (!currentAddress) {
-              alert('Kindly configure or select a valid delivery address in your Profile or Cart.');
+              setCartCheckoutError('Kindly configure or select a valid delivery address to continue.');
               setShowAddrModal(true);
               return;
             }
             if (currentAddress.gpsCoordinates) {
               const isValid = validateDeliveryLocation(currentAddress.gpsCoordinates.lat, currentAddress.gpsCoordinates.lng);
               if (!isValid) {
-                alert('Sorry, delivery is currently unavailable for this location. Please adjust your delivery pin closer to active operational sectors.');
+                setCartCheckoutError('Delivery is currently unavailable for this pin location. Please adjust your delivery pin closer to Chirala.');
                 setShowAddrModal(true);
                 return;
               }
@@ -1229,7 +1311,7 @@ export default function CartScreen() {
             if (!waCheck.valid) return;
             setCheckoutStep('payment');
           }}
-          className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white py-4 rounded-3xl font-extrabold transition-all shadow-xl shadow-orange-500/10 flex items-center justify-center gap-2 active:scale-98 cursor-pointer mt-4 group"
+          className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4 rounded-3xl font-extrabold transition-all shadow-xl shadow-orange-500/10 flex items-center justify-center gap-2 active:scale-98 cursor-pointer mt-4 group"
         >
           <span>Proceed to Payment • ₹{finalAmount}</span>
           <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />

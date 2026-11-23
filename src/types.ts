@@ -170,7 +170,7 @@ export interface CartItem {
   selectedCustomizations: { [categoryTitle: string]: CustomizationOption };
 }
 
-export type OrderStatus = 'accepted' | 'preparing' | 'picked' | 'on_the_way' | 'delivered' | 'cancelled';
+export type OrderStatus = 'placed' | 'accepted' | 'preparing' | 'ready' | 'picked' | 'on_the_way' | 'delivered' | 'rejected' | 'cancelled';
 
 export type PaymentStatusType = 
   | 'pending' 
@@ -253,6 +253,10 @@ export interface Order {
   pointsRedeemed?: number;
   rating?: number;
   feedback?: string;
+  rejectionReason?: string;
+  cancellationReason?: string;
+  idempotencyKey?: string;
+  hiddenByCustomer?: boolean;
 }
 
 export interface PointsTransaction {
@@ -390,6 +394,9 @@ export interface Coupon {
   minOrder: number;
   description: string;
   expiryDate?: string;
+  isActive?: boolean;
+  maxUses?: number;
+  usedCount?: number;
 }
 
 export interface AppNotification {
@@ -538,6 +545,36 @@ export interface DesignatedAdmin {
   avatar: string;
   permissions: AdminPermissions;
   joinedAt: string;
+}
+
+export interface StoreOperationsConfig {
+  isCustomConfigActive: boolean;
+  deliveryFee: number;
+  freeDeliveryAbove: number;
+  minOrderAmount: number;
+  taxRatePercent: number;
+  packagingFee: number;
+  pauseNewOrders: boolean;
+  pauseReason?: string;
+  openingHoursLabel?: string;
+  serviceableAreas: string[];
+  lastUpdated?: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  customerId: string;
+  customerName: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  orderId?: string;
+  category: 'Order Issue' | 'Payment / Refund' | 'Delivery Delay' | 'Account / App' | 'General';
+  subject: string;
+  description: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  adminReply?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 

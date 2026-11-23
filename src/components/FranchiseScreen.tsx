@@ -20,6 +20,9 @@ export default function FranchiseScreen() {
     submitFranchiseForm, 
     clickToWhatsAppSupport, 
     user,
+    restaurants,
+    deliveryPartners,
+    orders,
     pageHistory, goBack, closePage
   } = useApp();
 
@@ -239,92 +242,117 @@ export default function FranchiseScreen() {
             </div>
 
             {/* QUICK STATS PANEL */}
-            <div className="grid grid-cols-3 gap-2 mt-5 pt-4 border-t border-zinc-805 text-center">
-              <div>
-                <p className="text-[9px] text-zinc-450 uppercase font-bold">Venues Onboarded</p>
-                <p className="text-sm font-black text-emerald-400 mt-1">12 venues</p>
-              </div>
-              <div>
-                <p className="text-[9px] text-zinc-450 uppercase font-bold">Fleet Size</p>
-                <p className="text-sm font-black text-indigo-400 mt-1">8 riders</p>
-              </div>
-              <div>
-                <p className="text-[9px] text-zinc-450 uppercase font-bold">Volume Month</p>
-                <p className="text-sm font-black text-orange-400 mt-1">₹1,84,500</p>
-              </div>
-            </div>
+            {(() => {
+              const cityKey = (activeFranchiseApp.city || 'Chirala').trim().toLowerCase();
+              const territoryRestaurants = restaurants.filter(r =>
+                !cityKey || (r.address || '').toLowerCase().includes(cityKey) || r.isApproved !== false
+              );
+              const territoryRiders = deliveryPartners.filter(p => p.isApproved);
+              const territoryOrders = orders.filter(o =>
+                o.status !== 'cancelled' &&
+                (!cityKey || !o.address?.city || o.address.city.toLowerCase().includes(cityKey))
+              );
+              const territoryVolume = territoryOrders.reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
+              const commissionEarnings = Math.round(territoryVolume * 0.025 * 100) / 100;
+
+              return (
+                <>
+                  <div className="grid grid-cols-3 gap-2 mt-5 pt-4 border-t border-zinc-805 text-center">
+                    <div>
+                      <p className="text-[9px] text-zinc-450 uppercase font-bold">Venues Onboarded</p>
+                      <p className="text-sm font-black text-emerald-400 mt-1">{territoryRestaurants.length} venues</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-zinc-450 uppercase font-bold">Fleet Size</p>
+                      <p className="text-sm font-black text-indigo-400 mt-1">{territoryRiders.length} riders</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-zinc-450 uppercase font-bold">Volume Month</p>
+                      <p className="text-sm font-black text-orange-400 mt-1">₹{territoryVolume.toLocaleString('en-IN')}</p>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* DYNAMIC ANALYTICS */}
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 border shadow-sm space-y-4">
-            <h4 className="font-extrabold text-orange-500 uppercase tracking-wider text-[11px] flex items-center gap-1.5 border-b pb-2">
-              <TrendingUp className="w-4 h-4" /> Live Regional Performance Metrics
-            </h4>
+          {(() => {
+            const cityKey = (activeFranchiseApp.city || 'Chirala').trim().toLowerCase();
+            const territoryOrders = orders.filter(o =>
+              o.status !== 'cancelled' &&
+              (!cityKey || !o.address?.city || o.address.city.toLowerCase().includes(cityKey))
+            );
+            const territoryVolume = territoryOrders.reduce((sum, o) => sum + Number(o.finalAmount || 0), 0);
+            const commissionEarnings = Math.round(territoryVolume * 0.025 * 100) / 100;
 
-            <div className="grid grid-cols-2 gap-3.5 pt-1">
-              <div className="bg-slate-50 dark:bg-zinc-850 p-3.5 rounded-2xl border text-left">
-                <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Commission Earnings</span>
-                <p className="text-base font-black text-zinc-850 dark:text-zinc-50 mt-1">₹4,612.50</p>
-                <span className="text-[8.5px] text-emerald-500 font-bold">✓ Ready for Withdrawal</span>
-              </div>
-              <div className="bg-slate-50 dark:bg-zinc-850 p-3.5 rounded-2xl border text-left">
-                <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Territory Orders</span>
-                <p className="text-base font-black text-zinc-855 dark:text-zinc-50 mt-1">738 Bills</p>
-                <span className="text-[8.5px] text-indigo-500 font-bold">This month count</span>
-              </div>
-            </div>
+            return (
+              <>
+                <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 border shadow-sm space-y-4">
+                  <h4 className="font-extrabold text-orange-500 uppercase tracking-wider text-[11px] flex items-center gap-1.5 border-b pb-2">
+                    <TrendingUp className="w-4 h-4" /> Live Regional Performance Metrics
+                  </h4>
 
-            <div className="space-y-2 pt-2">
-              <p className="text-[10px] font-extrabold text-zinc-550 uppercase tracking-tight">Active Coverage Zone Map</p>
-              <div className="bg-slate-100 dark:bg-zinc-800 rounded-2xl p-4 flex flex-col justify-center items-center h-28 border border-dashed border-zinc-200 dark:border-zinc-700">
-                <Globe className="w-6 h-6 text-zinc-400 animate-spin" style={{ animationDuration: '8s' }} />
-                <p className="text-[10px] text-zinc-700 dark:text-zinc-300 font-bold mt-2">Active Geo-fence Lock Verified</p>
-                <p className="text-[8.5px] text-zinc-450 mt-0.5">{activeFranchiseApp.city} Urban Circle Zone</p>
-              </div>
-            </div>
-          </div>
+                  <div className="grid grid-cols-2 gap-3.5 pt-1">
+                    <div className="bg-slate-50 dark:bg-zinc-850 p-3.5 rounded-2xl border text-left">
+                      <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Commission Earnings (2.5%)</span>
+                      <p className="text-base font-black text-zinc-850 dark:text-zinc-50 mt-1">₹{commissionEarnings.toLocaleString('en-IN')}</p>
+                      <span className="text-[8.5px] text-emerald-500 font-bold">
+                        {commissionEarnings > 0 ? '✓ Accrued from live orders' : 'Awaiting territory orders'}
+                      </span>
+                    </div>
+                    <div className="bg-slate-50 dark:bg-zinc-850 p-3.5 rounded-2xl border text-left">
+                      <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Territory Orders</span>
+                      <p className="text-base font-black text-zinc-855 dark:text-zinc-50 mt-1">{territoryOrders.length} Bills</p>
+                      <span className="text-[8.5px] text-indigo-500 font-bold">Live order count</span>
+                    </div>
+                  </div>
 
-          {/* COMMISSION TRANSACTIONS */}
-          <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3.5 text-left">
-            <h4 className="text-[11px] font-black text-zinc-905 dark:text-zinc-100 uppercase tracking-wider flex items-center gap-1.5">
-              <DollarSign className="w-4 h-4 text-orange-500" /> Commission Ledgers & Payouts
-            </h4>
-            
-            <div className="space-y-2">
-              <div className="p-3 bg-zinc-50 dark:bg-zinc-850/80 border rounded-2xl flex justify-between items-center text-[10px]">
-                <div>
-                  <p className="font-extrabold text-zinc-700 dark:text-zinc-300">New Store Onboarding Bonus</p>
-                  <p className="text-zinc-450 mt-0.5">Assigned to Srikrishna Andhra Mess</p>
+                  <div className="space-y-2 pt-2">
+                    <p className="text-[10px] font-extrabold text-zinc-550 uppercase tracking-tight">Active Coverage Zone Map</p>
+                    <div className="bg-slate-100 dark:bg-zinc-800 rounded-2xl p-4 flex flex-col justify-center items-center h-28 border border-dashed border-zinc-200 dark:border-zinc-700">
+                      <Globe className="w-6 h-6 text-zinc-400" />
+                      <p className="text-[10px] text-zinc-700 dark:text-zinc-300 font-bold mt-2">Active Geo-fence Verified</p>
+                      <p className="text-[8.5px] text-zinc-450 mt-0.5">{activeFranchiseApp.city} Urban Circle Zone</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="font-black text-emerald-500">+ ₹1,500.00</p>
-                  <span className="text-[8.5px] text-zinc-400 block font-mono">12 Jun 2026</span>
-                </div>
-              </div>
 
-              <div className="p-3 bg-zinc-50 dark:bg-zinc-850/80 border rounded-2xl flex justify-between items-center text-[10px]">
-                <div>
-                  <p className="font-extrabold text-zinc-700 dark:text-zinc-300">Rider Recruitment Reward</p>
-                  <p className="text-zinc-450 mt-0.5">Approved logistics operator ID 4410</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-black text-emerald-500">+ ₹500.00</p>
-                  <span className="text-[8.5px] text-zinc-400 block font-mono">11 Jun 2026</span>
-                </div>
-              </div>
+                {/* COMMISSION TRANSACTIONS */}
+                <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3.5 text-left">
+                  <h4 className="text-[11px] font-black text-zinc-905 dark:text-zinc-100 uppercase tracking-wider flex items-center gap-1.5">
+                    <DollarSign className="w-4 h-4 text-orange-500" /> Commission Ledgers &amp; Payouts
+                  </h4>
 
-              <div className="p-3 bg-zinc-50 dark:bg-zinc-850/80 border rounded-2xl flex justify-between items-center text-[10px]">
-                <div>
-                  <p className="font-extrabold text-zinc-700 dark:text-zinc-300">Geographic Revenue Share (2.5%)</p>
-                  <p className="text-zinc-450 mt-0.5">Calculated pool for Week 24</p>
+                  {territoryOrders.length === 0 ? (
+                    <div className="p-4 bg-zinc-50 dark:bg-zinc-850/80 border border-dashed rounded-2xl text-center text-[11px] text-zinc-500">
+                      No territory order commissions accrued yet. Commission ledger entries appear automatically as orders complete in {activeFranchiseApp.city}.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {territoryOrders.slice(0, 5).map(ord => {
+                        const share = Math.round(Number(ord.finalAmount || 0) * 0.025 * 100) / 100;
+                        return (
+                          <div key={ord.id} className="p-3 bg-zinc-50 dark:bg-zinc-850/80 border rounded-2xl flex justify-between items-center text-[10px]">
+                            <div>
+                              <p className="font-extrabold text-zinc-700 dark:text-zinc-300">Order #{ord.id.slice(-6).toUpperCase()} Share (2.5%)</p>
+                              <p className="text-zinc-450 mt-0.5">{ord.restaurantName || 'Nuvvo Territory Kitchen'} • ₹{ord.finalAmount}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-black text-emerald-500">+ ₹{share.toFixed(2)}</p>
+                              <span className="text-[8.5px] text-zinc-400 block font-mono">
+                                {new Date(ord.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div className="text-right">
-                  <p className="font-black text-emerald-500">+ ₹2,612.50</p>
-                  <span className="text-[8.5px] text-zinc-400 block font-mono">09 Jun 2026</span>
-                </div>
-              </div>
-            </div>
-          </div>
+              </>
+            );
+          })()}
 
           {/* PERMISSIONS CALLOUT */}
           <div className="bg-amber-500/10 border border-amber-300/30 rounded-3xl p-4 flex gap-3 text-amber-800 dark:text-amber-400 text-left">

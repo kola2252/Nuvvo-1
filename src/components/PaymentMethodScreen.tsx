@@ -68,10 +68,10 @@ export default function PaymentMethodScreen({
   const isCodEnabled = storePaymentSettings?.enableCod !== false;
   const customInstructions = storePaymentSettings?.customerInstructions;
 
-  // Selected category & method - respects admin enable/disable flags
+  // Selected category & method - respects admin enable/disable flags (COD default when enabled)
   const [selectedCategory, setSelectedCategory] = useState<PaymentCategory>(() => {
-    if (isUpiEnabled) return 'UPI';
     if (isCodEnabled) return 'COD';
+    if (isUpiEnabled) return 'UPI';
     return 'Wallet';
   });
   

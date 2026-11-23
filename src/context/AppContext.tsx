@@ -10,7 +10,7 @@ import {
   AppNotification, Banner, PointsTransaction, RestaurantReview, ScheduledNotification,
   RiderEarningRecord, RiderPayout, SimulatedEmail, MerchantPayout, AppTheme,
   DesignatedAdmin, AdminPermissions, PaymentMethodType, VegIndicator, AppLanguage, ReferralSettings,
-  PaymentStatusType, StorePaymentSettings, StaffSalaryPayment
+  PaymentStatusType, StorePaymentSettings, StaffSalaryPayment, StoreOperationsConfig, SupportTicket
 } from '../types';
 import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
 import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
@@ -134,7 +134,7 @@ interface AppContextProps {
   registerCustomerWithPassword: (data: { fullName: string; username: string; email: string; mobile: string; location: string; deliveryAddress: string; password: string; confirmPassword: string; landmark?: string; city?: string; whatsappNumber?: string; whatsappOptIn?: boolean; rememberMe?: boolean }) => Promise<{ success: boolean; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }>;
   loginCustomerWithPassword: (identifier: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }>;
   resendCustomerVerificationEmail: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
-  requestCustomerPasswordReset: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  requestCustomerPasswordReset: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string; retryAfterSeconds?: number; cooldownSeconds?: number }>;
   completeCustomerPasswordRecovery: (newPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   changeCustomerPassword: (currentPassword: string, newPassword: string, confirmPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   resetCustomerPassword: (email: string, otp: string, newPassword: string) => Promise<{ success: boolean; error?: string; message?: string }>;
@@ -205,7 +205,7 @@ interface AppContextProps {
     scheduledTime?: string,
     checkoutWhatsapp?: { customerWhatsappNumber?: string; whatsappOptIn?: boolean; customerEmail?: string }
   ) => Order | null;
-  reorderItems: (order: Order) => void;
+  reorderItems: (order: Order) => { addedCount: number; skippedNames: string[] };
   changeOrderStatus: (orderId: string, status: OrderStatus, isSystemSimulation?: boolean) => void;
   cancelOrder: (orderId: string, clearFromHistory?: boolean) => Promise<{ success: boolean; cleared?: boolean; error?: string }>;
   removeOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
@@ -285,6 +285,7 @@ interface AppContextProps {
   couponsList: Coupon[];
   addNewCoupon: (coupon: Coupon) => void;
   deleteCoupon: (code: string) => void;
+  toggleCouponActive: (code: string) => void;
   clearAllCoupons: () => void;
   resetDefaultCoupons: () => void;
   clearAllBanners: () => void;
@@ -427,6 +428,14 @@ interface AppContextProps {
   adminSaveAlert: AdminSaveNotification | null;
   dismissAdminSaveAlert: () => void;
   triggerAdminSaveWarningNotice: (title: string, itemType: string, summary?: string) => void;
+
+  // Store Operations & Customer Support Tickets
+  storeOperationsConfig: StoreOperationsConfig;
+  updateStoreOperationsConfig: (config: Partial<StoreOperationsConfig>) => Promise<boolean>;
+  supportTickets: SupportTicket[];
+  fetchSupportTickets: () => Promise<void>;
+  submitSupportTicket: (ticket: { category: SupportTicket['category']; orderId?: string; subject: string; description: string }) => Promise<{ success: boolean; ticket?: SupportTicket; error?: string }>;
+  updateSupportTicket: (id: string, updates: { status?: SupportTicket['status']; adminReply?: string }) => Promise<{ success: boolean; error?: string }>;
 }
 
 const AppContext = createContext<AppContextProps | undefined>(undefined);
@@ -604,6 +613,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     addAuditLog('Referral Settings Updated', `Super Admin updated referral rules: Referrer Bonus: ${settings.referrerBonusPoints ?? referralSettings.referrerBonusPoints}, Referee Bonus: ${settings.refereeBonusPoints ?? referralSettings.refereeBonusPoints}`);
     return true;
+  };
+
+  // Store Operations Configuration (preserves Chirala baseline fees unless Admin enables custom overrides)
+  const DEFAULT_STORE_OPERATIONS_CONFIG: StoreOperationsConfig = {
+    isCustomConfigActive: false,
+    pauseNewOrders: false,
+    pauseReason: '',
+    deliveryFee: 39,
+    freeDeliveryAbove: 400,
+    minOrderAmount: 0,
+    taxRatePercent: 5,
+    packagingFee: 0,
+    openingHoursLabel: '07:00 AM - 11:00 PM',
+    serviceableAreas: ['Chirala Town', 'Perala', 'Kothapet', 'Ramapuram Beach', 'Vodarevu', 'Vetapalem']
+  };
+
+  const [storeOperationsConfig, setStoreOperationsConfig] = useState<StoreOperationsConfig>(() => {
+    return safeParse<StoreOperationsConfig>('nuvvo_store_operations_config', DEFAULT_STORE_OPERATIONS_CONFIG);
+  });
+
+  useEffect(() => {
+    fetch('/api/store-operations')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data && data.config && typeof data.config === 'object') {
+          setStoreOperationsConfig(prev => ({ ...prev, ...data.config }));
+          try {
+            localStorage.setItem('nuvvo_store_operations_config', JSON.stringify({ ...DEFAULT_STORE_OPERATIONS_CONFIG, ...data.config }));
+          } catch {}
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const updateStoreOperationsConfig = async (config: Partial<StoreOperationsConfig>): Promise<boolean> => {
+    const merged: StoreOperationsConfig = {
+      ...storeOperationsConfig,
+      ...config,
+      lastUpdated: new Date().toISOString()
+    };
+    setStoreOperationsConfig(merged);
+    try {
+      localStorage.setItem('nuvvo_store_operations_config', JSON.stringify(merged));
+    } catch {}
+
+    try {
+      const adminTok =
+        (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token'))) ||
+        (await getActiveAuthToken());
+      if (adminTok) {
+        const res = await fetch('/api/admin/store-operations', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${adminTok}`
+          },
+          body: JSON.stringify(merged)
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.config) setStoreOperationsConfig(json.config);
+        }
+      }
+    } catch (err) {
+      console.warn('[StoreOps] Failed persisting store operations to backend:', err);
+    }
+    return true;
+  };
+
+  // Customer Support Tickets state
+  const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
+
+  const fetchSupportTickets = async (): Promise<void> => {
+    try {
+      const tok =
+        (user && user.role !== 'Customer'
+          ? (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token')))
+          : null) || (await getActiveAuthToken());
+      if (!tok) return;
+      const res = await fetch('/api/support-tickets', {
+        headers: { Authorization: `Bearer ${tok}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json?.tickets)) {
+          setSupportTickets(json.tickets);
+        }
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (user?.id) {
+      fetchSupportTickets();
+    } else {
+      setSupportTickets([]);
+    }
+  }, [user?.id, user?.role]);
+
+  const submitSupportTicket = async (ticket: {
+    category: SupportTicket['category'];
+    orderId?: string;
+    subject: string;
+    description: string;
+  }): Promise<{ success: boolean; ticket?: SupportTicket; error?: string }> => {
+    try {
+      const tok = await getActiveAuthToken();
+      if (!tok) return { success: false, error: 'Please sign in to submit a support ticket.' };
+      const res = await fetch('/api/support-tickets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tok}`
+        },
+        body: JSON.stringify(ticket)
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        return { success: false, error: json?.error || 'Could not submit support ticket.' };
+      }
+      if (json.ticket) {
+        setSupportTickets(prev => [json.ticket, ...prev]);
+      }
+      return { success: true, ticket: json.ticket };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error submitting ticket.' };
+    }
+  };
+
+  const updateSupportTicket = async (
+    id: string,
+    updates: { status?: SupportTicket['status']; adminReply?: string }
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const tok =
+        (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token'))) ||
+        (await getActiveAuthToken());
+      if (!tok) return { success: false, error: 'Admin session required.' };
+      const res = await fetch(`/api/admin/support-tickets/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tok}`
+        },
+        body: JSON.stringify(updates)
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        return { success: false, error: json?.error || 'Failed to update ticket.' };
+      }
+      if (json.ticket) {
+        setSupportTickets(prev => prev.map(t => (t.id === id ? json.ticket : t)));
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Network error updating ticket.' };
+    }
   };
 
   // Default Store Admin PhonePe and Bank details (Pre-configured with verified Karur Vysya Bank - PhonePe Merchant)
@@ -927,6 +1093,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const valid = (stored || []).filter(p => !legacyMockIds.includes(p.id));
     return valid;
   });
+
+  // Hydrate & sync delivery partners with authenticated backend store for Admin/Super Admin
+  useEffect(() => {
+    if (!(user && isAuthorizedAdminPhone(user.phone) && isAdminRole(user.role))) return;
+    const tok =
+      (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token'))) ||
+      '';
+    if (!tok) return;
+    fetch('/api/delivery-partners', { headers: { Authorization: `Bearer ${tok}` } })
+      .then(res => (res.ok ? res.json() : null))
+      .then(rows => {
+        if (Array.isArray(rows) && rows.length > 0) {
+          setDeliveryPartners(prev => (prev.length === 0 ? rows : prev));
+        }
+      })
+      .catch(() => {});
+  }, [user?.phone, user?.role]);
+
+  useEffect(() => {
+    if (!(user && isAuthorizedAdminPhone(user.phone) && isAdminRole(user.role))) return;
+    const tok =
+      (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token'))) ||
+      '';
+    if (!tok) return;
+    const timer = setTimeout(() => {
+      fetch('/api/admin/delivery-partners/sync', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tok}`
+        },
+        body: JSON.stringify({ partners: deliveryPartners })
+      }).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [deliveryPartners, user?.phone, user?.role]);
 
   // Franchise states
   const [franchiseApplications, setFranchiseApplications] = useState<FranchiseApplication[]>(() => {
@@ -4325,22 +4527,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const requestCustomerPasswordReset = async (identifierOrEmail: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+  const requestCustomerPasswordReset = async (identifierOrEmail: string): Promise<{ success: boolean; message?: string; error?: string; retryAfterSeconds?: number; cooldownSeconds?: number }> => {
+    const cleanIdentifier = identifierOrEmail.trim();
+    const redirectOrigin = typeof window !== 'undefined' ? `${window.location.origin}/?type=recovery` : undefined;
+
     try {
       const resp = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          identifier: identifierOrEmail.trim(),
+          identifier: cleanIdentifier,
           redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
         })
       });
       const data = await resp.json().catch(() => null);
-      if (!resp.ok || !data?.success) {
-        return { success: false, error: data?.error || 'Failed to initiate password reset.' };
+      const retryHeader = Number(resp.headers.get('Retry-After') || 0);
+      const retryAfterSeconds = Number(data?.retryAfterSeconds || retryHeader || 0) || undefined;
+      if (resp.ok && data?.success) {
+        return {
+          success: true,
+          message: data.message,
+          cooldownSeconds: Number(data?.cooldownSeconds || 60)
+        };
       }
-      return { success: true, message: data.message };
+
+      // If backend endpoint returned a non-JSON serverless/proxy response and user supplied an email,
+      // attempt direct Supabase client recovery before returning an error.
+      if (!data && cleanIdentifier.includes('@')) {
+        const { error: sbErr } = await supabase.auth.resetPasswordForEmail(cleanIdentifier.toLowerCase(), {
+          redirectTo: redirectOrigin
+        });
+        if (!sbErr) {
+          return {
+            success: true,
+            cooldownSeconds: 60,
+            message: `If an account with a verified email matches ${cleanIdentifier.toLowerCase()}, a secure password reset link has been sent to your email.`
+          };
+        }
+        return {
+          success: false,
+          error: sbErr.message || `Unable to send password reset email (HTTP ${resp.status}).`
+        };
+      }
+
+      return {
+        success: false,
+        retryAfterSeconds,
+        error: data?.error || `Unable to initiate password reset (HTTP ${resp.status}). Please try again.`
+      };
     } catch (err: any) {
+      if (cleanIdentifier.includes('@')) {
+        try {
+          const { error: sbErr } = await supabase.auth.resetPasswordForEmail(cleanIdentifier.toLowerCase(), {
+            redirectTo: redirectOrigin
+          });
+          if (!sbErr) {
+            return {
+              success: true,
+              cooldownSeconds: 60,
+              message: `If an account with a verified email matches ${cleanIdentifier.toLowerCase()}, a secure password reset link has been sent to your email.`
+            };
+          }
+        } catch {}
+      }
       return { success: false, error: err?.message || 'Network error occurred while requesting password reset.' };
     }
   };
@@ -4808,6 +5057,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Cart operations
   const addToCart = (food: FoodItem, selectedCustomizations = {}) => {
+    if (food.isAvailable === false || food.is_available === false) {
+      addAuditLog('Cart Blocked (Unavailable)', `Attempted to add unavailable dish: ${food.name}`);
+      return;
+    }
+    if (food.restaurantId) {
+      const rest = restaurantsList.find(r => r.id === food.restaurantId);
+      if (rest) {
+        const restStatus = getRestaurantOpenStatus(rest);
+        if (restStatus.status !== 'open') {
+          addAuditLog('Cart Blocked (Kitchen Closed)', `Attempted to add dish "${food.name}" while ${rest.name} is ${restStatus.status}`);
+          return;
+        }
+      }
+    }
     setCart(prev => {
       const existing = prev.find(item => item.foodItem.id === food.id);
       if (existing) {
@@ -4853,9 +5116,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const applyCouponCode = (code: string) => {
-    const coupon = couponsList.find(c => c.code.toUpperCase() === code.toUpperCase());
+    const coupon = couponsList.find(c => c.code.toUpperCase() === code.trim().toUpperCase());
     if (!coupon) {
       return { success: false, message: 'Invalid or expired promotional code.' };
+    }
+    if (coupon.isActive === false) {
+      return { success: false, message: 'This promotional code is currently paused by the store.' };
+    }
+    if (coupon.expiryDate) {
+      const exp = new Date(`${coupon.expiryDate}T23:59:59`);
+      if (!isNaN(exp.getTime()) && exp.getTime() < Date.now()) {
+        return { success: false, message: `Promo code ${coupon.code} expired on ${coupon.expiryDate}.` };
+      }
+    }
+    if (typeof coupon.maxUses === 'number' && coupon.maxUses > 0 && (coupon.usedCount || 0) >= coupon.maxUses) {
+      return { success: false, message: `Promo code ${coupon.code} has reached its maximum redemption limit.` };
     }
     const cartSubtotal = cart.reduce((sum, item) => sum + (item.foodItem.discountPrice || item.foodItem.price) * item.quantity, 0);
     if (cartSubtotal < coupon.minOrder) {
@@ -4930,14 +5205,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const subtotalAfterCoupon = subtotal - discount;
     const finalAmountAfterPoints = Math.max(0, subtotalAfterCoupon - pointsDiscount);
 
-    const deliveryFee = paymentDetailsObj?.deliveryFee !== undefined 
-      ? paymentDetailsObj.deliveryFee 
-      : (subtotal > 400 ? 0 : 39);
-    const packagingFee = 0; // Packaging charges removed
-    const tax = Math.round(subtotal * 0.05); // 5% GST
+    const useCustomOps = Boolean(storeOperationsConfig?.isCustomConfigActive);
+    const opsDeliveryFee = useCustomOps ? Number(storeOperationsConfig.deliveryFee ?? 39) : 39;
+    const opsFreeAbove = useCustomOps ? Number(storeOperationsConfig.freeDeliveryAbove ?? 400) : 400;
+    const opsPackagingFee = useCustomOps ? Number(storeOperationsConfig.packagingFee ?? 0) : 0;
+    const opsTaxRate = useCustomOps ? Number(storeOperationsConfig.taxRatePercent ?? 5) : 5;
+
+    const deliveryFee = paymentDetailsObj?.deliveryFee !== undefined
+      ? paymentDetailsObj.deliveryFee
+      : (subtotal > opsFreeAbove ? 0 : opsDeliveryFee);
+    const packagingFee = opsPackagingFee;
+    const tax = Math.round(subtotal * (opsTaxRate / 100));
     const calculatedFinalAmount = finalAmountAfterPoints + deliveryFee + packagingFee + tax + deliveryPartnerTip;
-    const finalAmount = typeof paymentDetailsObj?.amount === 'number' 
-      ? paymentDetailsObj.amount 
+    const finalAmount = typeof paymentDetailsObj?.amount === 'number'
+      ? paymentDetailsObj.amount
       : calculatedFinalAmount;
 
     const orderId = `order_${Date.now()}`;
@@ -5017,7 +5298,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deliveryPartnerLocation: assignedRider ? assignedRider.currentLocation : undefined,
       scheduledTime,
       pointsEarned: earnedPoints,
-      pointsRedeemed: pointsToRedeem > 0 ? pointsToRedeem : undefined
+      pointsRedeemed: pointsToRedeem > 0 ? pointsToRedeem : undefined,
+      idempotencyKey: `idem_${resolvedOrderId}`
     };
 
     // If payment was completed using Nuvvo Wallet, deduct and log under customer-scoped storage
@@ -5086,6 +5368,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(err => {
       console.error('[Supabase] Checkout order storage exception:', err);
     });
+    if (appliedCoupon) {
+      setCouponsList(prev =>
+        prev.map(c =>
+          c.code.toUpperCase() === appliedCoupon.code.toUpperCase()
+            ? { ...c, usedCount: (c.usedCount || 0) + 1 }
+            : c
+        )
+      );
+    }
     clearCart();
     setActiveTrackingOrder(newOrder);
 
@@ -5188,11 +5479,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newOrder;
   };
 
-  const reorderItems = (order: Order) => {
-    const itemsToSet = order.items.map(cartItem => ({ ...cartItem }));
-    setCart(itemsToSet);
-    setCurrentPage('cart');
-    addAuditLog('Re-Ordered Items', `Copied shopping list from invoice ${order.id} into active checkout basket`);
+  const reorderItems = (order: Order): { addedCount: number; skippedNames: string[] } => {
+    const validItems: CartItem[] = [];
+    const skippedNames: string[] = [];
+
+    for (const cartItem of order.items || []) {
+      const originalFood = cartItem.foodItem;
+      const liveFood = foodCatalogList.find(f => f.id === originalFood?.id) || originalFood;
+      const isAvail = liveFood && liveFood.isAvailable !== false && liveFood.is_available !== false;
+      let restOpen = true;
+      if (liveFood?.restaurantId) {
+        const rest = restaurantsList.find(r => r.id === liveFood.restaurantId);
+        if (rest && getRestaurantOpenStatus(rest).status !== 'open') {
+          restOpen = false;
+        }
+      }
+      if (!liveFood || !isAvail || !restOpen) {
+        skippedNames.push(originalFood?.name || 'Unavailable item');
+        continue;
+      }
+      validItems.push({
+        ...cartItem,
+        foodItem: liveFood
+      });
+    }
+
+    if (validItems.length > 0) {
+      setCart(validItems);
+      setCurrentPage('cart');
+      addAuditLog('Re-Ordered Items', `Copied ${validItems.length} live item(s) from invoice ${order.id} into active checkout basket${skippedNames.length ? ` (skipped ${skippedNames.length} unavailable)` : ''}`);
+    } else {
+      addAuditLog('Re-Order Blocked', `All items from invoice ${order.id} are currently out of stock or closed.`);
+    }
+    return { addedCount: validItems.length, skippedNames };
   };
 
   const submitOrderRating = (orderId: string, rating: number, feedback?: string) => {
@@ -5663,12 +5982,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       try {
-        await supabase.from('orders').delete().eq('id', orderId);
-      } catch (sbErr) {
-        console.warn('[Supabase Orders] Delete notice:', sbErr);
-      }
-
-      try {
         const { invalidateOrders } = await import('../utils/tanstackQuery');
         invalidateOrders();
       } catch {}
@@ -5680,7 +5993,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   /**
-   * Resets / clears order history strictly for the active authenticated customer.
+   * Soft-archives order history from the active customer's view while preserving accounting records.
    */
   const clearOrderHistory = async (phone?: string): Promise<{ success: boolean; count?: number; error?: string }> => {
     try {
@@ -5708,14 +6021,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             })
           )
         );
-      }
-
-      if (activeId) {
-        try {
-          await supabase.from('orders').delete().eq('customer_id', activeId);
-        } catch (sbErr) {
-          console.warn('[Supabase Orders] Clear notice:', sbErr);
-        }
       }
 
       try {
@@ -6826,13 +7131,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Coupon & Promo Manager
   const addNewCoupon = (coupon: Coupon) => {
-    setCouponsList(prev => [...prev.filter(c => c.code.toUpperCase() !== coupon.code.toUpperCase()), coupon]);
+    setCouponsList(prev => [...prev.filter(c => c.code.toUpperCase() !== coupon.code.toUpperCase()), { isActive: true, usedCount: 0, ...coupon }]);
     addAuditLog('Coupon Added', `Systemic discount register updated with active coupon code: ${coupon.code}`);
   };
 
   const deleteCoupon = (code: string) => {
     setCouponsList(prev => prev.filter(c => c.code.toUpperCase() !== code.toUpperCase()));
     addAuditLog('Coupon Deleted', `Removed systemic coupon voucher: ${code}`);
+  };
+
+  const toggleCouponActive = (code: string) => {
+    setCouponsList(prev =>
+      prev.map(c => (c.code.toUpperCase() === code.toUpperCase() ? { ...c, isActive: c.isActive === false } : c))
+    );
+    addAuditLog('Coupon Status Toggled', `Toggled active status for coupon voucher: ${code}`);
   };
 
   const clearAllCoupons = () => {
@@ -7113,7 +7425,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isAdmin, isSuperAdmin, isSuperAdminAuthenticated, verifySuperAdminOtp, setSuperAdminAuthenticated,
       authenticateSuperAdmin, wipeAllData, clearSystemCache,
       clearStats, seedSampleOrders,
-      couponsList, addNewCoupon, deleteCoupon, clearAllCoupons, resetDefaultCoupons,
+      couponsList, addNewCoupon, deleteCoupon, toggleCouponActive, clearAllCoupons, resetDefaultCoupons,
       logs, addAuditLog, clearLogs,
       designatedAdmins, toggleAdminPermission, addDesignatedAdmin, deleteDesignatedAdmin,
       toggleRestaurantActiveStatus, approveRestaurant, registerNewRestaurantRequest,
@@ -7159,7 +7471,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isSavingConfirmedAction,
       adminSaveAlert,
       dismissAdminSaveAlert,
-      triggerAdminSaveWarningNotice
+      triggerAdminSaveWarningNotice,
+
+      // Store Operations & Support Tickets
+      storeOperationsConfig,
+      updateStoreOperationsConfig,
+      supportTickets,
+      fetchSupportTickets,
+      submitSupportTicket,
+      updateSupportTicket
     }}>
       {children}
     </AppContext.Provider>
