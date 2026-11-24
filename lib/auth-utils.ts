@@ -37,7 +37,10 @@ interface AuthRateRecord {
   count: number;
   windowStart: number;
   blockedUntil: number;
+  lastAttemptAt?: number;
 }
+
+type AuthRateBucket = 'register' | 'login' | 'forgot_password' | 'forgot_password_ip' | 'resend' | 'change_password';
 
 const customerAuthRateStore = new Map<string, AuthRateRecord>();
 
@@ -58,13 +61,14 @@ export function getClientIp(req: any): string {
 }
 
 export function checkCustomerAuthRateLimit(
-  bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password',
+  bucket: AuthRateBucket,
   key: string,
-  options?: { maxAttempts?: number; windowMs?: number; blockMs?: number; incrementOnCheck?: boolean }
+  options?: { maxAttempts?: number; windowMs?: number; blockMs?: number; minIntervalMs?: number; incrementOnCheck?: boolean }
 ): { allowed: boolean; retryAfterSeconds?: number; remaining?: number; error?: string } {
   const maxAttempts = options?.maxAttempts ?? (bucket === 'login' || bucket === 'change_password' ? 5 : bucket === 'register' ? 6 : 3);
   const windowMs = options?.windowMs ?? 15 * 60 * 1000;
   const blockMs = options?.blockMs ?? 15 * 60 * 1000;
+  const minIntervalMs = options?.minIntervalMs ?? 0;
   const storeKey = `${bucket}:${key.toLowerCase()}`;
   const now = Date.now();
 
@@ -81,11 +85,22 @@ export function checkCustomerAuthRateLimit(
   }
 
   if (!rec || now - rec.windowStart > windowMs) {
-    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+    rec = { count: 0, windowStart: now, blockedUntil: 0, lastAttemptAt: undefined };
+  }
+
+  if (minIntervalMs > 0 && rec.lastAttemptAt && now - rec.lastAttemptAt < minIntervalMs) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((minIntervalMs - (now - rec.lastAttemptAt)) / 1000));
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: Math.max(0, maxAttempts - rec.count),
+      error: `Please wait ${retryAfterSeconds} second${retryAfterSeconds === 1 ? '' : 's'} before requesting another password reset email.`
+    };
   }
 
   if (options?.incrementOnCheck) {
     rec.count += 1;
+    rec.lastAttemptAt = now;
     if (rec.count > maxAttempts) {
       rec.blockedUntil = now + blockMs;
       customerAuthRateStore.set(storeKey, rec);
@@ -119,7 +134,7 @@ export function checkCustomerAuthRateLimit(
 }
 
 export function recordCustomerAuthFailure(
-  bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password',
+  bucket: AuthRateBucket,
   key: string,
   options?: { maxAttempts?: number; windowMs?: number; blockMs?: number }
 ): { blocked: boolean; remainingAttempts: number; retryAfterSeconds?: number } {
@@ -131,10 +146,11 @@ export function recordCustomerAuthFailure(
 
   let rec = customerAuthRateStore.get(storeKey);
   if (!rec || now - rec.windowStart > windowMs) {
-    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+    rec = { count: 0, windowStart: now, blockedUntil: 0, lastAttemptAt: undefined };
   }
 
   rec.count += 1;
+  rec.lastAttemptAt = now;
   const remainingAttempts = Math.max(0, maxAttempts - rec.count);
 
   if (rec.count >= maxAttempts) {
@@ -151,7 +167,7 @@ export function recordCustomerAuthFailure(
   return { blocked: false, remainingAttempts };
 }
 
-export function clearCustomerAuthRateLimit(bucket: 'register' | 'login' | 'forgot_password' | 'resend' | 'change_password', key: string): void {
+export function clearCustomerAuthRateLimit(bucket: AuthRateBucket, key: string): void {
   customerAuthRateStore.delete(`${bucket}:${key.toLowerCase()}`);
 }
 

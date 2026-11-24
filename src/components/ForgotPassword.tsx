@@ -17,16 +17,73 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
-const RESET_COOLDOWN_STORAGE_KEY = 'nuvvo_pwd_reset_cooldown_until';
-const RESET_COOLDOWN_TOTAL_KEY = 'nuvvo_pwd_reset_cooldown_total';
+const RESET_STATE_MAP_KEY = 'nuvvo_pwd_reset_state_map';
 const RESET_LAST_TARGET_KEY = 'nuvvo_pwd_reset_last_target';
+const LEGACY_COOLDOWN_UNTIL_KEY = 'nuvvo_pwd_reset_cooldown_until';
+const LEGACY_COOLDOWN_TOTAL_KEY = 'nuvvo_pwd_reset_cooldown_total';
 const DEFAULT_COOLDOWN_SECONDS = 60;
+
+interface ResetIdentifierState {
+  until: number;
+  total: number;
+  resendCount: number;
+}
 
 export interface ForgotPasswordProps {
   initialEmail?: string;
   initialError?: string;
   onBackToSignIn?: () => void;
   onResetSent?: (email: string) => void;
+}
+
+function readResetStateMap(): Record<string, ResetIdentifierState> {
+  try {
+    const raw = localStorage.getItem(RESET_STATE_MAP_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const now = Date.now();
+    const cleaned: Record<string, ResetIdentifierState> = {};
+    for (const [key, entry] of Object.entries(parsed)) {
+      const rec = entry as Partial<ResetIdentifierState>;
+      if (rec && typeof rec.until === 'number' && rec.until > now) {
+        cleaned[key] = {
+          until: rec.until,
+          total: typeof rec.total === 'number' && rec.total > 0 ? rec.total : DEFAULT_COOLDOWN_SECONDS,
+          resendCount: typeof rec.resendCount === 'number' && rec.resendCount >= 0 ? rec.resendCount : 0
+        };
+      }
+    }
+    return cleaned;
+  } catch {
+    return {};
+  }
+}
+
+function writeResetStateMap(map: Record<string, ResetIdentifierState>) {
+  try {
+    const now = Date.now();
+    const cleaned: Record<string, ResetIdentifierState> = {};
+    for (const [key, rec] of Object.entries(map)) {
+      if (rec && rec.until > now) {
+        cleaned[key] = rec;
+      }
+    }
+    if (Object.keys(cleaned).length === 0) {
+      localStorage.removeItem(RESET_STATE_MAP_KEY);
+    } else {
+      localStorage.setItem(RESET_STATE_MAP_KEY, JSON.stringify(cleaned));
+    }
+  } catch {}
+}
+
+function getActiveEntryForIdentifier(identifier: string): ResetIdentifierState | null {
+  const key = identifier.trim().toLowerCase();
+  if (!key) return null;
+  const map = readResetStateMap();
+  const entry = map[key];
+  if (!entry || entry.until <= Date.now()) return null;
+  return entry;
 }
 
 function formatCooldown(seconds: number): string {
@@ -56,39 +113,62 @@ export default function ForgotPassword({
     }
   });
   const [isLoading, setIsLoading] = useState(false);
-  const [isSent, setIsSent] = useState(false);
-  const [cooldownTotal, setCooldownTotal] = useState<number>(() => {
+  const [isSent, setIsSent] = useState(() => {
     try {
-      const savedTotal = Number(localStorage.getItem(RESET_COOLDOWN_TOTAL_KEY) || 0);
-      return savedTotal > 0 ? savedTotal : DEFAULT_COOLDOWN_SECONDS;
+      const lastTarget = (localStorage.getItem(RESET_LAST_TARGET_KEY) || '').trim().toLowerCase();
+      const target = (initialEmail || lastTarget).trim().toLowerCase();
+      if (!target || !lastTarget || target !== lastTarget) return false;
+      return Boolean(getActiveEntryForIdentifier(target));
     } catch {
-      return DEFAULT_COOLDOWN_SECONDS;
+      return false;
     }
+  });
+  const [cooldownTotal, setCooldownTotal] = useState<number>(() => {
+    const entry = getActiveEntryForIdentifier(
+      initialEmail || (typeof localStorage !== 'undefined' ? localStorage.getItem(RESET_LAST_TARGET_KEY) || '' : '')
+    );
+    return entry?.total || DEFAULT_COOLDOWN_SECONDS;
   });
   const [resendCooldown, setResendCooldown] = useState<number>(() => {
-    try {
-      const until = Number(localStorage.getItem(RESET_COOLDOWN_STORAGE_KEY) || 0);
-      const rem = Math.ceil((until - Date.now()) / 1000);
-      return rem > 0 ? rem : 0;
-    } catch {
-      return 0;
-    }
+    const entry = getActiveEntryForIdentifier(
+      initialEmail || (typeof localStorage !== 'undefined' ? localStorage.getItem(RESET_LAST_TARGET_KEY) || '' : '')
+    );
+    return entry ? Math.max(0, Math.ceil((entry.until - Date.now()) / 1000)) : 0;
   });
-  const [resendCount, setResendCount] = useState(0);
+  const [resendCount, setResendCount] = useState<number>(() => {
+    const entry = getActiveEntryForIdentifier(
+      initialEmail || (typeof localStorage !== 'undefined' ? localStorage.getItem(RESET_LAST_TARGET_KEY) || '' : '')
+    );
+    return entry?.resendCount || 0;
+  });
   const [errorMsg, setErrorMsg] = useState(initialError);
   const [successMsg, setSuccessMsg] = useState('');
 
-  const activateCooldown = (seconds: number, targetIdentifier?: string) => {
+  // Clean up any legacy global cooldown keys once
+  useEffect(() => {
+    try {
+      localStorage.removeItem(LEGACY_COOLDOWN_UNTIL_KEY);
+      localStorage.removeItem(LEGACY_COOLDOWN_TOTAL_KEY);
+    } catch {}
+  }, []);
+
+  const activateCooldown = (seconds: number, targetIdentifier: string, nextResendCount: number) => {
+    const key = targetIdentifier.trim().toLowerCase();
     const safeSec = Math.max(15, Math.round(seconds));
     const expiresAt = Date.now() + safeSec * 1000;
     setCooldownTotal(safeSec);
     setResendCooldown(safeSec);
+    if (!key) return;
+
+    const map = readResetStateMap();
+    map[key] = {
+      until: expiresAt,
+      total: safeSec,
+      resendCount: nextResendCount
+    };
+    writeResetStateMap(map);
     try {
-      localStorage.setItem(RESET_COOLDOWN_STORAGE_KEY, String(expiresAt));
-      localStorage.setItem(RESET_COOLDOWN_TOTAL_KEY, String(safeSec));
-      if (targetIdentifier) {
-        localStorage.setItem(RESET_LAST_TARGET_KEY, targetIdentifier);
-      }
+      localStorage.setItem(RESET_LAST_TARGET_KEY, key);
     } catch {}
   };
 
@@ -104,36 +184,43 @@ export default function ForgotPassword({
     }
   }, [initialError]);
 
+  // Synchronize displayed cooldown when user edits/switches identifier
   useEffect(() => {
-    if (resendCooldown <= 0) {
-      try {
-        localStorage.removeItem(RESET_COOLDOWN_STORAGE_KEY);
-      } catch {}
-      return;
+    const entry = getActiveEntryForIdentifier(email);
+    if (entry) {
+      const rem = Math.max(0, Math.ceil((entry.until - Date.now()) / 1000));
+      setCooldownTotal(entry.total);
+      setResendCooldown(rem);
+      setResendCount(entry.resendCount);
+    } else {
+      setResendCooldown(0);
+      setCooldownTotal(DEFAULT_COOLDOWN_SECONDS);
+      if (!isSent) {
+        setResendCount(0);
+      }
     }
+  }, [email]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const normalized = email.trim().toLowerCase();
     const timer = setInterval(() => {
-      try {
-        const until = Number(localStorage.getItem(RESET_COOLDOWN_STORAGE_KEY) || 0);
-        if (until > 0) {
-          const rem = Math.ceil((until - Date.now()) / 1000);
-          setResendCooldown(rem > 0 ? rem : 0);
-          return;
-        }
-      } catch {}
-      setResendCooldown(prev => Math.max(0, prev - 1));
+      const entry = getActiveEntryForIdentifier(normalized);
+      if (entry) {
+        const rem = Math.max(0, Math.ceil((entry.until - Date.now()) / 1000));
+        setResendCooldown(rem);
+        return;
+      }
+      setResendCooldown(0);
+      writeResetStateMap(readResetStateMap());
     }, 1000);
     return () => clearInterval(timer);
-  }, [resendCooldown]);
+  }, [resendCooldown, email]);
 
   const handleSubmit = async (e?: React.FormEvent, isResendAction = false) => {
     if (e) e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
-
-    if (resendCooldown > 0) {
-      setErrorMsg(`Please wait ${formatCooldown(resendCooldown)} before requesting another password reset email.`);
-      return;
-    }
 
     const cleanInput = email.trim();
     if (!cleanInput) {
@@ -153,16 +240,23 @@ export default function ForgotPassword({
     }
 
     const normalizedIdentifier = cleanInput.toLowerCase();
+    const activeEntry = getActiveEntryForIdentifier(normalizedIdentifier);
+    if (activeEntry) {
+      const rem = Math.max(1, Math.ceil((activeEntry.until - Date.now()) / 1000));
+      setResendCooldown(rem);
+      setErrorMsg(`Please wait ${formatCooldown(rem)} before requesting another password reset email.`);
+      return;
+    }
+
     setIsLoading(true);
     const res = await requestCustomerPasswordReset(normalizedIdentifier);
     setIsLoading(false);
 
     if (res.success) {
+      const nextCount = isResendAction ? resendCount + 1 : 0;
       setIsSent(true);
-      if (isResendAction) {
-        setResendCount(c => c + 1);
-      }
-      activateCooldown(res.cooldownSeconds || DEFAULT_COOLDOWN_SECONDS, normalizedIdentifier);
+      setResendCount(nextCount);
+      activateCooldown(res.cooldownSeconds || DEFAULT_COOLDOWN_SECONDS, normalizedIdentifier, nextCount);
       const confirmationText =
         res.message ||
         `If an account is registered with ${normalizedIdentifier}, a Supabase password reset link has been sent to your inbox.`;
@@ -176,7 +270,7 @@ export default function ForgotPassword({
       }
     } else {
       if (res.retryAfterSeconds && res.retryAfterSeconds > 0) {
-        activateCooldown(res.retryAfterSeconds, normalizedIdentifier);
+        activateCooldown(res.retryAfterSeconds, normalizedIdentifier, resendCount);
       }
       setErrorMsg(res.error || 'Unable to send password reset email. Please try again.');
     }

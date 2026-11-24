@@ -24,6 +24,6 @@
     "types": ["vite/client", "vite-plugin-pwa/client", "google.maps"],
     "noEmit": true
   },
-  "include": ["src", "server.ts", "api"],
-  "exclude": ["node_modules", "dist", "server.js", "api/server.js", "android", "scripts"]
+  "include": ["src", "server.ts", "api", "lib"],
+  "exclude": ["node_modules", "dist", "server.js", "android", "scripts"]
 }

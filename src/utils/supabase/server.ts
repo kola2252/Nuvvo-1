@@ -99,16 +99,21 @@ export const getAdminSupabaseServerClient = (): {
  * Public server client strictly for public read-only (SELECT) queries obeying RLS.
  * This client MUST NEVER be used for privileged writes.
  */
+export const getPublicSupabaseKey = (): string => {
+  return (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX"
+  ).trim();
+};
+
 export const getPublicSupabaseServerClient = (): SupabaseClient => {
   if (!cachedPublicServerClient) {
     const supabaseUrl = getSupabaseUrl();
-    const publicKey =
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-      process.env.SUPABASE_PUBLISHABLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-      "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+    const publicKey = getPublicSupabaseKey();
 
     cachedPublicServerClient = createSupabaseClient(supabaseUrl, publicKey, {
       auth: {

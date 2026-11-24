@@ -1,12 +1,24 @@
 import fs from 'fs';
 import path from 'path';
-import sharp from 'sharp';
 
 const publicDir = path.resolve('./public');
 const logoPath = path.join(publicDir, 'nuvvo-logo.png');
+const requiredIcons = [
+  'pwa-192x192.png',
+  'pwa-512x512.png',
+  'pwa-maskable-512x512.png',
+  'apple-touch-icon.png',
+  'favicon.png',
+  'icon.svg',
+];
 
 if (!fs.existsSync(publicDir)) {
   fs.mkdirSync(publicDir, { recursive: true });
+}
+
+if (process.env.VERCEL && requiredIcons.every((file) => fs.existsSync(path.join(publicDir, file)))) {
+  console.log('Skipping PWA icon regeneration on Vercel (existing public icons are ready).');
+  process.exit(0);
 }
 
 if (!fs.existsSync(logoPath)) {
@@ -18,6 +30,7 @@ if (!fs.existsSync(logoPath)) {
 const darkBg = { r: 0, g: 0, b: 0, alpha: 1 };
 
 async function generateIcons() {
+  const { default: sharp } = await import('sharp');
   console.log(`Reading source logo from: ${logoPath}`);
 
   // 1. Standard PWA 192x192

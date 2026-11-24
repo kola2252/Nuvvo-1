@@ -19,13 +19,13 @@ import {
   findLocalCustomerByUsername,
   findLocalCustomerByEmail,
   getAppRedirectOrigin
-} from "../../lib/auth-utils";
+} from "../../auth-utils";
 import {
   getAdminSupabaseServerClient,
   getPublicSupabaseServerClient,
   createUserScopedSupabaseClient
-} from "../../src/utils/supabase/server";
-import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../src/lib/whatsapp";
+} from "../../../src/utils/supabase/server";
+import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../../src/lib/whatsapp";
 
 export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {

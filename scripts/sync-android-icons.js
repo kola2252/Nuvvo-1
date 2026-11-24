@@ -34,6 +34,10 @@ function createCircleMask(size) {
 }
 
 async function syncAndroidIcons() {
+  if (process.env.VERCEL || !fs.existsSync(path.resolve('./android'))) {
+    console.log('Skipping Android icon sync in web/Vercel build environment.');
+    return;
+  }
   console.log(`Syncing Android launcher icons from: ${logoPath}`);
 
   for (const { folder, size, fgSize } of densities) {

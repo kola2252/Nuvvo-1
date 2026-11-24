@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Standalone Vercel Serverless Function for /api/dishes.
+ * Standalone Serverless Handler for /api/dishes.
  * Directly queries Supabase REST API or serves resilient baseline menu with ZERO external npm dependencies.
  */
 
@@ -122,7 +122,6 @@ const BASELINE_DISHES = [
 ];
 
 export default async function handler(req: any, res: any) {
-  // CORS setup
   try {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -136,9 +135,8 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    // 1. Attempt native fetch directly from Supabase REST API
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000); // 4-second fail-fast timeout
+    const timeout = setTimeout(() => controller.abort(), 4000);
 
     const restUrl = `${SUPABASE_URL.replace(/\/+$/, '')}/rest/v1/food_items?select=*&order=created_at.desc&limit=100`;
     const response = await fetch(restUrl, {
@@ -184,7 +182,6 @@ export default async function handler(req: any, res: any) {
     console.warn('[Dishes Serverless Warning] Direct Supabase fetch fallback engaged:', err?.message || err);
   }
 
-  // Resilient fallback: Return baseline dishes so client NEVER receives an error
   res.statusCode = 200;
   return res.end(JSON.stringify(BASELINE_DISHES));
 }

@@ -18,9 +18,9 @@ import {
   findLocalCustomerByUsername,
   getAppRedirectOrigin,
   fallbackUsernamesRegistry
-} from "../../lib/auth-utils";
-import { isSmtpConfigured, sendPasswordRecoveryEmail } from "../../lib/email-service";
-import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
+} from "../../auth-utils";
+import { isSmtpConfigured, sendPasswordRecoveryEmail } from "../../email-service";
+import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
@@ -45,10 +45,28 @@ export default async function handler(req: any, res: any) {
 
     const clientIp = getClientIp(req);
     const rateKey = `${clientIp}:${rawIdentifier.toLowerCase()}`;
+    const ipRateCheck = checkCustomerAuthRateLimit("forgot_password_ip", clientIp, {
+      maxAttempts: 20,
+      windowMs: 15 * 60 * 1000,
+      blockMs: 15 * 60 * 1000,
+      incrementOnCheck: false
+    });
+    if (!ipRateCheck.allowed) {
+      if (ipRateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(ipRateCheck.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        retryAfterSeconds: ipRateCheck.retryAfterSeconds || 60,
+        error: ipRateCheck.error || "Too many password reset requests from this network. Please wait and try again."
+      });
+    }
+
     const rateCheck = checkCustomerAuthRateLimit("forgot_password", rateKey, {
       maxAttempts: 5,
       windowMs: 15 * 60 * 1000,
       blockMs: 15 * 60 * 1000,
+      minIntervalMs: 60 * 1000,
       incrementOnCheck: false
     });
 
@@ -59,7 +77,7 @@ export default async function handler(req: any, res: any) {
       return sendJsonResponse(res, 429, {
         success: false,
         retryAfterSeconds: rateCheck.retryAfterSeconds || 60,
-        error: rateCheck.error || "Too many password reset requests. Please wait a few minutes and try again."
+        error: rateCheck.error || "Please wait 60 seconds before requesting another password reset email."
       });
     }
 
@@ -113,6 +131,11 @@ export default async function handler(req: any, res: any) {
         windowMs: 15 * 60 * 1000,
         blockMs: 15 * 60 * 1000
       });
+      recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+        maxAttempts: 20,
+        windowMs: 15 * 60 * 1000,
+        blockMs: 15 * 60 * 1000
+      });
       return sendJsonResponse(res, 200, {
         success: true,
         cooldownSeconds: 60,
@@ -148,6 +171,11 @@ export default async function handler(req: any, res: any) {
         windowMs: 15 * 60 * 1000,
         blockMs: 15 * 60 * 1000
       });
+      recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+        maxAttempts: 20,
+        windowMs: 15 * 60 * 1000,
+        blockMs: 15 * 60 * 1000
+      });
       return sendJsonResponse(res, 200, {
         success: true,
         provider: "supabase_auth",
@@ -175,6 +203,11 @@ export default async function handler(req: any, res: any) {
               windowMs: 15 * 60 * 1000,
               blockMs: 15 * 60 * 1000
             });
+            recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+              maxAttempts: 20,
+              windowMs: 15 * 60 * 1000,
+              blockMs: 15 * 60 * 1000
+            });
             return sendJsonResponse(res, 200, {
               success: true,
               provider: "smtp",
@@ -190,8 +223,14 @@ export default async function handler(req: any, res: any) {
             windowMs: 15 * 60 * 1000,
             blockMs: 15 * 60 * 1000
           });
+          recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+            maxAttempts: 20,
+            windowMs: 15 * 60 * 1000,
+            blockMs: 15 * 60 * 1000
+          });
           return sendJsonResponse(res, 200, {
             success: true,
+            cooldownSeconds: 60,
             message:
               "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
           });
@@ -217,16 +256,25 @@ export default async function handler(req: any, res: any) {
     if (lowerErr.includes("user not found") || lowerErr.includes("not found")) {
       return sendJsonResponse(res, 200, {
         success: true,
+        cooldownSeconds: 60,
         message:
           "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
       });
     }
 
     if (lowerErr.includes("error sending") || primaryError?.status === 500 || primaryError?.status === 502) {
+      const smtpReady = isSmtpConfigured();
+      const missingParts: string[] = [];
+      if (!isServiceRole) missingParts.push("SUPABASE_SERVICE_ROLE_KEY");
+      if (!smtpReady) missingParts.push("EMAIL_USER / EMAIL_PASS (or SMTP_USER / SMTP_PASS)");
+
       return sendJsonResponse(res, 502, {
         success: false,
+        code: "EMAIL_DELIVERY_UNAVAILABLE",
         error:
-          "Unable to send the password reset email because email delivery (Supabase Auth Custom SMTP or server SMTP) is currently unavailable. Please configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings, or set EMAIL_USER, EMAIL_PASS, and SUPABASE_SERVICE_ROLE_KEY on the server."
+          missingParts.length > 0
+            ? `Unable to send password reset email: Supabase Auth mailer failed and fallback SMTP cannot run because ${missingParts.join(" and ")} ${missingParts.length === 1 ? "is" : "are"} not configured on the server. Configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings, or set those environment variables.`
+            : "Unable to send password reset email because both Supabase Auth and fallback SMTP failed. Please check your SMTP credentials and Supabase Dashboard -> Authentication -> SMTP Settings."
       });
     }
 

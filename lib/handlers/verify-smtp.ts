@@ -10,8 +10,8 @@
  */
 
 import nodemailer from "nodemailer";
-import { parseRequestBody, sendJsonResponse } from "../lib/auth-utils";
-import { loadSmtpConfig, saveSmtpConfig } from "../lib/email-service";
+import { parseRequestBody, sendJsonResponse } from "../auth-utils";
+import { loadSmtpConfig, saveSmtpConfig } from "../email-service";
 
 export default async function handler(req: any, res: any) {
   // CORS Preflight handling

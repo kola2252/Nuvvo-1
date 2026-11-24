@@ -15,8 +15,8 @@ import {
   verifySignedSessionJwt,
   fallbackCustomerAccounts,
   fallbackUsernamesRegistry
-} from "../../lib/auth-utils";
-import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
+} from "../../auth-utils";
+import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight

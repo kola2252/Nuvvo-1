@@ -6,7 +6,7 @@ import {
   sendJsonResponse,
   generateOtpChallenge,
   sendRealSms
-} from "../../lib/auth-utils";
+} from "../../auth-utils";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight OPTIONS request

@@ -15,9 +15,9 @@ import {
   createSignedSessionJwt,
   recordEmailOtpVerifyAttempt,
   fallbackCustomerAccounts
-} from "../../lib/auth-utils";
-import { getPublicSupabaseServerClient, getAdminSupabaseServerClient } from "../../src/utils/supabase/server";
-import { logEmailOtpAttempt } from "../../src/services/supabaseEmailLogs";
+} from "../../auth-utils";
+import { getPublicSupabaseServerClient, getAdminSupabaseServerClient } from "../../../src/utils/supabase/server";
+import { logEmailOtpAttempt } from "../../../src/services/supabaseEmailLogs";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -128,7 +128,7 @@ export default async function handler(req: any, res: any) {
     // 3. Verify against Supabase user_otps database table
     if (!isVerified && !isExpired) {
       try {
-        const { validateUserOtp } = await import("../../utils/supabase/otp");
+        const { validateUserOtp } = await import("../../../utils/supabase/otp");
         const dbCheck = await validateUserOtp({
           identifier: cleanEmail,
           otp: inputCode,

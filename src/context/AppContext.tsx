@@ -1419,14 +1419,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           passwordRecoveryRef.current = true;
         }
 
-        if (typeof window !== 'undefined' && window.location.search.includes('code=')) {
-          const { error: exchErr } = await supabase.auth.exchangeCodeForSession(window.location.href);
-          if (exchErr && !redirectState.authErrorDescription) {
-            setAuthRecoveryError(exchErr.message || 'Your verification or password reset link is invalid or has expired.');
-            setCurrentPage('auth');
+        let { data: { session } } = await supabase.auth.getSession();
+        if (!session && typeof window !== 'undefined' && window.location.search.includes('code=')) {
+          const { data: exchData, error: exchErr } = await supabase.auth.exchangeCodeForSession(window.location.href);
+          if (exchData?.session) {
+            session = exchData.session;
+          } else if (exchErr && !redirectState.authErrorDescription) {
+            const { data: retryData } = await supabase.auth.getSession();
+            if (retryData?.session) {
+              session = retryData.session;
+            } else {
+              setAuthRecoveryError(exchErr.message || 'Your verification or password reset link is invalid or has expired.');
+              setCurrentPage('auth');
+            }
           }
         }
-        const { data: { session } } = await supabase.auth.getSession();
         if (passwordRecoveryRef.current || getInitialAuthRedirectState().isRecoveryRedirect) {
           setIsPasswordRecoveryMode(true);
           setCurrentPage('auth');

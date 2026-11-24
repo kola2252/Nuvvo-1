@@ -166,9 +166,9 @@ async function testDirectServerlessHandlers() {
   console.log(`============================================================`);
 
   try {
-    const { default: sendOtpHandler } = await import('./api/auth/send-otp.ts');
-    const { default: verifyOtpHandler } = await import('./api/auth/verify-otp.ts');
-    const { default: verifyRoleHandler } = await import('./api/auth/verify-role.ts');
+    const { default: sendOtpHandler } = await import('./lib/handlers/auth/send-otp.ts');
+    const { default: verifyOtpHandler } = await import('./lib/handlers/auth/verify-otp.ts');
+    const { default: verifyRoleHandler } = await import('./lib/handlers/auth/verify-role.ts');
     const { default: indexHandler } = await import('./api/index.ts');
 
     function createMockReqRes(method: string, url: string, body: any, query: any = {}, headers: any = {}) {

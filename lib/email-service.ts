@@ -32,7 +32,7 @@ export function loadSmtpConfig(): SmtpConfig {
   const pass = (fileConfig.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
   const host = (fileConfig.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
   const port = Number(fileConfig.port || process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
-  const from = (fileConfig.from || process.env.EMAIL_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+  const from = (fileConfig.from || process.env.EMAIL_FROM || process.env.SMTP_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
 
   return { user, pass, host, port, from };
 }
@@ -47,7 +47,9 @@ export function saveSmtpConfig(config: Partial<SmtpConfig>): SmtpConfig {
     from: (config.from ?? current.from).trim() || current.user
   };
   try {
-    fs.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf8');
+    if (!process.env.VERCEL) {
+      fs.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf8');
+    }
   } catch (e) {
     console.warn("Failed to persist SMTP config:", e);
   }
@@ -121,11 +123,12 @@ export async function testSmtpConnection(): Promise<{ success: boolean; configur
   }
 
   try {
+    const cfg = loadSmtpConfig();
     await transporter.verify();
     return {
       success: true,
       configured: true,
-      message: `SMTP connection established successfully to ${process.env.SMTP_HOST || "smtp.gmail.com"}.`
+      message: `SMTP connection established successfully to ${cfg.host}.`
     };
   } catch (err: any) {
     return {
@@ -155,11 +158,12 @@ export async function sendEmailOtp(
     };
   }
 
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "no-reply@nuvvo.delivery";
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "no-reply@nuvvo.delivery";
   const greetingName = userName ? `Hello ${userName},` : "Hello,";
 
   const mailOptions = {
-    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
     to: recipientEmail,
     subject: `Your Nuvvo Verification Code: ${otpCode}`,
     text: `${greetingName}\n\nYour 6-digit verification code for Nuvvo registration is: ${otpCode}\n\nThis code is valid for 10 minutes. Please do not share this code with anyone.\n\nThank you,\nNuvvo Team`,
@@ -421,7 +425,8 @@ export async function sendOrderConfirmationEmail(payload: OrderEmailPayload): Pr
     };
   }
 
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "orders@nuvvo.delivery";
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "orders@nuvvo.delivery";
   const displayOrderId = orderId.startsWith("order_") ? orderId.replace("order_", "#").toUpperCase() : `#${orderId.toUpperCase()}`;
   const formattedDate = new Date(date).toLocaleString("en-IN", {
     dateStyle: "medium",
@@ -600,7 +605,7 @@ export async function sendOrderConfirmationEmail(payload: OrderEmailPayload): Pr
   `;
 
   const mailOptions = {
-    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
     to: customerEmail,
     subject: `Order Confirmed: ${displayOrderId} - ₹${finalAmount.toFixed(2)} (ETA ~${eta} mins)`,
     text: `Hello ${customerName},\n\nYour order ${displayOrderId} has been confirmed!\nTotal Paid: ₹${finalAmount.toFixed(2)}\nPayment Method: ${paymentMethod} (${paymentStatus})\nDelivery Address: ${addressLine}\n\nEstimated Delivery Time: ~${eta} mins.\n\nThank you for choosing Nuvvo!`,

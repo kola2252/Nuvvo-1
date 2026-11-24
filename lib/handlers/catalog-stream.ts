@@ -2,13 +2,11 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Standalone Vercel Serverless SSE handler for /api/catalog/stream.
+ * Standalone Serverless SSE handler for /api/catalog/stream.
  * Implements safe, bounded Server-Sent Events designed specifically for Vercel/AWS Lambda serverless lifecycle.
- * Eliminates 504 Gateway Timeout and 500 Invocation Crashes on Vercel.
  */
 
 export default function handler(req: any, res: any) {
-  // CORS setup
   try {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -24,7 +22,6 @@ export default function handler(req: any, res: any) {
     return res.end();
   }
 
-  // 1. Immediately acknowledge stream connection
   try {
     res.statusCode = 200;
     res.write(`: nuvvo-catalog-live-stream-ok\n\n`);
@@ -34,7 +31,6 @@ export default function handler(req: any, res: any) {
     return res.end();
   }
 
-  // 2. Periodic heartbeat ping (every 3 seconds)
   const heartbeat = setInterval(() => {
     try {
       res.write(`: ping ${Date.now()}\n\n`);
@@ -43,8 +39,6 @@ export default function handler(req: any, res: any) {
     }
   }, 3000);
 
-  // 3. Graceful termination before Vercel 10s lambda timeout
-  // Closes cleanly after 7.5 seconds so Vercel logs a clean 200 OK without 504 Gateway Timeout
   const autoClose = setTimeout(() => {
     clearInterval(heartbeat);
     try {

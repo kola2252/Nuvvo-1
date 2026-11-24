@@ -1,0 +1,12 @@
+android/
+workspace/
+.aistudio/
+dist/
+server.js
+server.js.map
+.server_*.json
+*.log
+*.apk
+.env
+.env.local
+coverage/

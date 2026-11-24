@@ -17,6 +17,7 @@ __export(email_service_exports, {
   saveSmtpConfig: () => saveSmtpConfig,
   sendEmailOtp: () => sendEmailOtp,
   sendOrderConfirmationEmail: () => sendOrderConfirmationEmail,
+  sendPasswordRecoveryEmail: () => sendPasswordRecoveryEmail,
   testSmtpConnection: () => testSmtpConnection
 });
 import nodemailer from "nodemailer";
@@ -34,7 +35,7 @@ function loadSmtpConfig() {
   const pass = (fileConfig.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
   const host = (fileConfig.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
   const port = Number(fileConfig.port || process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
-  const from = (fileConfig.from || process.env.EMAIL_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+  const from = (fileConfig.from || process.env.EMAIL_FROM || process.env.SMTP_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
   return { user, pass, host, port, from };
 }
 function saveSmtpConfig(config) {
@@ -47,7 +48,9 @@ function saveSmtpConfig(config) {
     from: (config.from ?? current.from).trim() || current.user
   };
   try {
-    fs2.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), "utf8");
+    if (!process.env.VERCEL) {
+      fs2.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), "utf8");
+    }
   } catch (e) {
     console.warn("Failed to persist SMTP config:", e);
   }
@@ -98,11 +101,12 @@ async function testSmtpConnection() {
     };
   }
   try {
+    const cfg = loadSmtpConfig();
     await transporter.verify();
     return {
       success: true,
       configured: true,
-      message: `SMTP connection established successfully to ${process.env.SMTP_HOST || "smtp.gmail.com"}.`
+      message: `SMTP connection established successfully to ${cfg.host}.`
     };
   } catch (err) {
     return {
@@ -122,10 +126,11 @@ async function sendEmailOtp(recipientEmail, otpCode, userName) {
       error: "Email delivery credentials (EMAIL_USER & EMAIL_PASS) are not configured in Vercel/Environment. Please configure Gmail App Password or custom SMTP."
     };
   }
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "no-reply@nuvvo.delivery";
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "no-reply@nuvvo.delivery";
   const greetingName = userName ? `Hello ${userName},` : "Hello,";
   const mailOptions = {
-    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
     to: recipientEmail,
     subject: `Your Nuvvo Verification Code: ${otpCode}`,
     text: `${greetingName}
@@ -212,6 +217,105 @@ Nuvvo Team`,
     };
   }
 }
+async function sendPasswordRecoveryEmail(recipientEmail, recoveryLink, userName) {
+  const transporter = createEmailTransporter();
+  if (!transporter) {
+    return {
+      success: false,
+      configured: false,
+      provider: "not_configured",
+      error: "Email delivery credentials (EMAIL_USER & EMAIL_PASS) are not configured on the server."
+    };
+  }
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "no-reply@nuvvo.delivery";
+  const greetingName = userName ? `Hello ${userName},` : "Hello,";
+  const mailOptions = {
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
+    to: recipientEmail,
+    subject: "Reset Your Nuvvo Password",
+    text: `${greetingName}
+
+We received a request to reset your Nuvvo account password.
+
+Click the link below to set a new password:
+${recoveryLink}
+
+If you did not request a password reset, you can safely ignore this email.
+
+Thank you,
+Nuvvo Team`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Reset Your Nuvvo Password</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 30px 15px;">
+          <tr>
+            <td align="center">
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                <tr>
+                  <td align="center" style="background: linear-gradient(135deg, #ea580c, #f97316); padding: 28px 20px; color: #ffffff;">
+                    <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">NUVVO</h1>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.9;">Password Recovery</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 32px 28px;">
+                    <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 18px; font-weight: 700;">Reset Your Password</h2>
+                    <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 1.6;">
+                      ${greetingName} Click the button below to choose a new password for your Nuvvo account:
+                    </p>
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin: 24px 0;">
+                      <tr>
+                        <td align="center">
+                          <a href="${recoveryLink}" style="display: inline-block; background: linear-gradient(135deg, #ea580c, #f97316); color: #ffffff; text-decoration: none; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 12px;">
+                            Reset Password
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                    <p style="margin: 0 0 12px 0; color: #64748b; font-size: 12px; line-height: 1.5;">
+                      If the button above does not work, copy and paste this secure link into your browser:
+                    </p>
+                    <p style="margin: 0 0 16px 0; color: #ea580c; font-size: 11px; word-break: break-all; font-family: monospace;">
+                      ${recoveryLink}
+                    </p>
+                    <p style="margin: 0; color: #94a3b8; font-size: 11px;">
+                      If you did not request this password reset, you can safely ignore this email.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `
+  };
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return {
+      success: true,
+      configured: true,
+      provider: "nodemailer_smtp",
+      messageId: info.messageId
+    };
+  } catch (err) {
+    console.error("[Nodemailer Recovery Error]:", err?.message || err);
+    return {
+      success: false,
+      configured: true,
+      provider: "nodemailer_smtp",
+      error: `SMTP delivery failed: ${err?.message || "Unknown error"}. Check EMAIL_USER and EMAIL_PASS.`
+    };
+  }
+}
 async function sendOrderConfirmationEmail(payload) {
   const {
     orderId,
@@ -249,7 +353,8 @@ async function sendOrderConfirmationEmail(payload) {
       error: "SMTP credentials are not configured in environment (EMAIL_USER / EMAIL_PASS). Order confirmation skipped."
     };
   }
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER || "orders@nuvvo.delivery";
+  const cfg = loadSmtpConfig();
+  const senderEmail = cfg.from || cfg.user || "orders@nuvvo.delivery";
   const displayOrderId = orderId.startsWith("order_") ? orderId.replace("order_", "#").toUpperCase() : `#${orderId.toUpperCase()}`;
   const formattedDate = new Date(date).toLocaleString("en-IN", {
     dateStyle: "medium",
@@ -421,7 +526,7 @@ async function sendOrderConfirmationEmail(payload) {
 </html>
   `;
   const mailOptions = {
-    from: `"Nuvvo Food Delivery" <${senderEmail}>`,
+    from: senderEmail.includes("<") ? senderEmail : `"Nuvvo Food Delivery" <${senderEmail}>`,
     to: customerEmail,
     subject: `Order Confirmed: ${displayOrderId} - \u20B9${finalAmount.toFixed(2)} (ETA ~${eta} mins)`,
     text: `Hello ${customerName},
@@ -1791,10 +1896,13 @@ var getAdminSupabaseServerClient = () => {
     isServiceRole: false
   };
 };
+var getPublicSupabaseKey = () => {
+  return (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX").trim();
+};
 var getPublicSupabaseServerClient = () => {
   if (!cachedPublicServerClient) {
     const supabaseUrl2 = getSupabaseUrl();
-    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX";
+    const publicKey = getPublicSupabaseKey();
     cachedPublicServerClient = createSupabaseClient(supabaseUrl2, publicKey, {
       auth: {
         persistSession: false,
@@ -1868,7 +1976,7 @@ var checkServerSupabaseDiagnostics = async () => {
   }
 };
 
-// api/auth/debug-otp.ts
+// lib/handlers/auth/debug-otp.ts
 import crypto from "crypto";
 import dotenv from "dotenv";
 dotenv.config();
@@ -2066,7 +2174,7 @@ async function handler(req, res) {
   }
 }
 
-// api/auth/send-email-otp.ts
+// lib/handlers/auth/send-email-otp.ts
 import crypto4 from "crypto";
 
 // lib/auth-utils.ts
@@ -2099,6 +2207,7 @@ function checkCustomerAuthRateLimit(bucket, key, options) {
   const maxAttempts = options?.maxAttempts ?? (bucket === "login" || bucket === "change_password" ? 5 : bucket === "register" ? 6 : 3);
   const windowMs = options?.windowMs ?? 15 * 60 * 1e3;
   const blockMs = options?.blockMs ?? 15 * 60 * 1e3;
+  const minIntervalMs = options?.minIntervalMs ?? 0;
   const storeKey = `${bucket}:${key.toLowerCase()}`;
   const now = Date.now();
   let rec = customerAuthRateStore.get(storeKey);
@@ -2113,10 +2222,20 @@ function checkCustomerAuthRateLimit(bucket, key, options) {
     };
   }
   if (!rec || now - rec.windowStart > windowMs) {
-    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+    rec = { count: 0, windowStart: now, blockedUntil: 0, lastAttemptAt: void 0 };
+  }
+  if (minIntervalMs > 0 && rec.lastAttemptAt && now - rec.lastAttemptAt < minIntervalMs) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((minIntervalMs - (now - rec.lastAttemptAt)) / 1e3));
+    return {
+      allowed: false,
+      retryAfterSeconds,
+      remaining: Math.max(0, maxAttempts - rec.count),
+      error: `Please wait ${retryAfterSeconds} second${retryAfterSeconds === 1 ? "" : "s"} before requesting another password reset email.`
+    };
   }
   if (options?.incrementOnCheck) {
     rec.count += 1;
+    rec.lastAttemptAt = now;
     if (rec.count > maxAttempts) {
       rec.blockedUntil = now + blockMs;
       customerAuthRateStore.set(storeKey, rec);
@@ -2155,9 +2274,10 @@ function recordCustomerAuthFailure(bucket, key, options) {
   const now = Date.now();
   let rec = customerAuthRateStore.get(storeKey);
   if (!rec || now - rec.windowStart > windowMs) {
-    rec = { count: 0, windowStart: now, blockedUntil: 0 };
+    rec = { count: 0, windowStart: now, blockedUntil: 0, lastAttemptAt: void 0 };
   }
   rec.count += 1;
+  rec.lastAttemptAt = now;
   const remainingAttempts = Math.max(0, maxAttempts - rec.count);
   if (rec.count >= maxAttempts) {
     rec.blockedUntil = now + blockMs;
@@ -2705,7 +2825,7 @@ function isOrderOwnedByCaller(order, caller) {
   return false;
 }
 
-// api/auth/send-email-otp.ts
+// lib/handlers/auth/send-email-otp.ts
 init_email_service();
 
 // src/utils/supabase/client.ts
@@ -2884,7 +3004,7 @@ async function getRecentEmailLogs(options) {
   };
 }
 
-// api/auth/send-email-otp.ts
+// lib/handlers/auth/send-email-otp.ts
 async function handler2(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -3109,7 +3229,7 @@ async function handler2(req, res) {
   }
 }
 
-// api/auth/verify-email-otp.ts
+// lib/handlers/auth/verify-email-otp.ts
 async function handler3(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -3323,7 +3443,7 @@ async function handler3(req, res) {
   }
 }
 
-// api/auth/verify-db-otp.ts
+// lib/handlers/auth/verify-db-otp.ts
 init_otp();
 async function handler4(req, res) {
   if (req.method === "OPTIONS") {
@@ -5006,7 +5126,7 @@ async function sendOrderConfirmationWhatsApp(order) {
   return dispatchOrderWhatsAppNotifications(order);
 }
 
-// api/auth/setup-profile.ts
+// lib/handlers/auth/setup-profile.ts
 async function handler5(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -5191,7 +5311,7 @@ async function handler5(req, res) {
   }
 }
 
-// api/auth/customer-register.ts
+// lib/handlers/auth/customer-register.ts
 async function handler6(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -5548,7 +5668,7 @@ async function handler6(req, res) {
   }
 }
 
-// api/auth/customer-login.ts
+// lib/handlers/auth/customer-login.ts
 async function handler7(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -5838,7 +5958,7 @@ async function handler7(req, res) {
   }
 }
 
-// api/auth/customer-profile.ts
+// lib/handlers/auth/customer-profile.ts
 function extractBearerToken2(req) {
   const authHeader = req.headers?.authorization || req.headers?.Authorization;
   if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
@@ -6105,7 +6225,8 @@ async function handler8(req, res) {
   }
 }
 
-// api/auth/forgot-password.ts
+// lib/handlers/auth/forgot-password.ts
+init_email_service();
 async function handler9(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6125,11 +6246,28 @@ async function handler9(req, res) {
     }
     const clientIp = getClientIp(req);
     const rateKey = `${clientIp}:${rawIdentifier.toLowerCase()}`;
-    const rateCheck = checkCustomerAuthRateLimit("forgot_password", rateKey, {
-      maxAttempts: 3,
+    const ipRateCheck = checkCustomerAuthRateLimit("forgot_password_ip", clientIp, {
+      maxAttempts: 20,
       windowMs: 15 * 60 * 1e3,
       blockMs: 15 * 60 * 1e3,
-      incrementOnCheck: true
+      incrementOnCheck: false
+    });
+    if (!ipRateCheck.allowed) {
+      if (ipRateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
+        res.setHeader("Retry-After", String(ipRateCheck.retryAfterSeconds));
+      }
+      return sendJsonResponse(res, 429, {
+        success: false,
+        retryAfterSeconds: ipRateCheck.retryAfterSeconds || 60,
+        error: ipRateCheck.error || "Too many password reset requests from this network. Please wait and try again."
+      });
+    }
+    const rateCheck = checkCustomerAuthRateLimit("forgot_password", rateKey, {
+      maxAttempts: 5,
+      windowMs: 15 * 60 * 1e3,
+      blockMs: 15 * 60 * 1e3,
+      minIntervalMs: 60 * 1e3,
+      incrementOnCheck: false
     });
     if (!rateCheck.allowed) {
       if (rateCheck.retryAfterSeconds && typeof res.setHeader === "function") {
@@ -6137,10 +6275,12 @@ async function handler9(req, res) {
       }
       return sendJsonResponse(res, 429, {
         success: false,
-        error: rateCheck.error || "Too many password reset requests. Please wait a few minutes and try again."
+        retryAfterSeconds: rateCheck.retryAfterSeconds || 60,
+        error: rateCheck.error || "Please wait 60 seconds before requesting another password reset email."
       });
     }
     let resolvedEmail = "";
+    let customerName = "";
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
     if (rawIdentifier.includes("@")) {
       resolvedEmail = normalizeEmail(rawIdentifier);
@@ -6148,8 +6288,9 @@ async function handler9(req, res) {
       const cleanUsername = rawIdentifier.toLowerCase();
       if (adminClient && isServiceRole) {
         try {
-          const { data } = await adminClient.from("customer_profiles").select("email").ilike("username", cleanUsername).maybeSingle();
+          const { data } = await adminClient.from("customer_profiles").select("email, full_name").ilike("username", cleanUsername).maybeSingle();
           if (data?.email) resolvedEmail = normalizeEmail(data.email);
+          if (data?.full_name) customerName = String(data.full_name).trim();
         } catch {
         }
         if (!resolvedEmail) {
@@ -6163,37 +6304,146 @@ async function handler9(req, res) {
       }
       if (!resolvedEmail) {
         const local = findLocalCustomerByUsername(cleanUsername);
-        if (local?.email) resolvedEmail = normalizeEmail(local.email);
+        if (local?.email) {
+          resolvedEmail = normalizeEmail(local.email);
+          if (local.fullName) customerName = String(local.fullName).trim();
+        }
       }
       if (!resolvedEmail) {
         resolvedEmail = fallbackUsernamesRegistry.get(cleanUsername) || "";
       }
     }
-    if (resolvedEmail) {
-      const publicSupabase = getPublicSupabaseServerClient();
-      const targetRedirect = getAppRedirectOrigin(req, redirectTo);
+    if (!resolvedEmail) {
+      recordCustomerAuthFailure("forgot_password", rateKey, {
+        maxAttempts: 5,
+        windowMs: 15 * 60 * 1e3,
+        blockMs: 15 * 60 * 1e3
+      });
+      recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+        maxAttempts: 20,
+        windowMs: 15 * 60 * 1e3,
+        blockMs: 15 * 60 * 1e3
+      });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        cooldownSeconds: 60,
+        message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+    const publicSupabase = getPublicSupabaseServerClient();
+    const baseOrigin = getAppRedirectOrigin(req, redirectTo);
+    const targetRedirect = `${baseOrigin.replace(/\/+$/, "")}/?type=recovery`;
+    let primaryError = null;
+    try {
       const { error } = await publicSupabase.auth.resetPasswordForEmail(resolvedEmail, {
         redirectTo: targetRedirect
       });
-      if (error) {
-        const lowerErr = String(error.message || "").toLowerCase();
-        if (error.status === 429 || lowerErr.includes("rate limit")) {
-          return sendJsonResponse(res, 429, {
-            success: false,
-            error: "Email recovery rate limit reached. Please wait a few minutes before retrying."
+      primaryError = error;
+      if (primaryError && String(primaryError.message || "").toLowerCase().includes("redirect")) {
+        const retryRes = await publicSupabase.auth.resetPasswordForEmail(resolvedEmail);
+        primaryError = retryRes.error;
+      }
+    } catch (sdkErr) {
+      primaryError = { message: sdkErr?.message || "Supabase Auth request failed", status: 502 };
+    }
+    if (!primaryError) {
+      recordCustomerAuthFailure("forgot_password", rateKey, {
+        maxAttempts: 5,
+        windowMs: 15 * 60 * 1e3,
+        blockMs: 15 * 60 * 1e3
+      });
+      recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+        maxAttempts: 20,
+        windowMs: 15 * 60 * 1e3,
+        blockMs: 15 * 60 * 1e3
+      });
+      return sendJsonResponse(res, 200, {
+        success: true,
+        provider: "supabase_auth",
+        cooldownSeconds: 60,
+        message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+    if (adminClient && isServiceRole && isSmtpConfigured()) {
+      try {
+        const { data: linkData, error: linkError } = await adminClient.auth.admin.generateLink({
+          type: "recovery",
+          email: resolvedEmail,
+          options: { redirectTo: targetRedirect }
+        });
+        const actionLink = linkData?.properties?.action_link;
+        if (!linkError && actionLink) {
+          const mailRes = await sendPasswordRecoveryEmail(resolvedEmail, actionLink, customerName || void 0);
+          if (mailRes.success) {
+            recordCustomerAuthFailure("forgot_password", rateKey, {
+              maxAttempts: 5,
+              windowMs: 15 * 60 * 1e3,
+              blockMs: 15 * 60 * 1e3
+            });
+            recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+              maxAttempts: 20,
+              windowMs: 15 * 60 * 1e3,
+              blockMs: 15 * 60 * 1e3
+            });
+            return sendJsonResponse(res, 200, {
+              success: true,
+              provider: "smtp",
+              cooldownSeconds: 60,
+              message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+            });
+          }
+        } else if (linkError && String(linkError.message || "").toLowerCase().includes("not found")) {
+          recordCustomerAuthFailure("forgot_password", rateKey, {
+            maxAttempts: 5,
+            windowMs: 15 * 60 * 1e3,
+            blockMs: 15 * 60 * 1e3
+          });
+          recordCustomerAuthFailure("forgot_password_ip", clientIp, {
+            maxAttempts: 20,
+            windowMs: 15 * 60 * 1e3,
+            blockMs: 15 * 60 * 1e3
+          });
+          return sendJsonResponse(res, 200, {
+            success: true,
+            cooldownSeconds: 60,
+            message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
           });
         }
-        if (lowerErr.includes("error sending")) {
-          return sendJsonResponse(res, 502, {
-            success: false,
-            error: "Supabase Auth could not send the recovery email. Please configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings."
-          });
-        }
+      } catch (fallbackErr) {
+        console.warn("[Forgot Password SMTP Fallback Warning]:", fallbackErr?.message || fallbackErr);
       }
     }
-    return sendJsonResponse(res, 200, {
-      success: true,
-      message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+    const errMsg = String(primaryError?.message || "");
+    const lowerErr = errMsg.toLowerCase();
+    console.warn("[Forgot Password Dispatch Failed]:", primaryError?.status, errMsg);
+    if (primaryError?.status === 429 || lowerErr.includes("rate limit")) {
+      return sendJsonResponse(res, 429, {
+        success: false,
+        retryAfterSeconds: 60,
+        error: "Email recovery rate limit reached. Please wait a few minutes before retrying."
+      });
+    }
+    if (lowerErr.includes("user not found") || lowerErr.includes("not found")) {
+      return sendJsonResponse(res, 200, {
+        success: true,
+        cooldownSeconds: 60,
+        message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
+      });
+    }
+    if (lowerErr.includes("error sending") || primaryError?.status === 500 || primaryError?.status === 502) {
+      const smtpReady = isSmtpConfigured();
+      const missingParts = [];
+      if (!isServiceRole) missingParts.push("SUPABASE_SERVICE_ROLE_KEY");
+      if (!smtpReady) missingParts.push("EMAIL_USER / EMAIL_PASS (or SMTP_USER / SMTP_PASS)");
+      return sendJsonResponse(res, 502, {
+        success: false,
+        code: "EMAIL_DELIVERY_UNAVAILABLE",
+        error: missingParts.length > 0 ? `Unable to send password reset email: Supabase Auth mailer failed and fallback SMTP cannot run because ${missingParts.join(" and ")} ${missingParts.length === 1 ? "is" : "are"} not configured on the server. Configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings, or set those environment variables.` : "Unable to send password reset email because both Supabase Auth and fallback SMTP failed. Please check your SMTP credentials and Supabase Dashboard -> Authentication -> SMTP Settings."
+      });
+    }
+    return sendJsonResponse(res, primaryError?.status >= 400 && primaryError?.status < 600 ? primaryError.status : 400, {
+      success: false,
+      error: errMsg || "Unable to initiate password reset for this account. Please verify your email address and try again."
     });
   } catch (err) {
     console.error("[Forgot Password Error]:", err?.message || err);
@@ -6204,7 +6454,7 @@ async function handler9(req, res) {
   }
 }
 
-// api/auth/resend-verification.ts
+// lib/handlers/auth/resend-verification.ts
 async function handler10(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6293,7 +6543,7 @@ async function handler10(req, res) {
   }
 }
 
-// api/auth/reset-password.ts
+// lib/handlers/auth/reset-password.ts
 async function handler11(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6408,7 +6658,7 @@ async function handler11(req, res) {
   }
 }
 
-// api/auth/change-password.ts
+// lib/handlers/auth/change-password.ts
 import { createClient as createSupabaseClient4 } from "@supabase/supabase-js";
 async function handler12(req, res) {
   if (req.method === "OPTIONS") {
@@ -6530,7 +6780,7 @@ async function handler12(req, res) {
   }
 }
 
-// api/auth/delete-account.ts
+// lib/handlers/auth/delete-account.ts
 async function handler13(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6719,7 +6969,7 @@ async function handler13(req, res) {
   }
 }
 
-// api/auth/admin-check-phone.ts
+// lib/handlers/auth/admin-check-phone.ts
 async function handler14(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6757,7 +7007,7 @@ async function handler14(req, res) {
   }
 }
 
-// api/auth/admin-verify-pin.ts
+// lib/handlers/auth/admin-verify-pin.ts
 async function handler15(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6821,7 +7071,7 @@ async function handler15(req, res) {
   }
 }
 
-// api/auth/admin-update-pin.ts
+// lib/handlers/auth/admin-update-pin.ts
 async function handler16(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -6905,47 +7155,52 @@ async function handler16(req, res) {
   }
 }
 
-// api/auth/email-diagnostics.ts
+// lib/handlers/auth/email-diagnostics.ts
 init_email_service();
 async function handler17(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
   }
   const supabaseUrl2 = getSupabaseUrl();
-  const rawAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const rawAnonKey = getPublicSupabaseKey();
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "";
-  const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER || "";
-  const emailPassConfigured = Boolean(process.env.EMAIL_PASS || process.env.SMTP_PASS);
-  const smtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
-  const smtpPort = Number(process.env.SMTP_PORT) || 465;
+  const smtpCfg = loadSmtpConfig();
+  const smtpConfigured = isSmtpConfigured();
+  const explicitEmailUser = process.env.EMAIL_USER || process.env.SMTP_USER || (smtpConfigured ? smtpCfg.user : "");
+  const emailPassConfigured = Boolean(smtpCfg.pass);
   let supabaseAuthStatus = { status: "ok", message: "Ready" };
   try {
-    const publicClient = getPublicSupabaseServerClient();
-    const probeEmail = "probe_test_nuvvo@gmail.com";
-    const { error: sbError } = await publicClient.auth.signInWithOtp({
-      email: probeEmail,
-      options: { shouldCreateUser: true }
+    const headers = {};
+    if (rawAnonKey) {
+      headers.apikey = rawAnonKey;
+    }
+    const settingsRes = await fetch(`${supabaseUrl2.replace(/\/+$/, "")}/auth/v1/settings`, {
+      method: "GET",
+      headers
     });
-    if (sbError) {
-      if (sbError.status === 429 || sbError.message.toLowerCase().includes("rate limit")) {
-        supabaseAuthStatus = {
-          status: "rate_limited",
-          code: sbError.code || "over_email_send_rate_limit",
-          httpStatus: 429,
-          message: "Supabase free email rate limit exceeded (3-4 emails/hour limit on Supabase default mail server)."
-        };
-      } else {
-        supabaseAuthStatus = {
-          status: "error",
-          code: sbError.code || "auth_api_error",
-          httpStatus: sbError.status,
-          message: sbError.message
-        };
-      }
-    } else {
+    if (settingsRes.ok) {
+      const settingsJson = await settingsRes.json().catch(() => ({}));
+      const emailEnabled = Boolean(settingsJson?.external?.email);
       supabaseAuthStatus = {
-        status: "ok",
-        message: "Supabase Auth responded successfully."
+        status: emailEnabled ? "ok" : "error",
+        httpStatus: settingsRes.status,
+        emailProviderEnabled: emailEnabled,
+        message: emailEnabled ? "Supabase Auth endpoint is reachable and Email provider is enabled." : "Supabase Auth Email provider is disabled in Supabase Dashboard."
+      };
+    } else if (settingsRes.status === 429) {
+      supabaseAuthStatus = {
+        status: "rate_limited",
+        code: "over_email_send_rate_limit",
+        httpStatus: 429,
+        message: "Supabase Auth rate limit reached."
+      };
+    } else {
+      const errBody = await settingsRes.json().catch(() => ({}));
+      supabaseAuthStatus = {
+        status: "error",
+        code: errBody?.error_code || "auth_api_error",
+        httpStatus: settingsRes.status,
+        message: errBody?.msg || errBody?.message || `Supabase Auth returned HTTP ${settingsRes.status}`
       };
     }
   } catch (ex) {
@@ -6954,7 +7209,6 @@ async function handler17(req, res) {
       message: ex?.message || "Failed to contact Supabase Auth endpoint"
     };
   }
-  const smtpConfigured = isSmtpConfigured();
   let smtpVerificationResult = {
     configured: smtpConfigured,
     verified: false,
@@ -6963,15 +7217,25 @@ async function handler17(req, res) {
   if (smtpConfigured) {
     smtpVerificationResult = await testSmtpConnection();
   }
+  const missingEnvVars = [];
+  if (!serviceKey) missingEnvVars.push("SUPABASE_SERVICE_ROLE_KEY");
+  if (!smtpConfigured) missingEnvVars.push("EMAIL_USER / EMAIL_PASS (or SMTP_USER / SMTP_PASS)");
+  const canDeliverViaSmtp = Boolean(smtpVerificationResult?.success);
+  const canSendPasswordResetViaFallback = Boolean(serviceKey && canDeliverViaSmtp);
   const recommendations = [];
-  if (supabaseAuthStatus.status === "rate_limited") {
+  if (!canSendPasswordResetViaFallback) {
     recommendations.push(
-      "Supabase default mailer has reached its free tier rate limit (3 emails/hr). Configure Custom SMTP in your Supabase Dashboard: Go to Authentication -> Providers -> Email -> Enable Custom SMTP."
+      "For reliable Supabase password reset email delivery, configure Custom SMTP in Supabase Dashboard -> Authentication -> SMTP Settings."
     );
   }
   if (!smtpConfigured) {
     recommendations.push(
-      "To enable reliable server-side email OTP delivery directly from Vercel/Node: Add EMAIL_USER and EMAIL_PASS to your Vercel Project Settings -> Environment Variables. (For Gmail, use a 16-character App Password)."
+      "To enable Nodemailer SMTP delivery from the Node/Vercel backend: Set EMAIL_USER and EMAIL_PASS (for Gmail, use a 16-character App Password) in environment variables."
+    );
+  }
+  if (!serviceKey) {
+    recommendations.push(
+      "To allow the backend /api/auth/forgot-password route to generate recovery links and fall back to Nodemailer SMTP when Supabase Auth mail fails, set SUPABASE_SERVICE_ROLE_KEY in environment variables."
     );
   }
   return sendJsonResponse(res, 200, {
@@ -6986,23 +7250,25 @@ async function handler17(req, res) {
       },
       smtp: {
         configured: smtpConfigured,
-        user: emailUser ? `${emailUser.slice(0, 3)}\u2022\u2022\u2022\u2022@${emailUser.split("@")[1] || ""}` : null,
+        user: explicitEmailUser ? `${explicitEmailUser.slice(0, 3)}\u2022\u2022\u2022\u2022@${explicitEmailUser.split("@")[1] || ""}` : null,
         passConfigured: emailPassConfigured,
-        host: smtpHost,
-        port: smtpPort,
+        host: smtpCfg.host,
+        port: smtpCfg.port,
         verification: smtpVerificationResult
       }
     },
     recommendations,
     statusSummary: {
       canDeliverViaSupabase: supabaseAuthStatus.status === "ok",
-      canDeliverViaSmtp: Boolean(smtpVerificationResult?.success),
-      fallbackModeActive: supabaseAuthStatus.status !== "ok" && !smtpVerificationResult?.success
+      canDeliverViaSmtp,
+      canSendPasswordResetViaFallback,
+      missingEnvVars,
+      fallbackModeActive: supabaseAuthStatus.status !== "ok" && !canSendPasswordResetViaFallback
     }
   });
 }
 
-// api/admin/verify.ts
+// lib/handlers/admin/verify.ts
 async function handler18(req, res) {
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
@@ -7093,7 +7359,7 @@ async function handler18(req, res) {
   }
 }
 
-// api/verify-email.ts
+// lib/handlers/verify-email.ts
 import nodemailer2 from "nodemailer";
 init_email_service();
 async function handler19(req, res) {
@@ -7410,7 +7676,7 @@ This confirms that customer registration and OTP verification emails will delive
   }
 }
 
-// api/verify-smtp.ts
+// lib/handlers/verify-smtp.ts
 import nodemailer3 from "nodemailer";
 init_email_service();
 async function handler20(req, res) {
@@ -8942,7 +9208,7 @@ Current User Query: ${message}`;
     res.json({ response: "I'm here to help! Could you please try again? I can help recommend foods, track orders, or connect you to support." });
   }
 });
-app.get("/api/health", (_req, res) => {
+app.get(["/api", "/api/health"], (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime(), timestamp: (/* @__PURE__ */ new Date()).toISOString() });
 });
 var OTPS_FILE = path4.join(process.cwd(), ".server_otps.json");
@@ -11197,7 +11463,11 @@ async function startServer() {
     app.use(express.static(distPath, { index: "index.html", maxAge: "5m" }));
   }
   if (isDev) {
-    const { createServer: createViteServer } = await import("vite");
+    const vitePkg = "vite";
+    const { createServer: createViteServer } = await import(
+      /* @vite-ignore */
+      vitePkg
+    );
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
@@ -11354,7 +11624,8 @@ export {
  *
  * Customer Forgot Password Endpoint: POST /api/auth/forgot-password
  * Sends a secure Supabase Auth password recovery email (supporting Username or Email resolution
- * strictly on backend) with rate limiting and non-enumerating responses.
+ * strictly on backend) with rate limiting, SMTP fallback via Supabase Admin generateLink,
+ * and clear error reporting.
  */
 /**
  * @license

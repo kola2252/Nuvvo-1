@@ -16,9 +16,9 @@ import {
   createSignedSessionJwt,
   fallbackCustomerAccounts,
   fallbackUsernamesRegistry
-} from "../../lib/auth-utils";
-import { getAdminSupabaseServerClient } from "../../src/utils/supabase/server";
-import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../src/lib/whatsapp";
+} from "../../auth-utils";
+import { getAdminSupabaseServerClient } from "../../../src/utils/supabase/server";
+import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../../src/lib/whatsapp";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight

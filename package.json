@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "generate:icons": "node scripts/generate-icons.js && node scripts/sync-android-icons.js",
-    "build": "npm run generate:icons && vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=server.js && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=api/server.js && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "npm run generate:icons && vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=server.js",
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
@@ -45,8 +45,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "recharts": "^3.8.1",
-    "vite": "^6.2.3"
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@types/d3": "^7.4.3",

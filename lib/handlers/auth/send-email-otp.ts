@@ -15,10 +15,10 @@ import {
   generateEmailOtpChallenge,
   checkEmailOtpSendRateLimit,
   emailOtpSendHistory
-} from "../../lib/auth-utils";
-import { sendEmailOtp, isSmtpConfigured } from "../../lib/email-service";
-import { getPublicSupabaseServerClient } from "../../src/utils/supabase/server";
-import { logEmailOtpAttempt } from "../../src/services/supabaseEmailLogs";
+} from "../../auth-utils";
+import { sendEmailOtp, isSmtpConfigured } from "../../email-service";
+import { getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
+import { logEmailOtpAttempt } from "../../../src/services/supabaseEmailLogs";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
@@ -93,7 +93,7 @@ export default async function handler(req: any, res: any) {
 
     // Store in Supabase user_otps table for persistent database verification
     try {
-      const { storeUserOtp } = await import("../../utils/supabase/otp");
+      const { storeUserOtp } = await import("../../../utils/supabase/otp");
       await storeUserOtp({
         identifier: cleanEmail,
         otp: generatedOtp,

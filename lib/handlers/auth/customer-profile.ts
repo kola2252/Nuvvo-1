@@ -13,13 +13,13 @@ import {
   sendJsonResponse,
   findLocalCustomerById,
   upsertLocalCustomerProfileIndex
-} from "../../lib/auth-utils";
+} from "../../auth-utils";
 import {
   getAdminSupabaseServerClient,
   getPublicSupabaseServerClient,
   createUserScopedSupabaseClient
-} from "../../src/utils/supabase/server";
-import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../src/lib/whatsapp";
+} from "../../../src/utils/supabase/server";
+import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../../src/lib/whatsapp";
 
 function extractBearerToken(req: any): string {
   const authHeader = req.headers?.authorization || req.headers?.Authorization;

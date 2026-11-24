@@ -13,26 +13,26 @@ import {
   createServerClient,
   checkServerSupabaseDiagnostics
 } from "./src/utils/supabase/server";
-import debugOtpHandler from "./api/auth/debug-otp";
-import sendEmailOtpHandler from "./api/auth/send-email-otp";
-import verifyEmailOtpHandler from "./api/auth/verify-email-otp";
-import verifyDbOtpHandler from "./api/auth/verify-db-otp";
-import setupProfileHandler from "./api/auth/setup-profile";
-import customerRegisterHandler from "./api/auth/customer-register";
-import customerLoginHandler from "./api/auth/customer-login";
-import customerProfileHandler from "./api/auth/customer-profile";
-import forgotPasswordHandler from "./api/auth/forgot-password";
-import resendVerificationHandler from "./api/auth/resend-verification";
-import resetPasswordHandler from "./api/auth/reset-password";
-import changePasswordHandler from "./api/auth/change-password";
-import deleteAccountHandler from "./api/auth/delete-account";
-import adminCheckPhoneHandler from "./api/auth/admin-check-phone";
-import adminVerifyPinHandler from "./api/auth/admin-verify-pin";
-import adminUpdatePinHandler from "./api/auth/admin-update-pin";
-import emailDiagnosticsHandler from "./api/auth/email-diagnostics";
-import adminVerifyHandler from "./api/admin/verify";
-import verifyEmailHandler from "./api/verify-email";
-import verifySmtpHandler from "./api/verify-smtp";
+import debugOtpHandler from "./lib/handlers/auth/debug-otp";
+import sendEmailOtpHandler from "./lib/handlers/auth/send-email-otp";
+import verifyEmailOtpHandler from "./lib/handlers/auth/verify-email-otp";
+import verifyDbOtpHandler from "./lib/handlers/auth/verify-db-otp";
+import setupProfileHandler from "./lib/handlers/auth/setup-profile";
+import customerRegisterHandler from "./lib/handlers/auth/customer-register";
+import customerLoginHandler from "./lib/handlers/auth/customer-login";
+import customerProfileHandler from "./lib/handlers/auth/customer-profile";
+import forgotPasswordHandler from "./lib/handlers/auth/forgot-password";
+import resendVerificationHandler from "./lib/handlers/auth/resend-verification";
+import resetPasswordHandler from "./lib/handlers/auth/reset-password";
+import changePasswordHandler from "./lib/handlers/auth/change-password";
+import deleteAccountHandler from "./lib/handlers/auth/delete-account";
+import adminCheckPhoneHandler from "./lib/handlers/auth/admin-check-phone";
+import adminVerifyPinHandler from "./lib/handlers/auth/admin-verify-pin";
+import adminUpdatePinHandler from "./lib/handlers/auth/admin-update-pin";
+import emailDiagnosticsHandler from "./lib/handlers/auth/email-diagnostics";
+import adminVerifyHandler from "./lib/handlers/admin/verify";
+import verifyEmailHandler from "./lib/handlers/verify-email";
+import verifySmtpHandler from "./lib/handlers/verify-smtp";
 import { 
   verifyAdminPin, 
   isAuthorizedAdminAccountPhone,
@@ -1154,8 +1154,8 @@ Current User Query: ${message}`;
     }
   });
 
-  // Server Health Check endpoint
-  app.get("/api/health", (_req, res) => {
+  // Server Health Check endpoints
+  app.get(["/api", "/api/health"], (_req, res) => {
     res.json({ status: "ok", uptime: process.uptime(), timestamp: new Date().toISOString() });
   });
 
@@ -3915,7 +3915,8 @@ Current User Query: ${message}`;
     }
 
     if (isDev) {
-      const { createServer: createViteServer } = await import("vite");
+      const vitePkg = "vite";
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",

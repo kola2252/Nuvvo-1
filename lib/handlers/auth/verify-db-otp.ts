@@ -6,8 +6,8 @@
  * Validates a user-supplied OTP against the Supabase `user_otps` table.
  */
 
-import { parseRequestBody, sendJsonResponse, createSignedSessionJwt, normalizeEmail } from "../../lib/auth-utils";
-import { validateUserOtp } from "../../utils/supabase/otp";
+import { parseRequestBody, sendJsonResponse, createSignedSessionJwt, normalizeEmail } from "../../auth-utils";
+import { validateUserOtp } from "../../../utils/supabase/otp";
 
 export default async function handler(req: any, res: any) {
   // CORS preflight

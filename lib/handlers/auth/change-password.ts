@@ -17,11 +17,11 @@ import {
   parseRequestBody,
   recordCustomerAuthFailure,
   sendJsonResponse
-} from "../../lib/auth-utils";
+} from "../../auth-utils";
 import {
   getPublicSupabaseServerClient,
   getSupabaseUrl
-} from "../../src/utils/supabase/server";
+} from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
