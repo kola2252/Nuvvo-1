@@ -182,7 +182,7 @@ export default function App() {
       default:
         return <Home />;
     }
-  }, [user, currentPage, isAdmin, isSuperAdmin]);
+  }, [user, currentPage, isAdmin, isSuperAdmin, isPasswordRecoveryMode]);
 
   // Show Splash welcome animation screen at startup
   if (showSplash) {

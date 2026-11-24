@@ -135,7 +135,7 @@ interface AppContextProps {
   loginCustomerWithPassword: (identifier: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }>;
   resendCustomerVerificationEmail: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   requestCustomerPasswordReset: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string; retryAfterSeconds?: number; cooldownSeconds?: number }>;
-  completeCustomerPasswordRecovery: (newPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  completeCustomerPasswordRecovery: (newPassword: string) => Promise<{ success: boolean; email?: string; message?: string; error?: string }>;
   changeCustomerPassword: (currentPassword: string, newPassword: string, confirmPassword: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   resetCustomerPassword: (email: string, otp: string, newPassword: string) => Promise<{ success: boolean; error?: string; message?: string }>;
   deleteCustomerAccount: (password: string) => Promise<{ success: boolean; error?: string; message?: string }>;
@@ -205,7 +205,18 @@ interface AppContextProps {
     scheduledTime?: string,
     checkoutWhatsapp?: { customerWhatsappNumber?: string; whatsappOptIn?: boolean; customerEmail?: string }
   ) => Order | null;
-  reorderItems: (order: Order) => { addedCount: number; skippedNames: string[] };
+  reorderItems: (order: Order, freshCatalogOverride?: FoodItem[]) => {
+    addedCount: number;
+    skippedNames: string[];
+    priceAdjustedCount: number;
+    priceAdjustedNames: string[];
+  };
+  reorderWithLiveValidation: (order: Order) => Promise<{
+    addedCount: number;
+    skippedNames: string[];
+    priceAdjustedCount: number;
+    priceAdjustedNames: string[];
+  }>;
   changeOrderStatus: (orderId: string, status: OrderStatus, isSystemSimulation?: boolean) => void;
   cancelOrder: (orderId: string, clearFromHistory?: boolean) => Promise<{ success: boolean; cleared?: boolean; error?: string }>;
   removeOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
@@ -1320,6 +1331,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {}
     };
 
+    const applyHydratedCustomer = (u: any, accessToken: string) => {
+      const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
+      const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
+      const mappedCustomer: User = {
+        id: u.id,
+        name: u.name,
+        username: u.username,
+        phone: u.phone || '',
+        email: u.email,
+        location: u.location || '',
+        addresses: Array.isArray(u.addresses) ? u.addresses : [],
+        avatar: u.avatar,
+        preferredLanguage: u.preferredLanguage || 'te',
+        role: 'Customer', // Customer auth never grants Admin or Franchise
+        isProfileComplete: true,
+        isEmailVerified: Boolean(u.isEmailVerified),
+        emailVerifiedAt: u.emailVerifiedAt,
+        whatsappNumber: u.whatsappNumber,
+        whatsappOptIn: Boolean(u.whatsappOptIn),
+        whatsappOptInAt: u.whatsappOptInAt,
+        whatsappOptInSource: u.whatsappOptInSource,
+        favoriteFoods: scopedFavFoods,
+        favoriteRestaurants: scopedFavRests,
+        createdAt: u.createdAt || new Date().toISOString()
+      };
+
+      let switchedCustomer = false;
+      setUser(prev => {
+        if (prev && prev.role && prev.role !== 'Customer') {
+          return prev;
+        }
+        if (!prev || prev.id !== mappedCustomer.id) {
+          switchedCustomer = true;
+        }
+        return mappedCustomer;
+      });
+
+      if (switchedCustomer) {
+        // Hydrate strictly from the new customer's scoped storage; never leak prior user's state
+        setOrders(getUserScopedItem<Order[]>(mappedCustomer.id, 'orders', []));
+        setCart(getUserScopedItem<CartItem[]>(mappedCustomer.id, 'cart', []));
+        setAppliedCoupon(getUserScopedItem<Coupon | null>(mappedCustomer.id, 'applied_coupon', null));
+        setFavoriteFoods(scopedFavFoods);
+        setFavoriteRestaurants(scopedFavRests);
+        setNuvvoPoints(getUserScopedItem<number>(mappedCustomer.id, 'points', 0));
+        setPointsHistory(getUserScopedItem<PointsTransaction[]>(mappedCustomer.id, 'points_history', []));
+        setActiveTrackingOrder(null);
+        setDeliveryPartnerTip(0);
+        setOrderInstructions('');
+        setPointsToRedeem(0);
+      }
+
+      persistSessionUserCache(mappedCustomer, accessToken);
+
+      const savedScopedAddr = getUserScopedItem<Address | null>(mappedCustomer.id, 'address', null);
+      if (savedScopedAddr) {
+        setCurrentAddress(savedScopedAddr);
+      } else if (mappedCustomer.addresses.length > 0) {
+        const defAddr = mappedCustomer.addresses.find(a => a.isDefault) || mappedCustomer.addresses[0];
+        setCurrentAddress(defAddr);
+      } else {
+        setCurrentAddress(null);
+      }
+    };
+
     const hydrateCustomerFromSession = async (accessToken: string) => {
       try {
         const res = await fetch('/api/auth/customer-profile', {
@@ -1328,73 +1404,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         const data = await res.json().catch(() => null);
         if (res.ok && data?.success && data?.user) {
-          const u = data.user;
-          const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
-          const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
-          const mappedCustomer: User = {
-            id: u.id,
-            name: u.name,
-            username: u.username,
-            phone: u.phone || '',
-            email: u.email,
-            location: u.location || '',
-            addresses: Array.isArray(u.addresses) ? u.addresses : [],
-            avatar: u.avatar,
-            preferredLanguage: u.preferredLanguage || 'te',
-            role: 'Customer', // Customer auth never grants Admin or Franchise
-            isProfileComplete: true,
-            isEmailVerified: Boolean(u.isEmailVerified),
-            emailVerifiedAt: u.emailVerifiedAt,
-            whatsappNumber: u.whatsappNumber,
-            whatsappOptIn: Boolean(u.whatsappOptIn),
-            whatsappOptInAt: u.whatsappOptInAt,
-            whatsappOptInSource: u.whatsappOptInSource,
-            favoriteFoods: scopedFavFoods,
-            favoriteRestaurants: scopedFavRests,
-            createdAt: u.createdAt || new Date().toISOString()
-          };
-
-          let switchedCustomer = false;
-          setUser(prev => {
-            if (prev && prev.role && prev.role !== 'Customer') {
-              return prev;
-            }
-            if (!prev || prev.id !== mappedCustomer.id) {
-              switchedCustomer = true;
-            }
-            return mappedCustomer;
-          });
-
-          if (switchedCustomer) {
-            // Hydrate strictly from the new customer's scoped storage; never leak prior user's state
-            setOrders(getUserScopedItem<Order[]>(mappedCustomer.id, 'orders', []));
-            setCart(getUserScopedItem<CartItem[]>(mappedCustomer.id, 'cart', []));
-            setAppliedCoupon(getUserScopedItem<Coupon | null>(mappedCustomer.id, 'applied_coupon', null));
-            setFavoriteFoods(scopedFavFoods);
-            setFavoriteRestaurants(scopedFavRests);
-            setNuvvoPoints(getUserScopedItem<number>(mappedCustomer.id, 'points', 0));
-            setPointsHistory(getUserScopedItem<PointsTransaction[]>(mappedCustomer.id, 'points_history', []));
-            setActiveTrackingOrder(null);
-            setDeliveryPartnerTip(0);
-            setOrderInstructions('');
-            setPointsToRedeem(0);
-          }
-
-          persistSessionUserCache(mappedCustomer, accessToken);
-
-          const savedScopedAddr = getUserScopedItem<Address | null>(mappedCustomer.id, 'address', null);
-          if (savedScopedAddr) {
-            setCurrentAddress(savedScopedAddr);
-          } else if (mappedCustomer.addresses.length > 0) {
-            const defAddr = mappedCustomer.addresses.find(a => a.isDefault) || mappedCustomer.addresses[0];
-            setCurrentAddress(defAddr);
-          } else {
-            setCurrentAddress(null);
-          }
+          applyHydratedCustomer(data.user, accessToken);
+          return;
+        }
+        if (res.status === 401) {
+          clearAllSupabaseAuthStorage();
+          try {
+            localStorage.removeItem('nuvvo_user');
+            localStorage.removeItem('nuvvo_auth_token');
+            window.sessionStorage.removeItem('nuvvo_user');
+            window.sessionStorage.removeItem('nuvvo_auth_token');
+          } catch {}
+          setUser(prev => (prev && prev.role && prev.role !== 'Customer' ? prev : null));
+          resetInMemoryCustomerState();
+          return;
         }
       } catch (err) {
-        console.warn('Customer session hydration notice:', err);
+        console.warn('Customer profile API hydration fallback engaged:', err);
       }
+
+      // Direct Supabase fallback if backend API is temporarily unavailable
+      try {
+        const { data: userData } = await supabase.auth.getUser(accessToken);
+        const authUser = userData?.user;
+        if (authUser?.id) {
+          const meta = authUser.user_metadata || {};
+          applyHydratedCustomer(
+            {
+              id: authUser.id,
+              name: meta.full_name || meta.username || authUser.email?.split('@')[0] || 'Customer',
+              username: meta.username || undefined,
+              email: authUser.email || '',
+              phone: meta.mobile || '',
+              location: meta.location || '',
+              addresses: Array.isArray(meta.addresses) ? meta.addresses : [],
+              preferredLanguage: meta.preferred_language || 'te',
+              isEmailVerified: Boolean(authUser.email_confirmed_at),
+              emailVerifiedAt: authUser.email_confirmed_at || undefined,
+              whatsappNumber: meta.whatsapp_number || undefined,
+              whatsappOptIn: Boolean(meta.whatsapp_consent),
+              whatsappOptInAt: meta.whatsapp_opt_in_at || undefined,
+              whatsappOptInSource: meta.whatsapp_opt_in_source || undefined,
+              createdAt: authUser.created_at || new Date().toISOString()
+            },
+            accessToken
+          );
+        }
+      } catch {}
+    };
+
+    const stripAuthQueryAndHash = () => {
+      try {
+        if (typeof window === 'undefined') return;
+        const url = new URL(window.location.href);
+        ['type', 'code', 'token_hash', 'error', 'error_code', 'error_description'].forEach(param => {
+          url.searchParams.delete(param);
+        });
+        const cleanSearch = url.searchParams.toString();
+        const nextUrl = url.pathname + (cleanSearch ? `?${cleanSearch}` : '');
+        window.history.replaceState(null, '', nextUrl);
+      } catch {}
     };
 
     // Hydrate existing Supabase Auth session on page refresh / app restart
@@ -1402,24 +1471,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const redirectState = getInitialAuthRedirectState();
         if (redirectState.authErrorDescription) {
+          setIsPasswordRecoveryMode(false);
+          passwordRecoveryRef.current = false;
           setAuthRecoveryError(redirectState.authErrorDescription);
           setCurrentPage('auth');
-          try {
-            if (typeof window !== 'undefined') {
-              const url = new URL(window.location.href);
-              url.searchParams.delete('error');
-              url.searchParams.delete('error_code');
-              url.searchParams.delete('error_description');
-              window.history.replaceState(null, '', url.pathname + url.search);
-            }
-          } catch {}
-        }
-        if (redirectState.isRecoveryRedirect) {
-          setIsPasswordRecoveryMode(true);
-          passwordRecoveryRef.current = true;
+          stripAuthQueryAndHash();
         }
 
         let { data: { session } } = await supabase.auth.getSession();
+
+        // Handle PKCE code recovery/confirmation links
         if (!session && typeof window !== 'undefined' && window.location.search.includes('code=')) {
           const { data: exchData, error: exchErr } = await supabase.auth.exchangeCodeForSession(window.location.href);
           if (exchData?.session) {
@@ -1429,16 +1490,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (retryData?.session) {
               session = retryData.session;
             } else {
+              setIsPasswordRecoveryMode(false);
+              passwordRecoveryRef.current = false;
               setAuthRecoveryError(exchErr.message || 'Your verification or password reset link is invalid or has expired.');
               setCurrentPage('auth');
+              stripAuthQueryAndHash();
             }
           }
         }
-        if (passwordRecoveryRef.current || getInitialAuthRedirectState().isRecoveryRedirect) {
-          setIsPasswordRecoveryMode(true);
+
+        // Handle token_hash recovery links (e.g. ?token_hash=...&type=recovery)
+        if (!session && typeof window !== 'undefined') {
+          const searchParams = new URLSearchParams(window.location.search);
+          const tokenHash = searchParams.get('token_hash');
+          const linkType = searchParams.get('type');
+          if (tokenHash && linkType === 'recovery') {
+            const { data: otpData, error: otpErr } = await supabase.auth.verifyOtp({
+              token_hash: tokenHash,
+              type: 'recovery'
+            });
+            if (otpData?.session) {
+              session = otpData.session;
+              passwordRecoveryRef.current = true;
+              setIsPasswordRecoveryMode(true);
+            } else if (otpErr && !redirectState.authErrorDescription) {
+              setIsPasswordRecoveryMode(false);
+              passwordRecoveryRef.current = false;
+              setAuthRecoveryError(otpErr.message || 'Your password reset link is invalid or has expired.');
+              setCurrentPage('auth');
+              stripAuthQueryAndHash();
+            }
+          }
+        }
+
+        const latestRedirectState = getInitialAuthRedirectState();
+        if (passwordRecoveryRef.current || latestRedirectState.isRecoveryRedirect) {
+          if (session?.access_token) {
+            passwordRecoveryRef.current = true;
+            setIsPasswordRecoveryMode(true);
+            setCurrentPage('auth');
+            return;
+          }
+          // Recovery URL was opened without a valid/unexpired Supabase recovery session
+          passwordRecoveryRef.current = false;
+          setIsPasswordRecoveryMode(false);
+          if (!redirectState.authErrorDescription) {
+            setAuthRecoveryError('Your password reset link is invalid or has expired. Please request a new password reset link.');
+          }
           setCurrentPage('auth');
+          stripAuthQueryAndHash();
           return;
         }
+
         if (session?.access_token) {
           await hydrateCustomerFromSession(session.access_token);
         } else {
@@ -4399,24 +4502,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     password: string,
     rememberMe: boolean = true
   ): Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }> => {
-    try {
-      setAuthPersistencePreference(rememberMe !== false);
-
-      const resp = await fetch('/api/auth/customer-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: identifier.trim(), password })
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok || !data?.success) {
-        return {
-          success: false,
-          requiresEmailVerification: Boolean(data?.requiresEmailVerification || data?.code === 'EMAIL_NOT_CONFIRMED'),
-          email: data?.email,
-          error: data?.error || 'Invalid credentials. Please verify your username/email and password.'
-        };
-      }
-
+    const cleanIdentifier = identifier.trim();
+    const applyAuthenticatedCustomer = async (
+      mappedPayloadUser: any,
+      sessionTokens?: { access_token: string; refresh_token: string } | null,
+      fallbackJwtToken?: string
+    ) => {
       // Wipe previous customer's in-memory states and caches BEFORE applying newly authenticated user
       tanstackQueryClient.clear();
       queryClient.clear();
@@ -4434,26 +4525,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setPointsHistory([]);
       setCurrentAddress(null);
 
-      if (data.session?.access_token && data.session?.refresh_token) {
-        await supabase.auth.setSession({
-          access_token: data.session.access_token,
-          refresh_token: data.session.refresh_token
-        }).catch(() => {});
+      if (sessionTokens?.access_token && sessionTokens?.refresh_token) {
+        const { error: setSessErr } = await supabase.auth.setSession({
+          access_token: sessionTokens.access_token,
+          refresh_token: sessionTokens.refresh_token
+        });
+        if (setSessErr && mappedPayloadUser?.email) {
+          await supabase.auth.signInWithPassword({
+            email: String(mappedPayloadUser.email).trim().toLowerCase(),
+            password
+          }).catch(() => {});
+        }
         try {
           const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
           const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
-          storage.setItem('nuvvo_auth_token', data.session.access_token);
+          storage.setItem('nuvvo_auth_token', sessionTokens.access_token);
           other.removeItem('nuvvo_auth_token');
         } catch {}
-      } else if (data.token) {
+      } else if (fallbackJwtToken) {
         try {
           const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
-          storage.setItem('nuvvo_auth_token', data.token);
+          const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
+          storage.setItem('nuvvo_auth_token', fallbackJwtToken);
+          other.removeItem('nuvvo_auth_token');
         } catch {}
       }
 
-      if (data.user) {
-        const u = data.user;
+      if (mappedPayloadUser) {
+        const u = mappedPayloadUser;
         const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
         const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
         const mappedUser: User = {
@@ -4468,8 +4567,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           preferredLanguage: u.preferredLanguage,
           role: 'Customer',
           isProfileComplete: true,
-          isEmailVerified: Boolean(data.emailVerified ?? u.isEmailVerified),
-          emailVerifiedAt: data.emailVerifiedAt || u.emailVerifiedAt,
+          isEmailVerified: Boolean(u.isEmailVerified),
+          emailVerifiedAt: u.emailVerifiedAt,
           whatsappNumber: u.whatsappNumber || undefined,
           whatsappOptIn: Boolean(u.whatsappOptIn),
           whatsappOptInAt: u.whatsappOptInAt || undefined,
@@ -4496,9 +4595,146 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setCurrentAddress(defAddr);
         }
 
+        try {
+          const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
+          const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
+          storage.setItem('nuvvo_user', JSON.stringify(mappedUser));
+          other.removeItem('nuvvo_user');
+        } catch {}
+
         setUser(mappedUser);
         addAuditLog('Customer Login', `Customer @${u.username || u.email} signed in securely.`);
       }
+    };
+
+    const signInDirectlyWithSupabaseEmail = async (email: string) => {
+      const normalizedEmail = email.trim().toLowerCase();
+      const { data: sbData, error: sbErr } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password
+      });
+
+      if (sbErr) {
+        const msg = String(sbErr.message || '');
+        if (msg.toLowerCase().includes('email not confirmed')) {
+          return {
+            success: false,
+            requiresEmailVerification: true,
+            email: normalizedEmail,
+            error: 'Your email address is not verified yet. Please check your inbox and click the confirmation link before signing in.'
+          };
+        }
+        if (sbErr.status === 429 || msg.toLowerCase().includes('rate limit')) {
+          return {
+            success: false,
+            error: 'Too many login attempts. Please wait a few minutes and try again.'
+          };
+        }
+        return {
+          success: false,
+          error: 'Invalid username/email or password.'
+        };
+      }
+
+      if (!sbData?.user || !sbData?.session) {
+        return {
+          success: false,
+          error: 'Unable to establish an authenticated session. Please try again.'
+        };
+      }
+
+      const authUser = sbData.user;
+      const meta = authUser.user_metadata || {};
+      let profileUser: any = null;
+      try {
+        const profResp = await fetch('/api/auth/customer-profile', {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${sbData.session.access_token}` }
+        });
+        const profJson = await profResp.json().catch(() => null);
+        if (profResp.ok && profJson?.success && profJson?.user) {
+          profileUser = profJson.user;
+        }
+      } catch {}
+
+      if (!profileUser) {
+        profileUser = {
+          id: authUser.id,
+          name: meta.full_name || meta.username || normalizedEmail.split('@')[0],
+          username: meta.username || normalizedEmail.split('@')[0],
+          email: authUser.email || normalizedEmail,
+          phone: meta.mobile || '',
+          location: meta.location || '',
+          addresses: Array.isArray(meta.addresses) ? meta.addresses : [],
+          preferredLanguage: meta.preferred_language || 'te',
+          role: 'Customer',
+          isEmailVerified: Boolean(authUser.email_confirmed_at),
+          emailVerifiedAt: authUser.email_confirmed_at || undefined,
+          whatsappNumber: meta.whatsapp_number || undefined,
+          whatsappOptIn: Boolean(meta.whatsapp_consent),
+          whatsappOptInAt: meta.whatsapp_opt_in_at || undefined,
+          whatsappOptInSource: meta.whatsapp_opt_in_source || undefined,
+          createdAt: authUser.created_at || new Date().toISOString()
+        };
+      }
+
+      await applyAuthenticatedCustomer(profileUser, {
+        access_token: sbData.session.access_token,
+        refresh_token: sbData.session.refresh_token
+      });
+
+      return {
+        success: true,
+        user: profileUser,
+        role: 'Customer',
+        token: sbData.session.access_token
+      };
+    };
+
+    try {
+      setAuthPersistencePreference(rememberMe !== false);
+
+      const resp = await fetch('/api/auth/customer-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: cleanIdentifier, password })
+      });
+      const data = await resp.json().catch(() => null);
+
+      if (!resp.ok || !data?.success) {
+        // If backend returned a genuine auth rejection JSON (401/403/429/400), surface its exact message
+        if (data && typeof data.error === 'string' && resp.status < 500) {
+          return {
+            success: false,
+            requiresEmailVerification: Boolean(data.requiresEmailVerification || data.code === 'EMAIL_NOT_CONFIRMED'),
+            email: data.email,
+            error: data.error
+          };
+        }
+
+        // If backend endpoint failed with non-JSON/5xx on an email login, authenticate directly via Supabase Auth
+        if (cleanIdentifier.includes('@')) {
+          return await signInDirectlyWithSupabaseEmail(cleanIdentifier);
+        }
+
+        return {
+          success: false,
+          error: data?.error || 'Unable to reach authentication service. Please try again or sign in with your email address.'
+        };
+      }
+
+      if (data.user) {
+        data.user.isEmailVerified = Boolean(data.emailVerified ?? data.user.isEmailVerified);
+        data.user.emailVerifiedAt = data.emailVerifiedAt || data.user.emailVerifiedAt;
+      }
+
+      await applyAuthenticatedCustomer(
+        data.user,
+        data.session?.access_token && data.session?.refresh_token
+          ? { access_token: data.session.access_token, refresh_token: data.session.refresh_token }
+          : null,
+        data.token
+      );
 
       return {
         success: true,
@@ -4507,9 +4743,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         token: data.session?.access_token || data.token
       };
     } catch (err: any) {
+      if (cleanIdentifier.includes('@')) {
+        try {
+          return await signInDirectlyWithSupabaseEmail(cleanIdentifier);
+        } catch {}
+      }
       return {
         success: false,
-        error: err?.message || 'Failed to authenticate with server. Please try again.'
+        error: err?.message || 'Failed to reach authentication server. Please check your connection and try again.'
       };
     }
   };
@@ -4639,36 +4880,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const completeCustomerPasswordRecovery = async (newPassword: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+  const completeCustomerPasswordRecovery = async (newPassword: string): Promise<{ success: boolean; email?: string; message?: string; error?: string }> => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
+      if (!session?.access_token) {
+        passwordRecoveryRef.current = false;
+        setIsPasswordRecoveryMode(false);
         return {
           success: false,
           error: 'Your password reset session is missing or has expired. Please request a fresh password reset link.'
         };
       }
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
-      if (error) {
-        return { success: false, error: error.message || 'Unable to update password. Please request a fresh recovery link.' };
+
+      const { data: updatedData, error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error || !updatedData?.user) {
+        return {
+          success: false,
+          error: error?.message || 'Unable to update password. Please request a fresh recovery link.'
+        };
       }
-      setIsPasswordRecoveryMode(false);
-      setAuthRecoveryError(null);
+
+      const updatedEmail = updatedData.user.email || session.user?.email || undefined;
+
+      // Keep passwordRecoveryRef locked while signing out local recovery session so USER_UPDATED does not auto-login
+      passwordRecoveryRef.current = true;
       try {
-        if (typeof window !== 'undefined' && (window.location.hash.includes('type=recovery') || window.location.search.includes('code='))) {
-          window.history.replaceState(null, '', window.location.pathname);
+        if (typeof window !== 'undefined') {
+          const url = new URL(window.location.href);
+          ['type', 'code', 'token_hash', 'error', 'error_code', 'error_description'].forEach(param => {
+            url.searchParams.delete(param);
+          });
+          const cleanSearch = url.searchParams.toString();
+          window.history.replaceState(null, '', url.pathname + (cleanSearch ? `?${cleanSearch}` : ''));
         }
       } catch {}
-      await supabase.auth.signOut().catch(() => {});
+
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
       clearAllSupabaseAuthStorage();
-      localStorage.removeItem('nuvvo_auth_token');
-      localStorage.removeItem('nuvvo_user');
+      tanstackQueryClient.clear();
+      queryClient.clear();
       try {
+        localStorage.removeItem('nuvvo_auth_token');
+        localStorage.removeItem('nuvvo_user');
         sessionStorage.removeItem('nuvvo_auth_token');
         sessionStorage.removeItem('nuvvo_user');
       } catch {}
+
+      passwordRecoveryRef.current = false;
+      setIsPasswordRecoveryMode(false);
+      setAuthRecoveryError(null);
       setUser(null);
-      return { success: true, message: 'Password updated successfully! Please sign in with your new password.' };
+
+      return {
+        success: true,
+        email: updatedEmail,
+        message: 'Password updated successfully! Please sign in with your new password.'
+      };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Failed to update password.' };
     }
@@ -5486,13 +5753,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newOrder;
   };
 
-  const reorderItems = (order: Order): { addedCount: number; skippedNames: string[] } => {
+  const reorderItems = (
+    order: Order,
+    freshCatalogOverride?: FoodItem[]
+  ): {
+    addedCount: number;
+    skippedNames: string[];
+    priceAdjustedCount: number;
+    priceAdjustedNames: string[];
+  } => {
+    const catalogSource = Array.isArray(freshCatalogOverride) && freshCatalogOverride.length > 0
+      ? freshCatalogOverride
+      : foodCatalogList;
     const validItems: CartItem[] = [];
     const skippedNames: string[] = [];
+    const priceAdjustedNames: string[] = [];
 
     for (const cartItem of order.items || []) {
       const originalFood = cartItem.foodItem;
-      const liveFood = foodCatalogList.find(f => f.id === originalFood?.id) || originalFood;
+      const liveFood =
+        catalogSource.find(f => String(f.id) === String(originalFood?.id)) ||
+        catalogSource.find(
+          f =>
+            originalFood?.name &&
+            f.name.trim().toLowerCase() === originalFood.name.trim().toLowerCase() &&
+            (!originalFood.restaurantId || !f.restaurantId || String(f.restaurantId) === String(originalFood.restaurantId))
+        ) ||
+        originalFood;
+
       const isAvail = liveFood && liveFood.isAvailable !== false && liveFood.is_available !== false;
       let restOpen = true;
       if (liveFood?.restaurantId) {
@@ -5505,20 +5793,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         skippedNames.push(originalFood?.name || 'Unavailable item');
         continue;
       }
+
+      // Re-validate base dish price and discountPrice from live catalog
+      const validatedBasePrice = Number(liveFood.price ?? originalFood?.price ?? 0);
+      const validatedDiscountPrice =
+        liveFood.discountPrice !== undefined && liveFood.discountPrice !== null
+          ? Number(liveFood.discountPrice)
+          : undefined;
+      const oldEffectivePrice = Number(originalFood?.discountPrice || originalFood?.price || 0);
+      const newEffectivePrice = Number(validatedDiscountPrice || validatedBasePrice);
+
+      // Re-validate selected customization option prices against liveFood.customizations
+      const rawSelections = cartItem.selectedCustomizations && typeof cartItem.selectedCustomizations === 'object'
+        ? cartItem.selectedCustomizations
+        : {};
+      const validatedCustomizations: { [categoryTitle: string]: any } = {};
+      let customizationPriceChanged = false;
+
+      Object.entries(rawSelections).forEach(([groupTitle, selectedOpt]: [string, any]) => {
+        if (!selectedOpt) return;
+        const liveGroup = Array.isArray(liveFood.customizations)
+          ? liveFood.customizations.find(g => g.title === groupTitle)
+          : undefined;
+        const liveOpt = liveGroup?.options?.find(
+          o => o.name.trim().toLowerCase() === String(selectedOpt.name || '').trim().toLowerCase()
+        );
+        if (liveOpt) {
+          if (Number(liveOpt.price || 0) !== Number(selectedOpt.price || 0)) {
+            customizationPriceChanged = true;
+          }
+          validatedCustomizations[groupTitle] = { ...liveOpt };
+        } else {
+          validatedCustomizations[groupTitle] = selectedOpt;
+        }
+      });
+
+      if (Math.abs(newEffectivePrice - oldEffectivePrice) > 0.01 || customizationPriceChanged) {
+        priceAdjustedNames.push(liveFood.name);
+      }
+
+      const revalidatedFood: FoodItem = {
+        ...liveFood,
+        price: validatedBasePrice,
+        ...(validatedDiscountPrice !== undefined ? { discountPrice: validatedDiscountPrice } : {})
+      };
+
       validItems.push({
         ...cartItem,
-        foodItem: liveFood
+        quantity: Math.max(1, Number(cartItem.quantity) || 1),
+        foodItem: revalidatedFood,
+        selectedCustomizations: validatedCustomizations
       });
     }
 
     if (validItems.length > 0) {
       setCart(validItems);
       setCurrentPage('cart');
-      addAuditLog('Re-Ordered Items', `Copied ${validItems.length} live item(s) from invoice ${order.id} into active checkout basket${skippedNames.length ? ` (skipped ${skippedNames.length} unavailable)` : ''}`);
+      addAuditLog(
+        'Re-Ordered Items',
+        `Copied ${validItems.length} live item(s) from invoice ${order.id} into active checkout basket` +
+          `${priceAdjustedNames.length ? ` (re-validated ${priceAdjustedNames.length} updated price(s))` : ''}` +
+          `${skippedNames.length ? ` (skipped ${skippedNames.length} unavailable)` : ''}`
+      );
     } else {
       addAuditLog('Re-Order Blocked', `All items from invoice ${order.id} are currently out of stock or closed.`);
     }
-    return { addedCount: validItems.length, skippedNames };
+
+    return {
+      addedCount: validItems.length,
+      skippedNames,
+      priceAdjustedCount: priceAdjustedNames.length,
+      priceAdjustedNames
+    };
+  };
+
+  const reorderWithLiveValidation = async (order: Order) => {
+    let freshCatalog: FoodItem[] = foodCatalogList;
+    try {
+      let liveDishes: FoodItem[] = [];
+      try {
+        const { data, error } = await getFoodItemsFromSupabase(true);
+        if (!error && Array.isArray(data) && data.length > 0) {
+          liveDishes = data;
+        }
+      } catch {}
+
+      if (liveDishes.length === 0) {
+        try {
+          const resp = await fetch('/api/dishes?nocache=true');
+          if (resp.ok) {
+            const rows = await resp.json();
+            if (Array.isArray(rows) && rows.length > 0) {
+              liveDishes = rows;
+            }
+          }
+        } catch {}
+      }
+
+      if (liveDishes.length > 0) {
+        const dishMap = new Map<string, FoodItem>();
+        foodCatalogList.forEach(d => dishMap.set(String(d.id), d));
+        liveDishes.forEach(d => dishMap.set(String(d.id), d));
+        freshCatalog = Array.from(dishMap.values());
+        setFoodCatalogList(freshCatalog);
+      }
+    } catch {}
+
+    return reorderItems(order, freshCatalog);
   };
 
   const submitOrderRating = (orderId: string, rating: number, feedback?: string) => {
@@ -7421,7 +7802,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       appliedCoupon, applyCouponCode, removeCouponCode,
       deliveryPartnerTip, setDeliveryPartnerTip,
       orderInstructions, setOrderInstructions,
-      orders, createNewOrder, reorderItems, changeOrderStatus, cancelOrder, removeOrder, clearOrderHistory, submitOrderRating, submitDeliveryPartnerRating, updateOrderPaymentStatus,
+      orders, createNewOrder, reorderItems, reorderWithLiveValidation, changeOrderStatus, cancelOrder, removeOrder, clearOrderHistory, submitOrderRating, submitDeliveryPartnerRating, updateOrderPaymentStatus,
       activeTrackingOrder, setActiveTrackingOrder, deliveryRouteProgress,
       deliveryPartner, registerAsPartner, partnerOtpVerify, updatePartnerAvailability,
       partnerAcceptOrder, partnerRejectOrder, partnerCompleteDelivery,

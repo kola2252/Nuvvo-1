@@ -360,6 +360,9 @@ export default function Auth() {
       setRecoveryNewPassword('');
       setRecoveryConfirmPassword('');
       setLoginPassword('');
+      if (res.email && !loginIdentifier.trim()) {
+        setLoginIdentifier(res.email);
+      }
       setSuccessMsg(res.message || 'Password updated successfully! Please sign in with your new password.');
       setStep('customer_login');
     } else {

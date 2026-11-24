@@ -112,19 +112,26 @@ export default function MapTracking() {
     user, 
     restaurants, 
     orders, 
+    activeTrackingOrder,
     setCurrentPage, 
     goBack,
     clickToWhatsAppSupport 
   } = useApp();
 
+  // Resolve the specifically tracked order first, falling back to any active or latest order
+  const activeOrder = useMemo(() => {
+    return activeTrackingOrder || orders?.find(o => o.status !== 'delivered' && o.status !== 'cancelled') || orders?.[0];
+  }, [activeTrackingOrder, orders]);
+
   // 1. Resolve Delivery Address and GPS Coordinates
   const selectedAddress: Address | null = useMemo(() => {
+    if (activeOrder?.address) return activeOrder.address;
     if (currentAddress) return currentAddress;
     if (user?.addresses && user.addresses.length > 0) {
       return user.addresses.find(a => a.isDefault) || user.addresses[0];
     }
     return null;
-  }, [currentAddress, user]);
+  }, [activeOrder, currentAddress, user]);
 
   const deliveryCoords = useMemo(() => {
     if (selectedAddress?.gpsCoordinates?.lat && selectedAddress?.gpsCoordinates?.lng) {
@@ -135,12 +142,6 @@ export default function MapTracking() {
     }
     return CHIRALA_DEFAULT_COORDS;
   }, [selectedAddress]);
-
-  // 2. Resolve Highlighted Nearby Restaurant
-  // Check if user has an ongoing or recent order with a restaurant
-  const activeOrder = useMemo(() => {
-    return orders?.find(o => o.status !== 'delivered' && o.status !== 'cancelled') || orders?.[0];
-  }, [orders]);
 
   // Find candidate restaurants with valid locations
   const restaurantListWithCoords = useMemo(() => {
@@ -158,9 +159,16 @@ export default function MapTracking() {
 
   // Active highlighted restaurant (defaults to active order restaurant or nearest available restaurant)
   const defaultHighlightedRestaurantId = useMemo(() => {
-    if (activeOrder?.restaurantId) {
-      const match = restaurants.find(r => r.id === activeOrder.restaurantId);
+    const orderRestId = activeOrder?.restaurantId || activeOrder?.items?.[0]?.foodItem?.restaurantId;
+    if (orderRestId) {
+      const match = restaurants.find(r => r.id === orderRestId);
       if (match) return match.id;
+    }
+    if (activeOrder?.restaurantName) {
+      const nameMatch = restaurants.find(
+        r => r.name.toLowerCase() === activeOrder.restaurantName?.toLowerCase()
+      );
+      if (nameMatch) return nameMatch.id;
     }
     return restaurantListWithCoords[0]?.id || '';
   }, [activeOrder, restaurants, restaurantListWithCoords]);
@@ -168,10 +176,10 @@ export default function MapTracking() {
   const [highlightedRestaurantId, setHighlightedRestaurantId] = useState<string>(defaultHighlightedRestaurantId);
 
   useEffect(() => {
-    if (!highlightedRestaurantId && defaultHighlightedRestaurantId) {
+    if (defaultHighlightedRestaurantId) {
       setHighlightedRestaurantId(defaultHighlightedRestaurantId);
     }
-  }, [defaultHighlightedRestaurantId, highlightedRestaurantId]);
+  }, [defaultHighlightedRestaurantId]);
 
   const highlightedRestaurant = useMemo(() => {
     return restaurantListWithCoords.find(r => r.id === highlightedRestaurantId) || restaurantListWithCoords[0];
@@ -233,7 +241,7 @@ export default function MapTracking() {
         <div className="pointer-events-auto flex items-center gap-1.5 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-slate-200/80 dark:border-zinc-800 shadow-md px-3 py-1.5 rounded-2xl">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           <span className="text-[11px] font-black tracking-tight text-zinc-800 dark:text-zinc-200 uppercase font-mono">
-            Live Delivery Tracking
+            Live Delivery Tracking{activeOrder ? ` • #${activeOrder.id.replace('order_', 'ORD-').slice(-6).toUpperCase()}` : ''}
           </span>
         </div>
 

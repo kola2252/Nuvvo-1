@@ -3,29 +3,32 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { memo, useState, useEffect, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { 
   History, ArrowLeft, RefreshCw, Search, Calendar, MapPin, 
   ShoppingBag, CheckCircle, Clock, Truck, ChefHat, XCircle, 
   ChevronDown, ChevronUp, Download, RotateCcw, Star, ShieldCheck,
   AlertCircle, Database, Sparkles, Filter, FileText, Trash2, AlertTriangle,
-  X, Eye, Receipt, Info, Check, ArrowUpDown
+  X, Eye, Receipt, Info, Check, ArrowUpDown, Flame, Bike, Package, UserCheck
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types';
 import { fetchUserOrdersFromSupabase } from '../services/supabaseOrders';
 import { downloadOrderInvoice } from '../utils/orderInvoiceGenerator';
 import WhatsAppOrderConfirmation from './WhatsAppOrderConfirmation';
+import OrderStatusFilter, { OrderLifecycleFilter, matchesOrderStatusFilter } from './OrderStatusFilter';
 
 export type OrderSortOption = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc';
 
-export default function OrderHistoryScreen() {
+function OrderHistoryScreen() {
   const { 
     user, 
     orders: localOrders, 
     setCurrentPage, 
     goBack, 
     reorderItems, 
+    reorderWithLiveValidation,
     setActiveTrackingOrder,
     submitOrderRating,
     submitDeliveryPartnerRating,
@@ -42,7 +45,7 @@ export default function OrderHistoryScreen() {
 
   // Search and filter states
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'delivered' | 'cancelled'>('all');
+  const [statusFilter, setStatusFilter] = useState<OrderLifecycleFilter>('all');
   const [sortBy, setSortBy] = useState<OrderSortOption>('date_desc');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
@@ -87,6 +90,14 @@ export default function OrderHistoryScreen() {
       } else if (result.data) {
         setSupabaseOrders(result.data);
         setIsFromSupabase(result.fromSupabase);
+        if (showRefreshIndicator) {
+          setActionNotice(
+            result.fromSupabase
+              ? 'Orders refreshed from Supabase.'
+              : 'Orders refreshed from local cache.'
+          );
+          setTimeout(() => setActionNotice(null), 3000);
+        }
       }
     } catch (err: any) {
       console.warn('Orders query exception:', err);
@@ -105,7 +116,7 @@ export default function OrderHistoryScreen() {
 
   // Combine Supabase orders with local orders (deduplicating by ID, prioritizing latest)
   const combinedOrders = useMemo(() => {
-    if (!user) return [];
+    if (!user?.id && !user?.phone) return [];
     const userPhoneClean = user?.phone ? user.phone.replace(/\D/g, '') : '';
     const relevantLocal = localOrders.filter(o => {
       if (o.customerId && user?.id) {
@@ -129,29 +140,29 @@ export default function OrderHistoryScreen() {
       const timeB = new Date(b.date).getTime() || 0;
       return timeB - timeA;
     });
-  }, [localOrders, supabaseOrders, user]);
+  }, [localOrders, supabaseOrders, user?.id, user?.phone]);
+
+  const normalizedSearchQuery = useMemo(() => searchQuery.toLowerCase().trim(), [searchQuery]);
+
+  const handleStatusFilterChange = useCallback((next: OrderLifecycleFilter) => {
+    setStatusFilter(next);
+  }, []);
 
   // Filter and sort orders by search term, status tab, and selected sort option
   const filteredOrders = useMemo(() => {
     const list = combinedOrders.filter(order => {
       // Status filtering
-      if (statusFilter === 'active') {
-        const isActive = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(order.status);
-        if (!isActive) return false;
-      } else if (statusFilter === 'delivered') {
-        if (order.status !== 'delivered') return false;
-      } else if (statusFilter === 'cancelled') {
-        if (order.status !== 'cancelled' && order.status !== 'rejected') return false;
+      if (!matchesOrderStatusFilter(order.status, statusFilter)) {
+        return false;
       }
 
       // Search query filtering
-      const q = searchQuery.toLowerCase().trim();
-      if (!q) return true;
+      if (!normalizedSearchQuery) return true;
 
-      const matchesId = order.id.toLowerCase().includes(q);
-      const matchesStatus = order.status.toLowerCase().includes(q);
-      const matchesRestaurant = order.items.some(i => i.foodItem?.category?.toLowerCase().includes(q));
-      const matchesDish = order.items.some(i => i.foodItem?.name?.toLowerCase().includes(q));
+      const matchesId = order.id.toLowerCase().includes(normalizedSearchQuery);
+      const matchesStatus = order.status.toLowerCase().includes(normalizedSearchQuery);
+      const matchesRestaurant = order.items.some(i => i.foodItem?.category?.toLowerCase().includes(normalizedSearchQuery));
+      const matchesDish = order.items.some(i => i.foodItem?.name?.toLowerCase().includes(normalizedSearchQuery));
 
       return matchesId || matchesStatus || matchesRestaurant || matchesDish;
     });
@@ -175,21 +186,39 @@ export default function OrderHistoryScreen() {
           return timeB - timeA; // Newest first
       }
     });
-  }, [combinedOrders, statusFilter, searchQuery, sortBy]);
+  }, [combinedOrders, statusFilter, normalizedSearchQuery, sortBy]);
 
 
   const toggleExpand = (orderId: string) => {
     setExpandedOrderId(prev => (prev === orderId ? null : orderId));
   };
 
-  const handleReorder = (order: Order) => {
-    const result = reorderItems(order);
-    if (result && result.addedCount === 0) {
-      setActionNotice('None of the dishes from this order are currently available to reorder.');
-      setTimeout(() => setActionNotice(null), 4000);
-    } else if (result && result.skippedNames.length > 0) {
-      setActionNotice(`Added ${result.addedCount} item(s). Skipped unavailable: ${result.skippedNames.join(', ')}`);
-      setTimeout(() => setActionNotice(null), 4500);
+  const handleReorder = async (order: Order) => {
+    if (reorderingOrderId) return;
+    setReorderingOrderId(order.id);
+    try {
+      const result = reorderWithLiveValidation
+        ? await reorderWithLiveValidation(order)
+        : reorderItems(order);
+
+      if (result && result.addedCount === 0) {
+        setActionNotice('None of the dishes from this order are currently available to reorder.');
+        setTimeout(() => setActionNotice(null), 4000);
+      } else if (result) {
+        const notes: string[] = [];
+        if (result.priceAdjustedCount > 0) {
+          notes.push(`Updated prices for: ${result.priceAdjustedNames.join(', ')}`);
+        }
+        if (result.skippedNames.length > 0) {
+          notes.push(`Skipped unavailable: ${result.skippedNames.join(', ')}`);
+        }
+        if (notes.length > 0) {
+          setActionNotice(`Added ${result.addedCount} item(s) to cart. ${notes.join(' • ')}`);
+          setTimeout(() => setActionNotice(null), 5000);
+        }
+      }
+    } finally {
+      setReorderingOrderId(null);
     }
   };
 
@@ -198,8 +227,14 @@ export default function OrderHistoryScreen() {
     setCurrentPage('tracking');
   };
 
+  const handleTrackOnMap = (order: Order) => {
+    setActiveTrackingOrder(order);
+    setCurrentPage('map-tracking');
+  };
+
   const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  const [reorderingOrderId, setReorderingOrderId] = useState<string | null>(null);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
@@ -361,80 +396,107 @@ export default function OrderHistoryScreen() {
     }
   };
 
-  const getStatusBadge = (status: OrderStatus) => {
+  const getStatusBadge = (status: OrderStatus, hasAssignedRider: boolean = false) => {
     switch (status) {
       case 'placed':
         return {
           label: 'Order Placed',
+          emoji: '🕒',
           icon: Clock,
           bg: 'bg-sky-50 dark:bg-sky-950/40',
           text: 'text-sky-700 dark:text-sky-300',
-          border: 'border-sky-200 dark:border-sky-900/40'
+          border: 'border-sky-200 dark:border-sky-900/40',
+          dot: 'bg-sky-500',
+          stepIndex: 0
         };
       case 'accepted':
         return {
           label: 'Order Confirmed',
-          icon: Clock,
+          emoji: '👍',
+          icon: Check,
           bg: 'bg-blue-50 dark:bg-blue-950/40',
           text: 'text-blue-700 dark:text-blue-300',
-          border: 'border-blue-200 dark:border-blue-900/40'
+          border: 'border-blue-200 dark:border-blue-900/40',
+          dot: 'bg-blue-500',
+          stepIndex: 0
         };
       case 'preparing':
         return {
-          label: 'In Kitchen',
-          icon: ChefHat,
+          label: 'Cooking',
+          emoji: '🍳',
+          icon: Flame,
           bg: 'bg-amber-50 dark:bg-amber-950/40',
           text: 'text-amber-700 dark:text-amber-300',
-          border: 'border-amber-200 dark:border-amber-900/40'
+          border: 'border-amber-200 dark:border-amber-900/40',
+          dot: 'bg-amber-500',
+          stepIndex: 1
         };
       case 'ready':
         return {
-          label: 'Ready for Pickup',
-          icon: ChefHat,
+          label: hasAssignedRider ? 'Rider Assigned • Ready' : 'Ready for Pickup',
+          emoji: '📦',
+          icon: hasAssignedRider ? UserCheck : Package,
           bg: 'bg-indigo-50 dark:bg-indigo-950/40',
           text: 'text-indigo-700 dark:text-indigo-300',
-          border: 'border-indigo-200 dark:border-indigo-900/40'
+          border: 'border-indigo-200 dark:border-indigo-900/40',
+          dot: 'bg-indigo-500',
+          stepIndex: 2
         };
       case 'picked':
       case 'on_the_way':
         return {
           label: 'Out for Delivery',
-          icon: Truck,
+          emoji: '🛵',
+          icon: Bike,
           bg: 'bg-purple-50 dark:bg-purple-950/40',
           text: 'text-purple-700 dark:text-purple-300',
-          border: 'border-purple-200 dark:border-purple-900/40'
+          border: 'border-purple-200 dark:border-purple-900/40',
+          dot: 'bg-purple-500',
+          stepIndex: 2
         };
       case 'delivered':
         return {
           label: 'Delivered',
+          emoji: '✅',
           icon: CheckCircle,
           bg: 'bg-emerald-50 dark:bg-emerald-950/40',
           text: 'text-emerald-700 dark:text-emerald-300',
-          border: 'border-emerald-200 dark:border-emerald-900/40'
+          border: 'border-emerald-200 dark:border-emerald-900/40',
+          dot: 'bg-emerald-500',
+          stepIndex: 3
         };
       case 'rejected':
         return {
           label: 'Rejected',
+          emoji: '❌',
           icon: XCircle,
           bg: 'bg-rose-50 dark:bg-rose-950/40',
           text: 'text-rose-700 dark:text-rose-300',
-          border: 'border-rose-200 dark:border-rose-900/40'
+          border: 'border-rose-200 dark:border-rose-900/40',
+          dot: 'bg-rose-500',
+          stepIndex: -1
         };
       case 'cancelled':
         return {
           label: 'Cancelled',
+          emoji: '❌',
           icon: XCircle,
           bg: 'bg-rose-50 dark:bg-rose-950/40',
           text: 'text-rose-700 dark:text-rose-300',
-          border: 'border-rose-200 dark:border-rose-900/40'
+          border: 'border-rose-200 dark:border-rose-900/40',
+          dot: 'bg-rose-500',
+          stepIndex: -1
         };
       default:
         return {
           label: String(status).toUpperCase(),
+          emoji: '🕒',
           icon: Clock,
           bg: 'bg-zinc-100 dark:bg-zinc-800',
           text: 'text-zinc-700 dark:text-zinc-300',
-          border: 'border-zinc-200 dark:border-zinc-700'
+          border: 'border-zinc-200 dark:border-zinc-700',
+          dot: 'bg-zinc-400',
+          stepIndex: 0
         };
     }
   };
@@ -513,11 +575,14 @@ export default function OrderHistoryScreen() {
             <button
               type="button"
               onClick={() => loadOrders(true)}
-              disabled={isRefreshing}
-              className="p-2 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 transition cursor-pointer active:scale-95 disabled:opacity-50"
-              title="Refresh order history"
+              disabled={isRefreshing || isLoading}
+              aria-busy={isRefreshing}
+              aria-label="Refresh orders from Supabase"
+              className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:bg-orange-50 hover:border-orange-200 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 font-bold text-[11px] transition inline-flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed shadow-2xs"
+              title="Refresh order history from Supabase"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-orange-500' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-orange-500' : 'text-orange-500'}`} />
+              <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
             </button>
 
             {/* Reset / Clear All Orders Button */}
@@ -540,6 +605,24 @@ export default function OrderHistoryScreen() {
           <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 shadow-xs transition-all animate-in fade-in">
             <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>{actionNotice}</span>
+          </div>
+        )}
+
+        {/* Sync Warning / Manual Retry Banner */}
+        {fetchError && (
+          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="truncate">{fetchError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadOrders(true)}
+              disabled={isRefreshing}
+              className="px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-900/50 hover:bg-amber-200 text-amber-900 dark:text-amber-200 text-[11px] font-extrabold shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {isRefreshing ? 'Retrying...' : 'Retry'}
+            </button>
           </div>
         )}
 
@@ -587,33 +670,14 @@ export default function OrderHistoryScreen() {
           </div>
 
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 dark:border-zinc-800/60">
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar text-xs flex-1">
-              {[
-                { id: 'all', label: 'All Orders' },
-                { id: 'active', label: 'Active', badge: combinedOrders.filter(o => ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(o.status)).length },
-                { id: 'delivered', label: 'Delivered', badge: combinedOrders.filter(o => o.status === 'delivered').length },
-                { id: 'cancelled', label: 'Cancelled / Rejected' }
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setStatusFilter(tab.id as any)}
-                  className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer text-xs flex items-center gap-1.5 ${
-                    statusFilter === tab.id
-                      ? 'bg-orange-500 text-white shadow-xs'
-                      : 'bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-650 dark:text-zinc-350'
-                  }`}
-                >
-                  <span>{tab.label}</span>
-                  {tab.badge !== undefined && tab.badge > 0 && (
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-black ${
-                      statusFilter === tab.id ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300'
-                    }`}>
-                      {tab.badge}
-                    </span>
-                  )}
-                </button>
-              ))}
+            <div className="flex-1 min-w-0">
+              <OrderStatusFilter
+                orders={combinedOrders}
+                value={statusFilter}
+                onChange={handleStatusFilterChange}
+                includeActiveTab
+                includeReadyTab={false}
+              />
             </div>
 
             <span className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 whitespace-nowrap pl-2">
@@ -639,72 +703,115 @@ export default function OrderHistoryScreen() {
           </div>
         )}
 
-        {/* Empty State */}
-        {!isLoading && filteredOrders.length === 0 && (
-          <div className="bg-white dark:bg-zinc-900 rounded-2xl p-8 border border-slate-200/80 dark:border-zinc-800 shadow-sm text-center space-y-4">
-            <div className="w-16 h-16 rounded-2xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/40 flex items-center justify-center mx-auto text-orange-500">
-              <ShoppingBag className="w-8 h-8" />
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50">
-                {searchQuery ? "No matching orders found" : "No past orders yet"}
-              </h3>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-sm mx-auto">
-                {searchQuery 
-                  ? `No orders matched "${searchQuery}". Try a different keyword or clear the search filter.`
-                  : "You haven't placed any orders yet. Explore our authentic Chirala restaurants and order delicious food today!"}
-              </p>
-            </div>
-            {searchQuery ? (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="px-4 py-2 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-200 font-bold text-xs rounded-xl cursor-pointer"
-              >
-                Clear Search
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setCurrentPage('home')}
-                className="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition cursor-pointer"
-              >
-                Explore Chirala Menus
-              </button>
-            )}
-          </div>
-        )}
+        {/* Empty State & Orders List Container with Framer Motion Layout Animations */}
+        {!isLoading && (
+          <LayoutGroup>
+            <motion.div
+              layout="position"
+              transition={{ layout: { type: 'spring', stiffness: 360, damping: 32 } }}
+              className="relative space-y-3.5"
+            >
+              <AnimatePresence mode="popLayout" initial={false}>
+                {filteredOrders.length === 0 ? (
+                  <motion.div
+                    key={`empty-${statusFilter}-${searchQuery ? 'search' : 'all'}`}
+                    layout
+                    initial={{ opacity: 0, y: 10, scale: 0.985 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.985 }}
+                    transition={{
+                      layout: { type: 'spring', stiffness: 360, damping: 32 },
+                      duration: 0.2,
+                      ease: [0.22, 1, 0.36, 1]
+                    }}
+                    className="bg-white dark:bg-zinc-900 rounded-2xl p-8 border border-slate-200/80 dark:border-zinc-800 shadow-sm text-center space-y-4"
+                  >
+                    <div className="w-16 h-16 rounded-2xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/40 flex items-center justify-center mx-auto text-orange-500">
+                      <ShoppingBag className="w-8 h-8" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50">
+                        {searchQuery ? "No matching orders found" : statusFilter !== 'all' ? "No orders in this stage" : "No past orders yet"}
+                      </h3>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-sm mx-auto">
+                        {searchQuery 
+                          ? `No orders matched "${searchQuery}". Try a different keyword or clear the search filter.`
+                          : statusFilter !== 'all'
+                          ? `You have no orders currently matching "${statusFilter.replace(/_/g, ' ')}". Switch back to All Orders to view your full history.`
+                          : "You haven't placed any orders yet. Explore our authentic Chirala restaurants and order delicious food today!"}
+                      </p>
+                    </div>
+                    {searchQuery ? (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="px-4 py-2 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 text-zinc-700 dark:text-zinc-200 font-bold text-xs rounded-xl cursor-pointer"
+                      >
+                        Clear Search
+                      </button>
+                    ) : statusFilter !== 'all' ? (
+                      <button
+                        type="button"
+                        onClick={() => setStatusFilter('all')}
+                        className="px-4 py-2 bg-orange-50 dark:bg-orange-950/40 hover:bg-orange-100 text-orange-600 dark:text-orange-400 font-bold text-xs rounded-xl cursor-pointer"
+                      >
+                        Show All Orders
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage('home')}
+                        className="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition cursor-pointer"
+                      >
+                        Explore Chirala Menus
+                      </button>
+                    )}
+                  </motion.div>
+                ) : (
+                  filteredOrders.map(order => {
+                    const hasAssignedRider = Boolean(
+                      order.deliveryPartner?.name ||
+                      order.deliveryPartnerName ||
+                      order.deliveryPartnerPhone ||
+                      order.status === 'picked' ||
+                      order.status === 'on_the_way'
+                    );
+                    const badge = getStatusBadge(order.status, hasAssignedRider);
+                    const BadgeIcon = badge.icon;
+                    const isExpanded = expandedOrderId === order.id;
+                    const isActiveOrder = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(order.status);
+                    const totalItemsCount = order.items.reduce((acc, i) => acc + (i.quantity || 1), 0);
+                    const relativeTime = getRelativeTime(order.date);
+                    const ratingState = ratingStates[order.id] || { 
+                      rating: order.rating || 0, 
+                      hoverRating: 0, 
+                      feedback: order.feedback || '', 
+                      submitted: !!order.rating 
+                    };
+                    const partnerRatingState = partnerRatingStates[order.id] || {
+                      rating: order.deliveryPartnerRating || 0,
+                      hoverRating: 0,
+                      feedback: order.deliveryPartnerFeedback || '',
+                      tags: order.deliveryPartnerRatingTags || [],
+                      submitted: !!order.deliveryPartnerRating
+                    };
 
-        {/* Orders List */}
-        {!isLoading && filteredOrders.length > 0 && (
-          <div className="space-y-3.5">
-            {filteredOrders.map(order => {
-              const badge = getStatusBadge(order.status);
-              const BadgeIcon = badge.icon;
-              const isExpanded = expandedOrderId === order.id;
-              const isActiveOrder = ['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(order.status);
-              const totalItemsCount = order.items.reduce((acc, i) => acc + (i.quantity || 1), 0);
-              const relativeTime = getRelativeTime(order.date);
-              const ratingState = ratingStates[order.id] || { 
-                rating: order.rating || 0, 
-                hoverRating: 0, 
-                feedback: order.feedback || '', 
-                submitted: !!order.rating 
-              };
-              const partnerRatingState = partnerRatingStates[order.id] || {
-                rating: order.deliveryPartnerRating || 0,
-                hoverRating: 0,
-                feedback: order.deliveryPartnerFeedback || '',
-                tags: order.deliveryPartnerRatingTags || [],
-                submitted: !!order.deliveryPartnerRating
-              };
-
-              return (
-                <div
-                  key={order.id}
-                  className="bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200/90 dark:border-zinc-800 shadow-sm overflow-hidden transition-all hover:border-slate-300 dark:hover:border-zinc-700"
-                >
-                  {/* Order Top Bar: ID, Status, Timestamp */}
+                    return (
+                      <motion.div
+                        key={order.id}
+                        layout
+                        initial={{ opacity: 0, y: 12, scale: 0.985 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.985 }}
+                        transition={{
+                          layout: { type: 'spring', stiffness: 380, damping: 32 },
+                          opacity: { duration: 0.2 },
+                          y: { duration: 0.22, ease: [0.22, 1, 0.36, 1] },
+                          scale: { duration: 0.2 }
+                        }}
+                        className="w-full bg-white dark:bg-zinc-900 rounded-2xl border border-slate-200/90 dark:border-zinc-800 shadow-sm overflow-hidden transition-colors hover:border-slate-300 dark:hover:border-zinc-700"
+                      >
+                  {/* Order Top Bar: Visual Status Icon, ID, Status Badge, Timestamp */}
                   <div 
                     onClick={() => {
                       setSelectedOrderForModal(order);
@@ -715,25 +822,97 @@ export default function OrderHistoryScreen() {
                     title="Click to view full order details"
                   >
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-black text-zinc-900 dark:text-zinc-100 group-hover:text-orange-600 transition">
-                          #{order.id.replace('order_', 'ORD-').slice(-8).toUpperCase()}
-                        </span>
-                        {relativeTime && (
-                          <span className="text-[10px] text-zinc-400 font-bold bg-slate-200/70 dark:bg-zinc-800 px-2 py-0.5 rounded-full">
-                            {relativeTime}
+                      <div className="flex items-center gap-2.5">
+                        {/* Visual Status Icon Tile */}
+                        <div
+                          className={`relative w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 shadow-2xs ${badge.bg} ${badge.text} ${badge.border}`}
+                          aria-label={`Order status: ${badge.label}`}
+                          title={badge.label}
+                        >
+                          <BadgeIcon className="w-4 h-4" />
+                          {isActiveOrder && (
+                            <span
+                              className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-zinc-900 ${badge.dot}`}
+                              aria-hidden="true"
+                            />
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-black text-zinc-900 dark:text-zinc-100 group-hover:text-orange-600 transition">
+                            #{order.id.replace('order_', 'ORD-').slice(-8).toUpperCase()}
                           </span>
-                        )}
+                          {relativeTime && (
+                            <span className="text-[10px] text-zinc-400 font-bold bg-slate-200/70 dark:bg-zinc-800 px-2 py-0.5 rounded-full">
+                              {relativeTime}
+                            </span>
+                          )}
+                        </div>
                       </div>
 
-                      {/* Status Badge */}
-                      <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-bold ${badge.bg} ${badge.text} ${badge.border}`}>
-                        <BadgeIcon className="w-3.5 h-3.5 shrink-0" />
-                        <span>{badge.label}</span>
+                      {/* Status Badge & Rider Assigned Indicator */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {hasAssignedRider && isActiveOrder && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold"
+                            title={order.deliveryPartner?.name || order.deliveryPartnerName ? `Rider: ${order.deliveryPartner?.name || order.deliveryPartnerName}` : 'Rider Assigned'}
+                          >
+                            <UserCheck className="w-3 h-3 shrink-0" />
+                            <span>Rider Assigned</span>
+                          </span>
+                        )}
+                        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-bold ${badge.bg} ${badge.text} ${badge.border}`}>
+                          <BadgeIcon className="w-3.5 h-3.5 shrink-0" />
+                          <span>{badge.label}</span>
+                          <span aria-hidden="true" className="text-xs leading-none">{badge.emoji}</span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-1 text-[11px] text-zinc-400 font-mono mt-1.5">
+                    {/* Visual Lifecycle Icon Strip for Active & Delivered Orders */}
+                    {badge.stepIndex >= 0 && (
+                      <div className="mt-2.5 flex items-center gap-1.5" aria-label="Order stage progress">
+                        {[
+                          { idx: 0, label: 'Placed', icon: Clock },
+                          { idx: 1, label: 'Cooking', icon: Flame },
+                          { idx: 2, label: hasAssignedRider ? 'Rider Assigned' : 'Out for Delivery', icon: Bike },
+                          { idx: 3, label: 'Delivered', icon: CheckCircle }
+                        ].map((stage, i) => {
+                          const StageIcon = stage.icon;
+                          const isCompleted = badge.stepIndex > stage.idx;
+                          const isCurrent = badge.stepIndex === stage.idx;
+                          return (
+                            <React.Fragment key={stage.idx}>
+                              <div
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold transition-colors ${
+                                  isCurrent
+                                    ? `${badge.bg} ${badge.text} border ${badge.border}`
+                                    : isCompleted
+                                    ? 'bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
+                                    : 'text-zinc-400 dark:text-zinc-500 bg-slate-100/70 dark:bg-zinc-800/50'
+                                }`}
+                                title={stage.label}
+                              >
+                                <StageIcon className="w-3 h-3 shrink-0" />
+                                <span className="hidden sm:inline">{stage.label}</span>
+                              </div>
+                              {i < 3 && (
+                                <div
+                                  className={`h-0.5 flex-1 rounded-full ${
+                                    badge.stepIndex > stage.idx
+                                      ? 'bg-emerald-400 dark:bg-emerald-600'
+                                      : 'bg-slate-200 dark:bg-zinc-800'
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-1 text-[11px] text-zinc-400 font-mono mt-2">
                       <div className="flex items-center gap-1">
                         <Calendar className="w-3 h-3 text-zinc-400" />
                         <span>{formatTimestamp(order.date)}</span>
@@ -1121,8 +1300,18 @@ export default function OrderHistoryScreen() {
                         </button>
                       )}
 
-                      {/* Active Order live tracking button */}
-                      {isActiveOrder && (
+                      {/* Out for Delivery direct MapTracking 'Track Order' button */}
+                      {(order.status === 'picked' || order.status === 'on_the_way') ? (
+                        <button
+                          type="button"
+                          onClick={() => handleTrackOnMap(order)}
+                          className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs shadow-purple-500/20"
+                          title="Open live MapTracking view for this order"
+                        >
+                          <MapPin className="w-3.5 h-3.5" />
+                          <span>Track Order</span>
+                        </button>
+                      ) : isActiveOrder ? (
                         <button
                           type="button"
                           onClick={() => handleTrackLive(order)}
@@ -1131,23 +1320,32 @@ export default function OrderHistoryScreen() {
                           <Truck className="w-3.5 h-3.5" />
                           <span>Track Live</span>
                         </button>
-                      )}
+                      ) : null}
 
                       {/* Reorder Button */}
                       <button
                         type="button"
+                        disabled={reorderingOrderId === order.id}
                         onClick={() => handleReorder(order)}
-                        className="px-3.5 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs shadow-orange-500/20"
+                        className="px-3.5 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-[11px] transition flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-xs shadow-orange-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
+                        title="Re-validate item prices and add to cart"
                       >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Reorder</span>
+                        {reorderingOrderId === order.id ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        <span>{reorderingOrderId === order.id ? 'Validating...' : 'Reorder'}</span>
                       </button>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                </motion.div>
+                    );
+                  })
+                )}
+              </AnimatePresence>
+            </motion.div>
+          </LayoutGroup>
         )}
 
         {/* Order Details Modal with Cancel Order & Clear from History */}
@@ -1219,8 +1417,9 @@ export default function OrderHistoryScreen() {
                         <ModalBadgeIcon className="w-4 h-4" />
                       </div>
                       <div>
-                        <span className={`font-black text-xs block ${modalBadge.text}`}>
-                          {modalBadge.label}
+                        <span className={`font-black text-xs flex items-center gap-1.5 ${modalBadge.text}`}>
+                          <span>{modalBadge.label}</span>
+                          <span aria-hidden="true">{modalBadge.emoji}</span>
                         </span>
                         <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
                           {selectedOrderForModal.status === 'rejected'
@@ -1543,8 +1742,21 @@ export default function OrderHistoryScreen() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Live Tracking shortcut */}
-                    {['placed', 'accepted', 'preparing', 'ready', 'picked', 'on_the_way'].includes(selectedOrderForModal.status) && (
+                    {/* Live Tracking / MapTracking shortcut */}
+                    {(selectedOrderForModal.status === 'picked' || selectedOrderForModal.status === 'on_the_way') ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ord = selectedOrderForModal;
+                          setSelectedOrderForModal(null);
+                          handleTrackOnMap(ord);
+                        }}
+                        className="py-2 px-3.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
+                      >
+                        <MapPin className="w-4 h-4" />
+                        <span>Track Order</span>
+                      </button>
+                    ) : ['placed', 'accepted', 'preparing', 'ready'].includes(selectedOrderForModal.status) ? (
                       <button
                         type="button"
                         onClick={() => {
@@ -1557,23 +1769,26 @@ export default function OrderHistoryScreen() {
                         <Truck className="w-4 h-4" />
                         <span>Track Live</span>
                       </button>
-                    )}
+                    ) : null}
 
                     {/* Reorder shortcut */}
-                    {(isDelivered || isCancelled) && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const ord = selectedOrderForModal;
-                          setSelectedOrderForModal(null);
-                          handleReorder(ord);
-                        }}
-                        className="py-2 px-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
-                      >
+                    <button
+                      type="button"
+                      disabled={reorderingOrderId === selectedOrderForModal.id}
+                      onClick={async () => {
+                        const ord = selectedOrderForModal;
+                        await handleReorder(ord);
+                        setSelectedOrderForModal(null);
+                      }}
+                      className="py-2 px-3.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {reorderingOrderId === selectedOrderForModal.id ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
                         <RotateCcw className="w-4 h-4" />
-                        <span>Reorder</span>
-                      </button>
-                    )}
+                      )}
+                      <span>{reorderingOrderId === selectedOrderForModal.id ? 'Validating...' : 'Reorder'}</span>
+                    </button>
 
                     <button
                       type="button"
@@ -1597,3 +1812,5 @@ export default function OrderHistoryScreen() {
     </div>
   );
 }
+
+export default memo(OrderHistoryScreen);

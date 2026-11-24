@@ -1039,4 +1039,66 @@ export function isOrderOwnedByCaller(order: any, caller: CallerIdentity): boolea
   return false;
 }
 
+/**
+ * Resolves a registered customer's email by case-insensitive username directly from Supabase Auth
+ * (used securely on the server when customer_profiles table is unmigrated or missing a row).
+ */
+export async function resolveCustomerEmailFromSupabaseAuth(
+  adminClient: any,
+  username: string,
+  isServiceRole: boolean
+): Promise<{ email: string; fullName?: string } | null> {
+  if (!adminClient || !isServiceRole) return null;
+  const target = String(username || '').trim().toLowerCase();
+  if (!target) return null;
 
+  try {
+    const perPage = 200;
+    for (let page = 1; page <= 5; page += 1) {
+      const { data, error } = await adminClient.auth.admin.listUsers({ page, perPage });
+      if (error || !Array.isArray(data?.users) || data.users.length === 0) break;
+
+      for (const user of data.users) {
+        const meta = user?.user_metadata || {};
+        const metaUsername = String(meta.username_lower || meta.username || '').trim().toLowerCase();
+        if (metaUsername && metaUsername === target && user?.email) {
+          return {
+            email: normalizeEmail(user.email),
+            fullName: meta.full_name ? String(meta.full_name).trim() : undefined
+          };
+        }
+      }
+
+      if (data.users.length < perPage) break;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Checks whether an email already belongs to a Supabase Auth account so stale legacy
+ * app_settings hashes are never accepted after password updates or resets.
+ */
+export async function findSupabaseAuthUserByEmail(
+  adminClient: any,
+  email: string,
+  isServiceRole: boolean
+): Promise<any | null> {
+  if (!adminClient || !isServiceRole) return null;
+  const targetEmail = normalizeEmail(email);
+  if (!targetEmail) return null;
+
+  try {
+    const perPage = 200;
+    for (let page = 1; page <= 5; page += 1) {
+      const { data, error } = await adminClient.auth.admin.listUsers({ page, perPage });
+      if (error || !Array.isArray(data?.users) || data.users.length === 0) break;
+
+      const match = data.users.find((u: any) => normalizeEmail(u?.email) === targetEmail);
+      if (match) return match;
+
+      if (data.users.length < perPage) break;
+    }
+  } catch {}
+  return null;
+}

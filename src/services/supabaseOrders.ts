@@ -176,6 +176,12 @@ export async function fetchUserOrdersFromSupabase(
   const digits = cleanPhone.length === 12 && cleanPhone.startsWith('91') ? cleanPhone.slice(2) : cleanPhone;
   const scopeKey = userId ? `id:${userId}` : `phone:${digits}`;
 
+  if (force) {
+    await tanstackQueryClient.invalidateQueries({
+      queryKey: QUERY_KEYS.USER_ORDERS(scopeKey)
+    });
+  }
+
   return tanstackQueryClient.fetchQuery({
     queryKey: QUERY_KEYS.USER_ORDERS(scopeKey),
     staleTime: force ? 0 : STALE_TIMES.USER_ORDERS,

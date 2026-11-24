@@ -1899,16 +1899,20 @@ var getAdminSupabaseServerClient = () => {
 var getPublicSupabaseKey = () => {
   return (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_-uXD4j7ITcsUZWT7_IDQ3A_AXLPWBCX").trim();
 };
+var createFreshPublicSupabaseServerClient = () => {
+  const supabaseUrl2 = getSupabaseUrl();
+  const publicKey = getPublicSupabaseKey();
+  return createSupabaseClient(supabaseUrl2, publicKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  });
+};
 var getPublicSupabaseServerClient = () => {
   if (!cachedPublicServerClient) {
-    const supabaseUrl2 = getSupabaseUrl();
-    const publicKey = getPublicSupabaseKey();
-    cachedPublicServerClient = createSupabaseClient(supabaseUrl2, publicKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false
-      }
-    });
+    cachedPublicServerClient = createFreshPublicSupabaseServerClient();
   }
   return cachedPublicServerClient;
 };
@@ -2824,6 +2828,48 @@ function isOrderOwnedByCaller(order, caller) {
   }
   return false;
 }
+async function resolveCustomerEmailFromSupabaseAuth(adminClient, username, isServiceRole) {
+  if (!adminClient || !isServiceRole) return null;
+  const target = String(username || "").trim().toLowerCase();
+  if (!target) return null;
+  try {
+    const perPage = 200;
+    for (let page = 1; page <= 5; page += 1) {
+      const { data, error } = await adminClient.auth.admin.listUsers({ page, perPage });
+      if (error || !Array.isArray(data?.users) || data.users.length === 0) break;
+      for (const user of data.users) {
+        const meta = user?.user_metadata || {};
+        const metaUsername = String(meta.username_lower || meta.username || "").trim().toLowerCase();
+        if (metaUsername && metaUsername === target && user?.email) {
+          return {
+            email: normalizeEmail(user.email),
+            fullName: meta.full_name ? String(meta.full_name).trim() : void 0
+          };
+        }
+      }
+      if (data.users.length < perPage) break;
+    }
+  } catch {
+  }
+  return null;
+}
+async function findSupabaseAuthUserByEmail(adminClient, email, isServiceRole) {
+  if (!adminClient || !isServiceRole) return null;
+  const targetEmail = normalizeEmail(email);
+  if (!targetEmail) return null;
+  try {
+    const perPage = 200;
+    for (let page = 1; page <= 5; page += 1) {
+      const { data, error } = await adminClient.auth.admin.listUsers({ page, perPage });
+      if (error || !Array.isArray(data?.users) || data.users.length === 0) break;
+      const match = data.users.find((u) => normalizeEmail(u?.email) === targetEmail);
+      if (match) return match;
+      if (data.users.length < perPage) break;
+    }
+  } catch {
+  }
+  return null;
+}
 
 // lib/handlers/auth/send-email-otp.ts
 init_email_service();
@@ -2848,7 +2894,14 @@ var adaptiveSupabaseStorage = {
     if (typeof window === "undefined") return null;
     try {
       const remember = getAuthPersistencePreference();
-      return remember ? window.localStorage.getItem(key) : window.sessionStorage.getItem(key);
+      const primary = remember ? window.localStorage : window.sessionStorage;
+      const val = primary.getItem(key);
+      if (val !== null) return val;
+      if (key.includes("code-verifier")) {
+        const secondary = remember ? window.sessionStorage : window.localStorage;
+        return secondary.getItem(key);
+      }
+      return null;
     } catch {
       return null;
     }
@@ -5470,6 +5523,13 @@ async function handler6(req, res) {
         }
       } catch {
       }
+      const existingAuthUsername = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsernameLower, isServiceRole);
+      if (existingAuthUsername && existingAuthUsername.email.toLowerCase() !== cleanEmail) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: `The username "${rawUsername}" is already taken. Please choose another username.`
+        });
+      }
     }
     const localByUsername = findLocalCustomerByUsername(cleanUsernameLower);
     if (localByUsername && localByUsername.email.toLowerCase() !== cleanEmail) {
@@ -5485,7 +5545,7 @@ async function handler6(req, res) {
         error: "An account with this email address already exists. Please sign in instead."
       });
     }
-    const publicSupabase = getPublicSupabaseServerClient();
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const cleanCity = String(city || "").trim() || "Chirala";
     const cleanLandmark = String(landmark || "").trim();
     const consentTimestamp = explicitOptIn ? (/* @__PURE__ */ new Date()).toISOString() : null;
@@ -5742,6 +5802,12 @@ async function handler7(req, res) {
           } catch {
           }
         }
+        if (!targetEmail) {
+          const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsernameLower, isServiceRole);
+          if (authMatch?.email) {
+            targetEmail = authMatch.email;
+          }
+        }
       }
       if (!targetEmail) {
         const localMatch = findLocalCustomerByUsername(cleanUsernameLower);
@@ -5761,7 +5827,7 @@ async function handler7(req, res) {
         error: "Invalid username/email or password."
       });
     }
-    const publicSupabase = getPublicSupabaseServerClient();
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const { data: sbData, error: sbError } = await publicSupabase.auth.signInWithPassword({
       email: targetEmail,
       password: cleanPassword
@@ -5890,7 +5956,20 @@ async function handler7(req, res) {
         error: "Your email address is not verified yet. Please check your inbox and click the confirmation link before signing in."
       });
     }
+    let hasSupabaseAuthAccount = false;
     if (adminClient && isServiceRole) {
+      const existingAuthUser = await findSupabaseAuthUserByEmail(adminClient, targetEmail, isServiceRole);
+      if (existingAuthUser) {
+        hasSupabaseAuthAccount = true;
+      } else {
+        try {
+          const { data: cpMatch } = await adminClient.from("customer_profiles").select("id").ilike("email", targetEmail).maybeSingle();
+          if (cpMatch?.id) hasSupabaseAuthAccount = true;
+        } catch {
+        }
+      }
+    }
+    if (!hasSupabaseAuthAccount && adminClient && isServiceRole) {
       try {
         const { data: legacyAccRow } = await adminClient.from("app_settings").select("value").eq("key", `account_${targetEmail}`).maybeSingle();
         const legacyRecord = legacyAccRow?.value;
@@ -5915,7 +5994,7 @@ async function handler7(req, res) {
       } catch {
       }
     }
-    const legacyMem = fallbackCustomerAccounts.get(targetEmail);
+    const legacyMem = !hasSupabaseAuthAccount ? fallbackCustomerAccounts.get(targetEmail) : null;
     if (legacyMem?.password_hash && verifyPassword(cleanPassword, legacyMem.password_hash)) {
       clearCustomerAuthRateLimit("login", accountLimitKey);
       const token = createSignedSessionJwt(legacyMem.id || targetEmail, "normal_user", {
@@ -6301,6 +6380,13 @@ async function handler9(req, res) {
           } catch {
           }
         }
+        if (!resolvedEmail) {
+          const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsername, isServiceRole);
+          if (authMatch?.email) {
+            resolvedEmail = authMatch.email;
+            if (authMatch.fullName && !customerName) customerName = authMatch.fullName;
+          }
+        }
       }
       if (!resolvedEmail) {
         const local = findLocalCustomerByUsername(cleanUsername);
@@ -6330,7 +6416,7 @@ async function handler9(req, res) {
         message: "If an account with a verified email matches those details, a secure password reset link has been sent to your email."
       });
     }
-    const publicSupabase = getPublicSupabaseServerClient();
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const baseOrigin = getAppRedirectOrigin(req, redirectTo);
     const targetRedirect = `${baseOrigin.replace(/\/+$/, "")}/?type=recovery`;
     let primaryError = null;
@@ -6502,6 +6588,10 @@ async function handler10(req, res) {
         }
       }
       if (!resolvedEmail) {
+        const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsername, isServiceRole);
+        if (authMatch?.email) resolvedEmail = authMatch.email;
+      }
+      if (!resolvedEmail) {
         const local = findLocalCustomerByUsername(cleanUsername);
         if (local?.email) resolvedEmail = normalizeEmail(local.email);
       }
@@ -6510,7 +6600,7 @@ async function handler10(req, res) {
       }
     }
     if (resolvedEmail) {
-      const publicSupabase = getPublicSupabaseServerClient();
+      const publicSupabase = createFreshPublicSupabaseServerClient();
       const targetRedirect = getAppRedirectOrigin(req, redirectTo);
       const { error } = await publicSupabase.auth.resend({
         type: "signup",

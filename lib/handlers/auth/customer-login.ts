@@ -21,11 +21,13 @@ import {
   findLocalCustomerByUsername,
   upsertLocalCustomerProfileIndex,
   fallbackCustomerAccounts,
-  fallbackUsernamesRegistry
+  fallbackUsernamesRegistry,
+  resolveCustomerEmailFromSupabaseAuth,
+  findSupabaseAuthUserByEmail
 } from "../../auth-utils";
 import {
   getAdminSupabaseServerClient,
-  getPublicSupabaseServerClient,
+  createFreshPublicSupabaseServerClient,
   createUserScopedSupabaseClient
 } from "../../../src/utils/supabase/server";
 
@@ -124,6 +126,13 @@ export default async function handler(req: any, res: any) {
             }
           } catch {}
         }
+        // Fallback lookup in Supabase Auth user_metadata (works even when customer_profiles table is pending)
+        if (!targetEmail) {
+          const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsernameLower, isServiceRole);
+          if (authMatch?.email) {
+            targetEmail = authMatch.email;
+          }
+        }
       }
 
       // Check local non-secret username index & memory registry
@@ -148,8 +157,8 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 2. Authenticate via Supabase Auth (signInWithPassword)
-    const publicSupabase = getPublicSupabaseServerClient();
+    // 2. Authenticate via Supabase Auth (signInWithPassword) using an isolated stateless client
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const { data: sbData, error: sbError } = await publicSupabase.auth.signInWithPassword({
       email: targetEmail,
       password: cleanPassword
@@ -308,8 +317,26 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // Preserve seamless sign-in for legacy pre-existing accounts stored in app_settings (if present)
+    // Ensure Supabase Auth remains the single source of truth for any account registered in auth.users / customer_profiles
+    let hasSupabaseAuthAccount = false;
     if (adminClient && isServiceRole) {
+      const existingAuthUser = await findSupabaseAuthUserByEmail(adminClient, targetEmail, isServiceRole);
+      if (existingAuthUser) {
+        hasSupabaseAuthAccount = true;
+      } else {
+        try {
+          const { data: cpMatch } = await adminClient
+            .from("customer_profiles")
+            .select("id")
+            .ilike("email", targetEmail)
+            .maybeSingle();
+          if (cpMatch?.id) hasSupabaseAuthAccount = true;
+        } catch {}
+      }
+    }
+
+    // Preserve seamless sign-in ONLY for untouched legacy pre-Supabase accounts stored in app_settings
+    if (!hasSupabaseAuthAccount && adminClient && isServiceRole) {
       try {
         const { data: legacyAccRow } = await adminClient
           .from("app_settings")
@@ -340,8 +367,8 @@ export default async function handler(req: any, res: any) {
       } catch {}
     }
 
-    // Legacy in-memory fallback check if present
-    const legacyMem = fallbackCustomerAccounts.get(targetEmail);
+    // Legacy in-memory fallback check ONLY if no Supabase Auth account exists
+    const legacyMem = !hasSupabaseAuthAccount ? fallbackCustomerAccounts.get(targetEmail) : null;
     if (legacyMem?.password_hash && verifyPassword(cleanPassword, legacyMem.password_hash)) {
       clearCustomerAuthRateLimit("login", accountLimitKey);
       const token = createSignedSessionJwt(legacyMem.id || targetEmail, "normal_user", {

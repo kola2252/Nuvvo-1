@@ -18,11 +18,12 @@ import {
   upsertLocalCustomerProfileIndex,
   findLocalCustomerByUsername,
   findLocalCustomerByEmail,
-  getAppRedirectOrigin
+  getAppRedirectOrigin,
+  resolveCustomerEmailFromSupabaseAuth
 } from "../../auth-utils";
 import {
   getAdminSupabaseServerClient,
-  getPublicSupabaseServerClient,
+  createFreshPublicSupabaseServerClient,
   createUserScopedSupabaseClient
 } from "../../../src/utils/supabase/server";
 import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../../src/lib/whatsapp";
@@ -220,6 +221,14 @@ export default async function handler(req: any, res: any) {
           });
         }
       } catch {}
+
+      const existingAuthUsername = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsernameLower, isServiceRole);
+      if (existingAuthUsername && existingAuthUsername.email.toLowerCase() !== cleanEmail) {
+        return sendJsonResponse(res, 409, {
+          success: false,
+          error: `The username "${rawUsername}" is already taken. Please choose another username.`
+        });
+      }
     }
 
     // Check durable local index as well (prevents duplicates even when DB migration/service role is pending)
@@ -240,7 +249,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // 3. Create User Account in Supabase Auth (never stores plaintext password in profile tables)
-    const publicSupabase = getPublicSupabaseServerClient();
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const cleanCity = String(city || "").trim() || "Chirala";
     const cleanLandmark = String(landmark || "").trim();
     const consentTimestamp = explicitOptIn ? new Date().toISOString() : null;

@@ -110,17 +110,22 @@ export const getPublicSupabaseKey = (): string => {
   ).trim();
 };
 
+export const createFreshPublicSupabaseServerClient = (): SupabaseClient => {
+  const supabaseUrl = getSupabaseUrl();
+  const publicKey = getPublicSupabaseKey();
+
+  return createSupabaseClient(supabaseUrl, publicKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    }
+  });
+};
+
 export const getPublicSupabaseServerClient = (): SupabaseClient => {
   if (!cachedPublicServerClient) {
-    const supabaseUrl = getSupabaseUrl();
-    const publicKey = getPublicSupabaseKey();
-
-    cachedPublicServerClient = createSupabaseClient(supabaseUrl, publicKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      }
-    });
+    cachedPublicServerClient = createFreshPublicSupabaseServerClient();
   }
   return cachedPublicServerClient;
 };

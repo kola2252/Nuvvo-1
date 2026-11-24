@@ -24,6 +24,7 @@ import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
 import { fetchWithCache } from '../utils/apiCache';
 import AdminEmailTool from './AdminEmailTool';
 import AdminWhatsAppSettings from './AdminWhatsAppSettings';
+import OrderStatusFilter, { OrderLifecycleFilter, matchesOrderStatusFilter, getOrderLifecycleBadge } from './OrderStatusFilter';
 
 export default function AdminPanel() {
   const { 
@@ -51,6 +52,7 @@ export default function AdminPanel() {
     return 'settings';
   });
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [orderStatusFilter, setOrderStatusFilter] = useState<OrderLifecycleFilter>('all');
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'initiated' | 'awaiting_confirmation' | 'confirmed' | 'failed'>('all');
 
   // PhonePe UPI & Bank Account Configuration States
@@ -1842,33 +1844,48 @@ export default function AdminPanel() {
                 </span>
               </div>
 
+              {/* Order Lifecycle Stage Filter */}
+              <OrderStatusFilter
+                orders={orders}
+                value={orderStatusFilter}
+                onChange={setOrderStatusFilter}
+                compact
+                title="Order Lifecycle Stage"
+              />
+
               {/* Requirement #13: Payment Status Filters */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[10px]">
-                {[
-                  { id: 'all', label: 'All Orders', count: orders.length },
-                  { id: 'pending', label: '⏳ Payment Pending', count: orders.filter(o => o.paymentStatus === 'pending').length },
-                  { id: 'initiated', label: '🚀 Initiated', count: orders.filter(o => o.paymentStatus === 'initiated').length },
-                  { id: 'awaiting_confirmation', label: '🔍 Awaiting Confirmation', count: orders.filter(o => o.paymentStatus === 'awaiting_confirmation').length },
-                  { id: 'confirmed', label: '✅ Payment Confirmed', count: orders.filter(o => o.paymentStatus === 'confirmed' || o.paymentStatus === 'success').length },
-                  { id: 'failed', label: '❌ Failed / Cancelled', count: orders.filter(o => o.paymentStatus === 'failed' || o.paymentStatus === 'cancelled').length }
-                ].map(tab => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setPaymentFilter(tab.id as any)}
-                    className={`px-2.5 py-1.5 rounded-xl font-bold whitespace-nowrap cursor-pointer transition-all ${
-                      paymentFilter === tab.id
-                        ? 'bg-orange-500 text-white font-extrabold shadow-xs'
-                        : 'bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-slate-200 dark:hover:bg-zinc-700'
-                    }`}
-                  >
-                    {tab.label} ({tab.count})
-                  </button>
-                ))}
+              <div className="space-y-1.5 pt-1 border-t border-slate-100 dark:border-zinc-800/70">
+                <span className="text-[10px] font-black uppercase tracking-wider text-zinc-500 dark:text-zinc-400 block">
+                  Payment Status
+                </span>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[10px]">
+                  {[
+                    { id: 'all', label: 'All Payments', count: orders.length },
+                    { id: 'pending', label: '⏳ Payment Pending', count: orders.filter(o => o.paymentStatus === 'pending').length },
+                    { id: 'initiated', label: '🚀 Initiated', count: orders.filter(o => o.paymentStatus === 'initiated').length },
+                    { id: 'awaiting_confirmation', label: '🔍 Awaiting Confirmation', count: orders.filter(o => o.paymentStatus === 'awaiting_confirmation').length },
+                    { id: 'confirmed', label: '✅ Payment Confirmed', count: orders.filter(o => o.paymentStatus === 'confirmed' || o.paymentStatus === 'success').length },
+                    { id: 'failed', label: '❌ Failed / Cancelled', count: orders.filter(o => o.paymentStatus === 'failed' || o.paymentStatus === 'cancelled').length }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setPaymentFilter(tab.id as any)}
+                      className={`px-2.5 py-1.5 rounded-xl font-bold whitespace-nowrap cursor-pointer transition-all ${
+                        paymentFilter === tab.id
+                          ? 'bg-orange-500 text-white font-extrabold shadow-xs'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-slate-200 dark:hover:bg-zinc-700'
+                      }`}
+                    >
+                      {tab.label} ({tab.count})
+                    </button>
+                  ))}
+                </div>
               </div>
               
               {(() => {
                 const filteredOrders = orders.filter(or => {
+                  if (!matchesOrderStatusFilter(or.status, orderStatusFilter)) return false;
                   if (paymentFilter === 'all') return true;
                   if (paymentFilter === 'pending') return or.paymentStatus === 'pending';
                   if (paymentFilter === 'initiated') return or.paymentStatus === 'initiated';
@@ -1880,9 +1897,25 @@ export default function AdminPanel() {
 
                 if (filteredOrders.length === 0) {
                   return (
-                    <p className="text-xs text-zinc-400 font-bold py-8 text-center border border-dashed rounded-2xl dark:border-zinc-800">
-                      No orders found for payment filter: "{paymentFilter.replace('_', ' ')}".
-                    </p>
+                    <div className="py-8 text-center border border-dashed rounded-2xl dark:border-zinc-800 space-y-2">
+                      <p className="text-xs text-zinc-400 font-bold">
+                        No orders match the selected filters
+                        {orderStatusFilter !== 'all' ? ` (Stage: "${orderStatusFilter.replace(/_/g, ' ')}")` : ''}
+                        {paymentFilter !== 'all' ? ` (Payment: "${paymentFilter.replace(/_/g, ' ')}")` : ''}.
+                      </p>
+                      {(orderStatusFilter !== 'all' || paymentFilter !== 'all') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOrderStatusFilter('all');
+                            setPaymentFilter('all');
+                          }}
+                          className="px-3 py-1 bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-lg text-[10px] font-extrabold uppercase tracking-wider cursor-pointer hover:bg-orange-100 transition"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
+                    </div>
                   );
                 }
 
@@ -1893,6 +1926,7 @@ export default function AdminPanel() {
                       const isAwaiting = or.paymentStatus === 'awaiting_confirmation';
                       const isInitiated = or.paymentStatus === 'initiated';
                       const isConfirmed = or.paymentStatus === 'confirmed' || or.paymentStatus === 'success';
+                      const lifecycleBadge = getOrderLifecycleBadge(or.status);
 
                       return (
                         <div key={or.id} className="pt-3 first:pt-0 flex flex-col gap-2 text-xs text-left">
@@ -1927,8 +1961,8 @@ export default function AdminPanel() {
                             </div>
                             <div className="text-right shrink-0">
                               <span className="font-mono font-black text-sm text-zinc-900 dark:text-zinc-50 block">₹{amount}</span>
-                              <span className="text-[9px] bg-indigo-600 text-white font-extrabold uppercase px-1.5 py-0.5 rounded-md mt-0.5 inline-block">
-                                {or.status}
+                              <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-md mt-0.5 inline-block ${lifecycleBadge.badgeClass}`}>
+                                {lifecycleBadge.label}
                               </span>
                             </div>
                           </div>

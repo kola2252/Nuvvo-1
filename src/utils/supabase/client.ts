@@ -59,9 +59,14 @@ const adaptiveSupabaseStorage = {
     if (typeof window === 'undefined') return null;
     try {
       const remember = getAuthPersistencePreference();
-      return remember
-        ? window.localStorage.getItem(key)
-        : window.sessionStorage.getItem(key);
+      const primary = remember ? window.localStorage : window.sessionStorage;
+      const val = primary.getItem(key);
+      if (val !== null) return val;
+      if (key.includes('code-verifier')) {
+        const secondary = remember ? window.sessionStorage : window.localStorage;
+        return secondary.getItem(key);
+      }
+      return null;
     } catch {
       return null;
     }

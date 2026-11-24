@@ -17,10 +17,11 @@ import {
   recordCustomerAuthFailure,
   findLocalCustomerByUsername,
   getAppRedirectOrigin,
-  fallbackUsernamesRegistry
+  fallbackUsernamesRegistry,
+  resolveCustomerEmailFromSupabaseAuth
 } from "../../auth-utils";
 import { isSmtpConfigured, sendPasswordRecoveryEmail } from "../../email-service";
-import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
+import { getAdminSupabaseServerClient, createFreshPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
@@ -111,6 +112,14 @@ export default async function handler(req: any, res: any) {
             if (map[cleanUsername]) resolvedEmail = normalizeEmail(map[cleanUsername]);
           } catch {}
         }
+
+        if (!resolvedEmail) {
+          const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsername, isServiceRole);
+          if (authMatch?.email) {
+            resolvedEmail = authMatch.email;
+            if (authMatch.fullName && !customerName) customerName = authMatch.fullName;
+          }
+        }
       }
 
       if (!resolvedEmail) {
@@ -144,7 +153,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const publicSupabase = getPublicSupabaseServerClient();
+    const publicSupabase = createFreshPublicSupabaseServerClient();
     const baseOrigin = getAppRedirectOrigin(req, redirectTo);
     const targetRedirect = `${baseOrigin.replace(/\/+$/, "")}/?type=recovery`;
 

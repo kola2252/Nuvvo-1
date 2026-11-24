@@ -14,9 +14,10 @@ import {
   checkCustomerAuthRateLimit,
   findLocalCustomerByUsername,
   getAppRedirectOrigin,
-  fallbackUsernamesRegistry
+  fallbackUsernamesRegistry,
+  resolveCustomerEmailFromSupabaseAuth
 } from "../../auth-utils";
-import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
+import { getAdminSupabaseServerClient, createFreshPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") {
@@ -75,6 +76,10 @@ export default async function handler(req: any, res: any) {
         } catch {}
       }
       if (!resolvedEmail) {
+        const authMatch = await resolveCustomerEmailFromSupabaseAuth(adminClient, cleanUsername, isServiceRole);
+        if (authMatch?.email) resolvedEmail = authMatch.email;
+      }
+      if (!resolvedEmail) {
         const local = findLocalCustomerByUsername(cleanUsername);
         if (local?.email) resolvedEmail = normalizeEmail(local.email);
       }
@@ -84,7 +89,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (resolvedEmail) {
-      const publicSupabase = getPublicSupabaseServerClient();
+      const publicSupabase = createFreshPublicSupabaseServerClient();
       const targetRedirect = getAppRedirectOrigin(req, redirectTo);
       const { error } = await publicSupabase.auth.resend({
         type: "signup",
