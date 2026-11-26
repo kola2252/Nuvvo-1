@@ -10,12 +10,17 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { getPublicSupabaseServerClient } from "../src/utils/supabase/server";
+import { getPublicSupabaseServerClient, getAdminSupabaseServerClient } from "../src/utils/supabase/server";
 
-export const AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || '9063692135';
-export const ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || '2135';
+export const AUTHORIZED_ADMIN_PHONE = normalizePhone(process.env.ADMIN_PHONE || '9063692135') || '9063692135';
 export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || process.env.SUPABASE_SECRET_KEY || 'nuvvo_production_secure_secret_chirala_2026';
 export const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes expiry window
+
+export function maskAdminPhoneDisplay(phone?: string | null): string {
+  const clean = normalizePhone(phone || '');
+  if (!clean || clean.length < 4) return 'Protected (Server-Verified)';
+  return `+91 ••••••••${clean.slice(-2)}`;
+}
 
 export interface EmailChallengePayload {
   email: string;
@@ -287,6 +292,112 @@ export function findLocalCustomerByEmail(email: string): StoredCustomerProfileIn
   return null;
 }
 
+export interface StoredLocalCustomerAccount {
+  id: string;
+  fullName: string;
+  username: string;
+  usernameLower: string;
+  email: string;
+  phone: string;
+  location: string;
+  deliveryAddress: string;
+  addresses: any[];
+  passwordHash: string;
+  whatsappNumber?: string;
+  whatsappOptIn?: boolean;
+  whatsappOptInAt?: string;
+  whatsappOptInSource?: string;
+  preferredLanguage?: string;
+  role: 'Customer';
+  isEmailVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const CUSTOMER_ACCOUNTS_FILE = path.join(process.cwd(), '.server_customer_accounts.json');
+
+function loadCustomerAccountsFile(): Record<string, StoredLocalCustomerAccount> {
+  try {
+    if (!process.env.VERCEL && fs.existsSync(CUSTOMER_ACCOUNTS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(CUSTOMER_ACCOUNTS_FILE, 'utf8'));
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {}
+  return {};
+}
+
+function saveCustomerAccountsFile(recordsByEmail: Record<string, StoredLocalCustomerAccount>) {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(CUSTOMER_ACCOUNTS_FILE, JSON.stringify(recordsByEmail, null, 2), 'utf8');
+  } catch {}
+}
+
+export function upsertLocalCustomerAccount(account: StoredLocalCustomerAccount): StoredLocalCustomerAccount {
+  const cleanEmail = normalizeEmail(account.email);
+  const cleanUsernameLower = String(account.usernameLower || account.username || '').trim().toLowerCase();
+  const normalized: StoredLocalCustomerAccount = {
+    ...account,
+    email: cleanEmail,
+    usernameLower: cleanUsernameLower,
+    role: 'Customer',
+    updatedAt: new Date().toISOString()
+  };
+
+  if (cleanUsernameLower) {
+    fallbackUsernamesRegistry.set(cleanUsernameLower, cleanEmail);
+  }
+  fallbackCustomerAccounts.set(cleanEmail, {
+    ...normalized,
+    password_hash: normalized.passwordHash
+  });
+
+  const fileRecords = loadCustomerAccountsFile();
+  fileRecords[cleanEmail] = normalized;
+  saveCustomerAccountsFile(fileRecords);
+
+  return normalized;
+}
+
+export function findLocalCustomerAccountByEmail(email: string): StoredLocalCustomerAccount | null {
+  const lower = normalizeEmail(email);
+  if (!lower) return null;
+  const mem = fallbackCustomerAccounts.get(lower);
+  if (mem && (mem.passwordHash || mem.password_hash)) {
+    return {
+      ...mem,
+      passwordHash: mem.passwordHash || mem.password_hash
+    };
+  }
+  const fileRecords = loadCustomerAccountsFile();
+  if (fileRecords[lower]?.passwordHash) {
+    return fileRecords[lower];
+  }
+  for (const rec of Object.values(fileRecords)) {
+    if (normalizeEmail(rec.email) === lower && rec.passwordHash) {
+      return rec;
+    }
+  }
+  return null;
+}
+
+export function findLocalCustomerAccountByUsername(username: string): StoredLocalCustomerAccount | null {
+  const lower = String(username || '').trim().toLowerCase();
+  if (!lower) return null;
+  const emailFromMem = fallbackUsernamesRegistry.get(lower);
+  if (emailFromMem) {
+    const byMem = findLocalCustomerAccountByEmail(emailFromMem);
+    if (byMem) return byMem;
+  }
+  const fileRecords = loadCustomerAccountsFile();
+  for (const rec of Object.values(fileRecords)) {
+    if ((rec.usernameLower || String(rec.username || '').toLowerCase()) === lower && rec.passwordHash) {
+      return rec;
+    }
+  }
+  return null;
+}
+
 export function findLocalCustomerById(id: string): StoredCustomerProfileIndex | null {
   if (!id) return null;
   const mem = fallbackCustomerAccounts.get(`id:${id}`);
@@ -295,51 +406,167 @@ export function findLocalCustomerById(id: string): StoredCustomerProfileIndex | 
   return fileRecords[id] || null;
 }
 
-export function getAppRedirectOrigin(req: any, explicitRedirect?: string): string {
-  const headerOriginRaw = req?.headers?.origin || req?.headers?.Origin;
-  const hostRaw = String(req?.headers?.['x-forwarded-host'] || req?.headers?.host || '').split(',')[0].trim();
-  const protoRaw = String(
-    req?.headers?.['x-forwarded-proto'] || (hostRaw.includes('localhost') || hostRaw.startsWith('127.') ? 'http' : 'https')
-  ).split(',')[0].trim();
+export const CANONICAL_PRODUCTION_URL = 'https://nuvvo-1-nu.vercel.app';
 
-  const trustedOrigins = new Set<string>();
-  const addOrigin = (candidate?: string) => {
-    if (!candidate || typeof candidate !== 'string') return;
-    try {
-      const parsed = new URL(candidate.trim());
-      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-        trustedOrigins.add(parsed.origin);
-      }
-    } catch {}
-  };
+const OUTDATED_OR_INVALID_HOSTNAMES = new Set([
+  'nuvvo-1-nandu-tech.vercel.app',
+  'nuvvo.app',
+  'www.nuvvo.app'
+]);
 
-  if (typeof headerOriginRaw === 'string') addOrigin(headerOriginRaw);
-  if (hostRaw) addOrigin(`${protoRaw}://${hostRaw}`);
-  if (process.env.APP_URL) addOrigin(process.env.APP_URL);
-
-  if (explicitRedirect && typeof explicitRedirect === 'string') {
-    try {
-      const parsedExplicit = new URL(explicitRedirect.trim());
-      if (
-        (parsedExplicit.protocol === 'http:' || parsedExplicit.protocol === 'https:') &&
-        (trustedOrigins.size === 0 || trustedOrigins.has(parsedExplicit.origin))
-      ) {
-        return parsedExplicit.origin;
-      }
-    } catch {}
-  }
-
-  if (hostRaw) {
-    return `${protoRaw}://${hostRaw}`;
-  }
-  if (typeof headerOriginRaw === 'string' && /^https?:\/\//i.test(headerOriginRaw)) {
-    return headerOriginRaw.replace(/\/+$/, '');
-  }
-  if (process.env.APP_URL && /^https?:\/\//i.test(process.env.APP_URL)) {
-    return process.env.APP_URL.replace(/\/+$/, '');
-  }
-  return 'http://localhost:3000';
+function parseHttpOrigin(candidate?: string | null): URL | null {
+  if (!candidate || typeof candidate !== 'string') return null;
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed === 'MY_APP_URL') return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed;
+    }
+  } catch {}
+  return null;
 }
+
+function isLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host.endsWith('.local')
+  );
+}
+
+function isOutdatedHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    OUTDATED_OR_INVALID_HOSTNAMES.has(host) ||
+    host.endsWith('.nuvvo-1-nandu-tech.vercel.app')
+  );
+}
+
+function isEphemeralVercelPreviewHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host.endsWith('.vercel.app') && host !== 'nuvvo-1-nu.vercel.app';
+}
+
+function isValidProductionCandidate(parsed: URL | null): parsed is URL {
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  if (isLocalHostname(host)) return false;
+  if (isOutdatedHostname(host)) return false;
+  if (host.endsWith('.run.app')) return false;
+  if (isEphemeralVercelPreviewHostname(host)) return false;
+  return parsed.protocol === 'https:';
+}
+
+export function resolveCanonicalAppUrl(req?: any, explicitRedirect?: string): string {
+  const vercelEnv = String(process.env.VERCEL_ENV || '').trim().toLowerCase();
+  const isVercel = Boolean(process.env.VERCEL);
+  const isVercelPreview = vercelEnv === 'preview';
+  const isVercelProduction =
+    vercelEnv === 'production' ||
+    (isVercel && vercelEnv !== 'preview' && vercelEnv !== 'development');
+
+  const envAppUrl = parseHttpOrigin(process.env.APP_URL);
+  const headerOrigin = parseHttpOrigin(
+    typeof req?.headers?.origin === 'string'
+      ? req.headers.origin
+      : typeof req?.headers?.Origin === 'string'
+      ? req.headers.Origin
+      : undefined
+  );
+  const hostRaw = String(req?.headers?.['x-forwarded-host'] || req?.headers?.host || '')
+    .split(',')[0]
+    .trim();
+  const protoRaw = String(
+    req?.headers?.['x-forwarded-proto'] ||
+      (hostRaw.includes('localhost') || hostRaw.startsWith('127.') ? 'http' : 'https')
+  )
+    .split(',')[0]
+    .trim();
+  const requestHostOrigin = hostRaw ? parseHttpOrigin(`${protoRaw}://${hostRaw}`) : null;
+  const parsedExplicit = parseHttpOrigin(explicitRedirect);
+
+  // 1. Vercel Production: strictly lock to confirmed canonical production domain (or valid custom prod APP_URL)
+  if (isVercelProduction) {
+    const prodOrigin = isValidProductionCandidate(envAppUrl)
+      ? envAppUrl.origin
+      : CANONICAL_PRODUCTION_URL;
+
+    if (
+      parsedExplicit &&
+      isValidProductionCandidate(parsedExplicit) &&
+      parsedExplicit.origin === prodOrigin
+    ) {
+      return parsedExplicit.origin;
+    }
+
+    return prodOrigin;
+  }
+
+  // 2. Vercel Preview: preserve preview deployment URL without ever overwriting production
+  if (isVercelPreview) {
+    const vercelPreviewUrl = process.env.VERCEL_URL
+      ? parseHttpOrigin(`https://${String(process.env.VERCEL_URL).replace(/^https?:\/\//i, '')}`)
+      : null;
+
+    const previewTrustedOrigins = new Set<string>();
+    [requestHostOrigin, headerOrigin, vercelPreviewUrl, envAppUrl].forEach((u) => {
+      if (u && !isLocalHostname(u.hostname) && !isOutdatedHostname(u.hostname)) {
+        previewTrustedOrigins.add(u.origin);
+      }
+    });
+
+    if (parsedExplicit && previewTrustedOrigins.has(parsedExplicit.origin)) {
+      return parsedExplicit.origin;
+    }
+    if (requestHostOrigin && previewTrustedOrigins.has(requestHostOrigin.origin)) {
+      return requestHostOrigin.origin;
+    }
+    if (vercelPreviewUrl && !isOutdatedHostname(vercelPreviewUrl.hostname)) {
+      return vercelPreviewUrl.origin;
+    }
+    if (headerOrigin && previewTrustedOrigins.has(headerOrigin.origin)) {
+      return headerOrigin.origin;
+    }
+    return CANONICAL_PRODUCTION_URL;
+  }
+
+  // 3. Local Development & AI Studio Preview Runtime: preserve dev host / APP_URL
+  const trustedDevOrigins = new Set<string>();
+  [envAppUrl, requestHostOrigin, headerOrigin].forEach((u) => {
+    if (u && !isOutdatedHostname(u.hostname)) {
+      // Ignore Capacitor Android's portless https://localhost origin when selecting server redirect targets
+      const isPortlessCapacitorLocalhost =
+        u.protocol === 'https:' && u.hostname === 'localhost' && !u.port;
+      if (!isPortlessCapacitorLocalhost) {
+        trustedDevOrigins.add(u.origin);
+      }
+    }
+  });
+
+  if (parsedExplicit && trustedDevOrigins.has(parsedExplicit.origin)) {
+    return parsedExplicit.origin;
+  }
+  if (envAppUrl && !isOutdatedHostname(envAppUrl.hostname)) {
+    return envAppUrl.origin;
+  }
+  if (requestHostOrigin && trustedDevOrigins.has(requestHostOrigin.origin)) {
+    return requestHostOrigin.origin;
+  }
+  if (headerOrigin && trustedDevOrigins.has(headerOrigin.origin)) {
+    return headerOrigin.origin;
+  }
+
+  return req ? 'http://localhost:3000' : CANONICAL_PRODUCTION_URL;
+}
+
+export function getAppRedirectOrigin(req: any, explicitRedirect?: string): string {
+  return resolveCanonicalAppUrl(req, explicitRedirect);
+}
+
 
 export interface SessionPayload {
   sub: string; // user id or phone or email
@@ -406,6 +633,7 @@ export function sendJsonResponse(res: any, status: number, data: any) {
  */
 export function normalizePhone(phone: any): string {
   const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('091')) return digits.slice(3);
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
   return digits;
@@ -636,9 +864,10 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   }
 }
 
-// List of authorized administrator accounts (Master Admin 9063692135 + Designated System Admins)
+// List of authorized administrator accounts (Master Admin + Designated System Admins)
 export const DESIGNATED_ADMIN_PHONES = new Set<string>([
-  AUTHORIZED_ADMIN_PHONE, // '9063692135'
+  AUTHORIZED_ADMIN_PHONE,
+  '9063692135',
   '9999900000',
   '9848022338',
   '9440511220',
@@ -647,74 +876,273 @@ export const DESIGNATED_ADMIN_PHONES = new Set<string>([
 
 export function isAuthorizedAdminAccountPhone(phone: string): boolean {
   const clean = normalizePhone(phone);
-  return clean === AUTHORIZED_ADMIN_PHONE || clean === `91${AUTHORIZED_ADMIN_PHONE}` || DESIGNATED_ADMIN_PHONES.has(clean);
+  if (!clean || clean.length !== 10) return false;
+  return clean === AUTHORIZED_ADMIN_PHONE || DESIGNATED_ADMIN_PHONES.has(clean);
 }
 
-// In-memory rate limiting store for Admin PIN verification
+export function isMasterAdminPhone(phone: string): boolean {
+  const clean = normalizePhone(phone);
+  return Boolean(clean && (clean === AUTHORIZED_ADMIN_PHONE || clean === '9063692135'));
+}
+
+// Rate-limiting & temporary lockout stores for Admin Master Code
 interface PinAttemptRecord {
   attempts: number;
   lockedUntil: number;
 }
 const pinAttemptStore = new Map<string, PinAttemptRecord>();
 
-// Server-side hashed Admin PIN storage
-// NEVER stores plain PIN. Initialized with secure PBKDF2-SHA512 hash.
-let currentAdminPinHash: string = (() => {
-  if (process.env.ADMIN_PIN_HASH && process.env.ADMIN_PIN_HASH.startsWith('pbkdf2$')) {
-    return process.env.ADMIN_PIN_HASH;
-  }
-  const initialPin = process.env.ADMIN_PIN || process.env.ADMIN_SECURITY_PIN || '2135';
-  return hashPassword(initialPin);
-})();
+const ADMIN_CREDENTIAL_FILE = path.join(process.cwd(), '.server_admin_credentials.json');
+const BASELINE_SERVER_MASTER_CODE = '2135';
+let runtimeAdminPinHash: string | null = null;
 
-export function getAdminPinHash(): string {
-  return currentAdminPinHash;
+function extractPbkdf2Hash(raw: any): string | null {
+  if (!raw) return null;
+  if (typeof raw === 'string' && raw.startsWith('pbkdf2$')) return raw;
+  if (typeof raw === 'object' && typeof raw.hash === 'string' && raw.hash.startsWith('pbkdf2$')) {
+    return raw.hash;
+  }
+  return null;
+}
+
+function readLocalAdminCredentialHash(): string | null {
+  try {
+    if (process.env.VERCEL || !fs.existsSync(ADMIN_CREDENTIAL_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(ADMIN_CREDENTIAL_FILE, 'utf8'));
+    return extractPbkdf2Hash(parsed?.masterCodeHash || parsed?.hash);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalAdminCredentialHash(newHash: string): void {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(
+      ADMIN_CREDENTIAL_FILE,
+      JSON.stringify({ masterCodeHash: newHash, updatedAt: new Date().toISOString() }, null, 2),
+      'utf8'
+    );
+  } catch {}
+}
+
+function getEnvMasterCodeHash(): { hash: string; source: 'env_hash' | 'env_plain' } | null {
+  const envHash = (process.env.ADMIN_MASTER_CODE_HASH || process.env.ADMIN_PIN_HASH || '').trim();
+  if (envHash.startsWith('pbkdf2$')) {
+    return { hash: envHash, source: 'env_hash' };
+  }
+  const envPlain = (
+    process.env.ADMIN_MASTER_CODE ||
+    process.env.ADMIN_PIN ||
+    process.env.ADMIN_SECURITY_PIN ||
+    ''
+  ).trim();
+  if (envPlain.length >= 4) {
+    return { hash: hashPassword(envPlain), source: 'env_plain' };
+  }
+  return null;
+}
+
+export async function resolveAdminCredentialRecord(): Promise<{
+  configured: boolean;
+  hash: string | null;
+  source: 'memory' | 'supabase' | 'local_store' | 'env_hash' | 'env_plain' | 'none';
+}> {
+  if (runtimeAdminPinHash && runtimeAdminPinHash.startsWith('pbkdf2$')) {
+    return { configured: true, hash: runtimeAdminPinHash, source: 'memory' };
+  }
+
+  // 1. Check Supabase persistent PBKDF2 record (preserves existing Master Code across restarts)
+  try {
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      if (isServiceRole) {
+        const { data: credRow } = await adminClient
+          .from('admin_credentials')
+          .select('hash')
+          .eq('id', 'master_code')
+          .maybeSingle();
+        const foundCred = extractPbkdf2Hash(credRow?.hash);
+        if (foundCred) {
+          runtimeAdminPinHash = foundCred;
+          return { configured: true, hash: foundCred, source: 'supabase' };
+        }
+      }
+
+      const { data: settingRows } = await adminClient
+        .from('app_settings')
+        .select('key, value')
+        .in('key', ['admin_master_code_hash', 'admin_security_pin_hash']);
+
+      if (Array.isArray(settingRows) && settingRows.length > 0) {
+        const masterRow = settingRows.find((r: any) => r.key === 'admin_master_code_hash');
+        const legacyRow = settingRows.find((r: any) => r.key === 'admin_security_pin_hash');
+        const foundHash = extractPbkdf2Hash(masterRow?.value) || extractPbkdf2Hash(legacyRow?.value);
+        if (foundHash) {
+          runtimeAdminPinHash = foundHash;
+          return { configured: true, hash: foundHash, source: 'supabase' };
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Check local non-Vercel hashed credential file
+  const localHash = readLocalAdminCredentialHash();
+  if (localHash) {
+    runtimeAdminPinHash = localHash;
+    return { configured: true, hash: localHash, source: 'local_store' };
+  }
+
+  // 3. Check explicit server environment configuration
+  const envCred = getEnvMasterCodeHash();
+  if (envCred) {
+    runtimeAdminPinHash = envCred.hash;
+    return { configured: true, hash: envCred.hash, source: envCred.source };
+  }
+
+  // 4. Initialize server-side PBKDF2 hash from existing designated administrator baseline Master Code
+  // (Stored strictly as a salted PBKDF2-SHA512 hash on the server; overridden persistently whenever Admin updates Master Code)
+  const initializedHash = hashPassword(BASELINE_SERVER_MASTER_CODE);
+  await saveAdminMasterCodeHash(initializedHash);
+  return { configured: true, hash: initializedHash, source: 'local_store' };
+}
+
+export async function saveAdminMasterCodeHash(newHash: string): Promise<boolean> {
+  if (!newHash || typeof newHash !== 'string' || !newHash.startsWith('pbkdf2$')) {
+    return false;
+  }
+
+  runtimeAdminPinHash = newHash;
+  writeLocalAdminCredentialHash(newHash);
+
+  try {
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (adminClient && isServiceRole) {
+      try {
+        await adminClient
+          .from('admin_credentials')
+          .upsert([{
+            id: 'master_code',
+            hash: newHash,
+            updated_at: new Date().toISOString()
+          }], { onConflict: 'id' });
+      } catch {}
+
+      try {
+        await adminClient
+          .from('app_settings')
+          .upsert([
+            {
+              key: 'admin_master_code_hash',
+              value: newHash,
+              description: 'PBKDF2-SHA512 hashed administrator Master Code',
+              updated_at: new Date().toISOString()
+            },
+            {
+              key: 'admin_security_pin_hash',
+              value: newHash,
+              description: 'PBKDF2-SHA512 hashed administrator security credential',
+              updated_at: new Date().toISOString()
+            }
+          ], { onConflict: 'key' });
+      } catch {}
+    }
+  } catch {}
+
+  return true;
 }
 
 export function setAdminPinHash(newHash: string): boolean {
   if (newHash && typeof newHash === 'string' && newHash.startsWith('pbkdf2$')) {
-    currentAdminPinHash = newHash;
+    runtimeAdminPinHash = newHash;
+    writeLocalAdminCredentialHash(newHash);
     return true;
   }
   return false;
 }
 
+export function getAdminPinHash(): string {
+  if (runtimeAdminPinHash && runtimeAdminPinHash.startsWith('pbkdf2$')) {
+    return runtimeAdminPinHash;
+  }
+  const localHash = readLocalAdminCredentialHash();
+  if (localHash) return localHash;
+  const envCred = getEnvMasterCodeHash();
+  if (envCred) {
+    runtimeAdminPinHash = envCred.hash;
+    return envCred.hash;
+  }
+  return '';
+}
+
 /**
- * Secure Server-Side Admin PIN Verification with rate limiting and audit controls.
+ * Secure Server-Side Admin Master Code Verification with rate limiting and temporary lockout.
  * Verifies strictly against PBKDF2-SHA512 hash using timing-safe comparisons.
- * Never exposes the PIN or hash in responses, logs, or errors.
+ * Never exposes raw credentials in API responses or logs.
  */
-export function verifyAdminPin(phone: string, pin: string): { verified: boolean; locked: boolean; remainingAttempts?: number; message?: string } {
+export async function verifyAdminMasterCode(
+  phone: string,
+  masterCode: string
+): Promise<{
+  verified: boolean;
+  locked: boolean;
+  configured: boolean;
+  unauthorizedPhone?: boolean;
+  remainingAttempts?: number;
+  retryAfterSeconds?: number;
+  message?: string;
+}> {
   const cleanPhone = normalizePhone(phone);
   if (!isAuthorizedAdminAccountPhone(cleanPhone)) {
-    return { verified: false, locked: false, message: "Unauthorized account identification." };
+    return {
+      verified: false,
+      locked: false,
+      configured: true,
+      unauthorizedPhone: true,
+      message: "Access Denied: This mobile number is not authorized for administrative access."
+    };
   }
 
   const now = Date.now();
   const record = pinAttemptStore.get(cleanPhone) || { attempts: 0, lockedUntil: 0 };
 
   if (record.lockedUntil > now) {
-    const minsLeft = Math.ceil((record.lockedUntil - now) / 60000);
+    const retryAfterSeconds = Math.max(1, Math.ceil((record.lockedUntil - now) / 1000));
+    const minsLeft = Math.ceil(retryAfterSeconds / 60);
     return {
       verified: false,
       locked: true,
+      configured: true,
       remainingAttempts: 0,
-      message: `Account is temporarily locked due to repeated failed PIN attempts. Please retry in ${minsLeft} minute(s).`
+      retryAfterSeconds,
+      message: `Account is temporarily locked due to repeated failed Master Code attempts. Please retry in ${minsLeft} minute(s).`
     };
   }
 
-  const cleanPin = String(pin || '').trim();
-  if (!cleanPin) {
-    return { verified: false, locked: false, message: "Security PIN is required." };
+  const cred = await resolveAdminCredentialRecord();
+  if (!cred.configured || !cred.hash) {
+    return {
+      verified: false,
+      locked: false,
+      configured: false,
+      message: "Master Code credential record is unavailable on the server."
+    };
   }
 
-  // Pure cryptographic timing-safe PBKDF2 verification against stored hash
-  const storedHash = getAdminPinHash();
-  const isMatch = verifyPassword(cleanPin, storedHash);
+  const cleanCode = String(masterCode || '').trim();
+  if (!cleanCode) {
+    return {
+      verified: false,
+      locked: false,
+      configured: true,
+      message: "Master Code is required."
+    };
+  }
 
+  const isMatch = verifyPassword(cleanCode, cred.hash);
   if (isMatch) {
     pinAttemptStore.delete(cleanPhone);
-    return { verified: true, locked: false };
+    return { verified: true, locked: false, configured: true };
   }
 
   record.attempts += 1;
@@ -722,13 +1150,15 @@ export function verifyAdminPin(phone: string, pin: string): { verified: boolean;
   const remaining = Math.max(0, maxAttempts - record.attempts);
 
   if (remaining <= 0) {
-    record.lockedUntil = now + 15 * 60 * 1000; // 15-minute lockout
+    record.lockedUntil = now + 15 * 60 * 1000;
     pinAttemptStore.set(cleanPhone, record);
     return {
       verified: false,
       locked: true,
+      configured: true,
       remainingAttempts: 0,
-      message: "Maximum failed PIN attempts reached (5/5). Account locked for 15 minutes."
+      retryAfterSeconds: 900,
+      message: "Maximum failed Master Code attempts reached (5/5). Account temporarily locked for 15 minutes."
     };
   }
 
@@ -736,9 +1166,14 @@ export function verifyAdminPin(phone: string, pin: string): { verified: boolean;
   return {
     verified: false,
     locked: false,
+    configured: true,
     remainingAttempts: remaining,
-    message: `Invalid security PIN. ${remaining} attempt(s) remaining before temporary lockout.`
+    message: `Incorrect Master Code. ${remaining} attempt(s) remaining before temporary lockout.`
   };
+}
+
+export async function verifyAdminPin(phone: string, pin: string) {
+  return verifyAdminMasterCode(phone, pin);
 }
 
 /**

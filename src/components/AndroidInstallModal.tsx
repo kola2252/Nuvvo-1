@@ -10,6 +10,7 @@ import {
   Sparkles, Layers, ShieldCheck, ArrowRight, Laptop, HelpCircle
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { getClientAppOrigin } from '../utils/appUrl';
 
 interface AndroidInstallModalProps {
   isOpen: boolean;
@@ -24,7 +25,7 @@ export default function AndroidInstallModal({ isOpen, onClose }: AndroidInstallM
 
   if (!isOpen) return null;
 
-  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://nuvvo.app';
+  const currentOrigin = getClientAppOrigin();
   const pwaBuilderUrl = `https://www.pwabuilder.com/reportcard?site=${encodeURIComponent(currentOrigin)}`;
   const githubActionsUrl = 'https://github.com/kola2252/Nuvvo/actions';
 

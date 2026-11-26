@@ -5,7 +5,7 @@
  * Automatic WhatsApp Cloud API Notification Status Tracker
  *
  * Displays genuine server-side Meta WhatsApp Cloud API delivery lifecycle status
- * for both Admin (+91 ••••••2135) and Consented Customer recipients:
+ * for both Admin (Server-Protected) and Consented Customer recipients:
  * Pending -> Submitted -> Sent -> Delivered -> Read | Failed | Consent Not Granted.
  * Zero Click-to-Chat URLs, zero manual Send buttons, zero faked statuses.
  */

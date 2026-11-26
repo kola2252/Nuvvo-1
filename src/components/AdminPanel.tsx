@@ -19,7 +19,7 @@ import { VegIndicator, FranchiseApplication, Banner } from '../types';
 import SuperAdminGuard from './SuperAdminGuard';
 import AdminCatalogManager from './AdminCatalogManager';
 import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
-import { isAdminRole } from '../config/authConfig';
+import { isAdminRole, getStoredAuthToken } from '../config/authConfig';
 import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
 import { fetchWithCache } from '../utils/apiCache';
 import AdminEmailTool from './AdminEmailTool';
@@ -51,6 +51,18 @@ export default function AdminPanel() {
     } catch {}
     return 'settings';
   });
+
+  useEffect(() => {
+    try {
+      const target = localStorage.getItem('nuvvo_admin_target_tab');
+      if (target === 'settings' || target === 'whatsapp' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
+        setActiveTab(target);
+        localStorage.removeItem('nuvvo_admin_target_tab');
+      }
+    } catch {}
+  }, [user?.id]);
+
+  const [paymentFormError, setPaymentFormError] = useState<string | null>(null);
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [orderStatusFilter, setOrderStatusFilter] = useState<OrderLifecycleFilter>('all');
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'initiated' | 'awaiting_confirmation' | 'confirmed' | 'failed'>('all');
@@ -172,13 +184,12 @@ export default function AdminPanel() {
   const fetchWhatsappStatus = async (force: boolean = false) => {
     setWhatsappStatusLoading(true);
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const token = getStoredAuthToken();
       const data = await fetchWithCache(
         '/api/admin/whatsapp/status',
         {
           headers: {
-            'Authorization': `Bearer ${token}`,
-            'x-admin-phone': '9063692135'
+            'Authorization': `Bearer ${token}`
           }
         },
         { staleTime: 30_000, force }
@@ -249,7 +260,7 @@ export default function AdminPanel() {
       .catch(err => console.error(err));
   }, [adminPhonePeUpiId, adminMerchantName, testAmount]);
 
-  // Admin Master PIN Change States
+  // Admin Master Code Change States
   const [currentPinInput, setCurrentPinInput] = useState('');
   const [newPinInput, setNewPinInput] = useState('');
   const [confirmPinInput, setConfirmPinInput] = useState('');
@@ -259,22 +270,25 @@ export default function AdminPanel() {
   const handleUpdateAdminPin = async (e: React.FormEvent) => {
     e.preventDefault();
     setPinChangeMsg(null);
-    if (!currentPinInput.trim() || !newPinInput.trim() || !confirmPinInput.trim()) {
-      setPinChangeMsg({ text: 'All PIN fields are required.', type: 'error' });
+    const cleanCurrent = currentPinInput.trim();
+    const cleanNew = newPinInput.trim();
+    const cleanConfirm = confirmPinInput.trim();
+    if (!cleanCurrent || !cleanNew || !cleanConfirm) {
+      setPinChangeMsg({ text: 'All Master Code fields are required.', type: 'error' });
       return;
     }
-    if (newPinInput.trim() !== confirmPinInput.trim()) {
-      setPinChangeMsg({ text: 'New PIN and Confirm PIN do not match.', type: 'error' });
+    if (cleanNew !== cleanConfirm) {
+      setPinChangeMsg({ text: 'New Master Code and Confirm Master Code do not match.', type: 'error' });
       return;
     }
-    if (newPinInput.trim().length < 4 || newPinInput.trim().length > 6) {
-      setPinChangeMsg({ text: 'New PIN must be 4 to 6 digits in length.', type: 'error' });
+    if (cleanNew.length < 4 || cleanNew.length > 32) {
+      setPinChangeMsg({ text: 'New Master Code must be 4 to 32 characters in length.', type: 'error' });
       return;
     }
 
     setPinChangeLoading(true);
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const token = getStoredAuthToken();
       const resp = await fetch('/api/auth/admin-update-pin', {
         method: 'POST',
         headers: {
@@ -282,21 +296,23 @@ export default function AdminPanel() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          currentPin: currentPinInput.trim(),
-          newPin: newPinInput.trim()
+          currentPin: cleanCurrent,
+          currentMasterCode: cleanCurrent,
+          newPin: cleanNew,
+          newMasterCode: cleanNew
         })
       });
       const data = await resp.json().catch(() => null);
       if (!resp.ok || !data?.success) {
-        setPinChangeMsg({ text: data?.error || 'Failed to update PIN. Verify current PIN.', type: 'error' });
+        setPinChangeMsg({ text: data?.error || 'Failed to update Master Code. Verify current Master Code.', type: 'error' });
       } else {
-        setPinChangeMsg({ text: 'Master Security PIN updated successfully! Stored strictly as a PBKDF2 hash on the server.', type: 'success' });
+        setPinChangeMsg({ text: 'Master Code updated successfully! Stored strictly as a PBKDF2-SHA512 hash on the server.', type: 'success' });
         setCurrentPinInput('');
         setNewPinInput('');
         setConfirmPinInput('');
       }
     } catch (err: any) {
-      setPinChangeMsg({ text: err?.message || 'Network error updating PIN.', type: 'error' });
+      setPinChangeMsg({ text: err?.message || 'Network error updating Master Code.', type: 'error' });
     } finally {
       setPinChangeLoading(false);
     }
@@ -304,8 +320,9 @@ export default function AdminPanel() {
 
   const handleSavePhonePeSettings = (e: React.FormEvent) => {
     e.preventDefault();
+    setPaymentFormError(null);
     if (!adminPhonePeUpiId.trim()) {
-      alert('Please enter a valid PhonePe UPI ID (e.g. mobile@ybl or username@axl)');
+      setPaymentFormError('Please enter a valid PhonePe UPI ID (e.g. mobile@ybl or username@axl).');
       return;
     }
 
@@ -344,10 +361,11 @@ export default function AdminPanel() {
         enableUpi,
         customerInstructions
       });
-      setCodSaveMessage(`Cash on Delivery ${newCodState ? 'Enabled' : 'Disabled'} and saved to Supabase (app_settings)!`);
+      setCodSaveMessage(`Cash on Delivery ${newCodState ? 'Enabled' : 'Disabled'} and saved!`);
       setTimeout(() => setCodSaveMessage(null), 4000);
     } catch (err: any) {
-      alert(`Failed to update setting: ${err?.message || err}`);
+      setCodSaveMessage(`Failed to update setting: ${err?.message || err}`);
+      setTimeout(() => setCodSaveMessage(null), 5000);
     } finally {
       setIsSavingCodSettings(false);
     }
@@ -543,7 +561,7 @@ export default function AdminPanel() {
     setDiagnosticRunning(true);
     console.log('[SUPABASE DIAGNOSTIC] Initiating server-side Supabase client verification...');
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const token = getStoredAuthToken();
       const res = await fetch('/api/admin/diagnostics/supabase', {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -747,7 +765,7 @@ export default function AdminPanel() {
                       </span>
                     </div>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                      Configured Authorized Cell: <span className="font-mono font-bold text-rose-600 dark:text-rose-400">+91 9063692135</span>
+                      Authorized Cell: <span className="font-mono font-bold text-rose-600 dark:text-rose-400">{user?.phone || 'Protected (Server-Verified)'}</span>
                     </p>
                   </div>
                 </div>
@@ -764,7 +782,7 @@ export default function AdminPanel() {
                 </div>
                 <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
                   <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Target Phone</p>
-                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">9063692135</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{user?.phone || 'Protected'}</p>
                 </div>
                 <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
                   <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Orders In Hub</p>
@@ -780,17 +798,17 @@ export default function AdminPanel() {
             {/* Live Supabase Revenue & Orders Dashboard Widget with D3 Bar Chart */}
             <AdminDashboardSummaryWidget />
 
-            {/* Master Security PIN Management */}
+            {/* Change Master Code Management */}
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
                 <div className="flex items-center gap-2">
                   <KeyRound className="w-5 h-5 text-rose-600" />
                   <div>
                     <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100">
-                      Master Security PIN Management
+                      Change Master Code
                     </h4>
                     <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                      Update the 4-6 digit administrative Master PIN. Stored as a PBKDF2 hash on the server.
+                      Update the administrative Master Code (4-32 characters). Requires current Master Code verification; stored as PBKDF2-SHA512 hash on the server.
                     </p>
                   </div>
                 </div>
@@ -814,45 +832,45 @@ export default function AdminPanel() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Current Master PIN
+                      Current Master Code
                     </label>
                     <input
                       type="password"
-                      maxLength={6}
+                      maxLength={32}
                       required
-                      placeholder="••••"
+                      placeholder="Current code"
                       value={currentPinInput}
-                      onChange={e => setCurrentPinInput(e.target.value.replace(/\D/g, ''))}
+                      onChange={e => setCurrentPinInput(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
                     />
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      New PIN (4-6 Digits)
+                      New Master Code
                     </label>
                     <input
                       type="password"
-                      maxLength={6}
+                      maxLength={32}
                       required
-                      placeholder="••••"
+                      placeholder="4-32 chars"
                       value={newPinInput}
-                      onChange={e => setNewPinInput(e.target.value.replace(/\D/g, ''))}
+                      onChange={e => setNewPinInput(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
                     />
                   </div>
 
                   <div>
                     <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                      Confirm New PIN
+                      Confirm Master Code
                     </label>
                     <input
                       type="password"
-                      maxLength={6}
+                      maxLength={32}
                       required
-                      placeholder="••••"
+                      placeholder="Repeat code"
                       value={confirmPinInput}
-                      onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, ''))}
+                      onChange={e => setConfirmPinInput(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
                     />
                   </div>
@@ -865,7 +883,7 @@ export default function AdminPanel() {
                     className="px-5 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition active:scale-95 cursor-pointer flex items-center gap-2"
                   >
                     <ShieldCheck className="w-4 h-4" />
-                    <span>{pinChangeLoading ? 'Updating...' : 'Update Master PIN'}</span>
+                    <span>{pinChangeLoading ? 'Updating...' : 'Change Master Code'}</span>
                   </button>
                 </div>
               </form>
@@ -958,12 +976,12 @@ export default function AdminPanel() {
                   </div>
                   <p className="text-[10px] text-zinc-500 leading-relaxed">
                     {(whatsappStatus?.isConfigured || whatsappStatus?.configured) 
-                      ? 'Official Meta Cloud API dispatch active for automatic Admin (+91 9063692135) and consented Customer order alerts.'
+                      ? 'Official Meta Cloud API dispatch active for automatic Admin and consented Customer order alerts.'
                       : 'Backend outbox and webhook tracking are active. Configure Meta Cloud API tokens and approved templates to enable live delivery.'}
                   </p>
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="text-[9.5px] font-mono text-zinc-400">
-                      Admin: <span className="font-bold text-zinc-700 dark:text-zinc-300">{whatsappStatus?.businessRecipientMasked || '+919063692135'}</span>
+                      Admin: <span className="font-bold text-zinc-700 dark:text-zinc-300">{whatsappStatus?.businessRecipientMasked || 'Protected on Server'}</span>
                     </span>
                     <button
                       type="button"
@@ -2825,6 +2843,12 @@ export default function AdminPanel() {
                 )}
               </div>
 
+              {paymentFormError && (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs font-semibold text-rose-700 dark:text-rose-300">
+                  {paymentFormError}
+                </div>
+              )}
+
               {/* Field 1: PhonePe UPI ID */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -3204,7 +3228,7 @@ export default function AdminPanel() {
                     <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
                       <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">ADMIN WHATSAPP</p>
                       <p className="font-bold text-zinc-700 dark:text-zinc-200 mt-1 truncate">
-                        {whatsappStatus.businessRecipientMasked || whatsappStatus.recipient || '+919063692135'}
+                        {whatsappStatus.businessRecipientMasked || 'Protected on Server'}
                       </p>
                     </div>
                   </div>
@@ -4497,7 +4521,8 @@ export default function AdminPanel() {
                   onClick={() => {
                     if (!bulkMsg.trim()) { alert("Please type your warning message notice draft first."); return; }
                     const text = encodeURIComponent(bulkMsg);
-                    window.open(`https://wa.me/919063692135?text=${text}`, "_blank");
+                    const supportNo = String((import.meta as any).env?.VITE_SUPPORT_WHATSAPP_NUMBER || '').replace(/\D/g, '');
+                    window.open(supportNo ? `https://wa.me/${supportNo}?text=${text}` : `https://wa.me/?text=${text}`, "_blank");
                     setMsgLogs(prev => [`[WA - ${new Date().toLocaleTimeString()}] Sync template initialized`, ...prev]);
                     alert("Ecosystem: Initiated bulk WhatsApp API redirect pipeline check.");
                   }}

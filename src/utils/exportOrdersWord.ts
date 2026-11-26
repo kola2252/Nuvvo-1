@@ -588,7 +588,7 @@ export function buildWordReportHtml(
               </div>
               <div style="font-size: 10.5pt; font-weight: bold; color: #111827;">
                 ${order.deliveryPartnerName || 'Assigned Courier Fleet'} &nbsp;
-                <span style="font-size: 9.5pt; color: #4b5563; font-weight: normal;">(📞 +91 ${order.deliveryPartnerPhone || '9063692135'})</span>
+                <span style="font-size: 9.5pt; color: #4b5563; font-weight: normal;">(${order.deliveryPartnerPhone ? `📞 +91 ${order.deliveryPartnerPhone}` : 'Relay Protected'})</span>
               </div>
               <div style="font-size: 9pt; color: #374151; margin-top: 2pt;">
                 <b>Vehicle:</b> ${order.deliveryPartnerVehicle || 'Hero Splendor / Fleet Bike'}
@@ -702,7 +702,7 @@ export function buildWordReportHtml(
         NUVVO FOODS & HOSPITALITY PRIVATE LIMITED — OFFICIAL DAILY DISPATCH & ORDER ARCHIVE
       </p>
       <p style="margin: 2pt 0 0 0;">
-        Chirala Regional Flavour Hub, Andhra Pradesh 523155 • Customer Care: +91 9063692135 • support@nuvvo.cloud
+        Chirala Regional Flavour Hub, Andhra Pradesh 523155 • Customer Care: support@nuvvo.cloud
       </p>
       <p style="margin: 2pt 0 0 0; font-size: 7.5pt; color: #9ca3af;">
         This document is an authentic computerized audit export. Data synchronized with Supabase cloud database nodes.

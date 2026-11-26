@@ -149,3 +149,84 @@ BEGIN
             WITH CHECK (true);
     END IF;
 END $$;
+
+-- 5. AUTOMATIC PROFILE SYNC ON SUPABASE AUTH SIGNUP (NON-DESTRUCTIVE SECURITY DEFINER TRIGGER)
+-- Ensures public.customer_profiles is populated immediately on signup even when Email Confirmation is enabled.
+CREATE OR REPLACE FUNCTION public.handle_new_customer_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    meta JSONB := COALESCE(NEW.raw_user_meta_data, '{}'::jsonb);
+    meta_role TEXT := COALESCE(NULLIF(trim(meta->>'role'), ''), 'Customer');
+    resolved_username TEXT;
+    resolved_fullname TEXT;
+BEGIN
+    -- Only create customer_profiles for Customer accounts (never escalate Admin/Franchise records)
+    IF meta_role <> 'Customer' THEN
+        RETURN NEW;
+    END IF;
+
+    resolved_username := COALESCE(
+        NULLIF(trim(meta->>'username'), ''),
+        NULLIF(split_part(COALESCE(NEW.email, ''), '@', 1), ''),
+        'customer_' || left(NEW.id::text, 8)
+    );
+    resolved_fullname := COALESCE(
+        NULLIF(trim(meta->>'full_name'), ''),
+        NULLIF(trim(meta->>'fullName'), ''),
+        resolved_username
+    );
+
+    INSERT INTO public.customer_profiles (
+        id,
+        full_name,
+        username,
+        email,
+        mobile,
+        location,
+        delivery_address,
+        addresses,
+        whatsapp_number,
+        whatsapp_consent,
+        whatsapp_opt_in_at,
+        whatsapp_opt_in_source,
+        preferred_language,
+        role
+    )
+    VALUES (
+        NEW.id,
+        resolved_fullname,
+        resolved_username,
+        COALESCE(lower(trim(NEW.email)), ''),
+        COALESCE(trim(meta->>'mobile'), ''),
+        COALESCE(trim(meta->>'location'), ''),
+        COALESCE(trim(meta->>'delivery_address'), ''),
+        CASE
+            WHEN jsonb_typeof(meta->'addresses') = 'array' THEN meta->'addresses'
+            ELSE '[]'::jsonb
+        END,
+        NULLIF(trim(meta->>'whatsapp_number'), ''),
+        COALESCE((meta->>'whatsapp_consent')::boolean, false),
+        NULLIF(trim(meta->>'whatsapp_opt_in_at'), '')::timestamptz,
+        NULLIF(trim(meta->>'whatsapp_opt_in_source'), ''),
+        COALESCE(NULLIF(trim(meta->>'preferred_language'), ''), 'te'),
+        'Customer'
+    )
+    ON CONFLICT (id) DO NOTHING;
+
+    RETURN NEW;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Never block Supabase Auth signup if profile trigger encounters a transient conflict
+        RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_customer_profile ON auth.users;
+CREATE TRIGGER on_auth_user_created_customer_profile
+    AFTER INSERT ON auth.users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.handle_new_customer_user();

@@ -8,35 +8,43 @@
  */
 
 import {
-  AUTHORIZED_ADMIN_PHONE,
   isAuthorizedAdminAccountPhone,
+  isMasterAdminPhone,
+  maskAdminPhoneDisplay,
   normalizePhone,
   parseRequestBody,
   sendJsonResponse,
-  verifyAdminPin,
+  verifyAdminMasterCode,
   createSignedSessionJwt
 } from "../../auth-utils";
 
 export default async function handler(req: any, res: any) {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return sendJsonResponse(res, 200, { ok: true });
   }
 
   try {
     const body = await parseRequestBody(req);
-    const { phone, pin } = body || {};
+    const rawPhone = body?.phone || body?.mobile || body?.mobileNumber;
+    const rawCode = body?.masterCode || body?.pin || body?.securityPin || body?.adminPin;
 
-    if (!phone || !pin) {
+    if (!rawPhone || !rawCode) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Mobile number and Security PIN are required."
+        error: "Administrator mobile number and Master Code are required."
       });
     }
 
-    const cleanPhone = normalizePhone(phone);
+    const cleanPhone = normalizePhone(rawPhone);
+    const cleanCode = String(rawCode).trim();
 
-    // Condition 1: Must be authorized admin account
+    if (cleanCode.length < 4 || cleanCode.length > 32) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Master Code must be between 4 and 32 characters."
+      });
+    }
+
     if (!isAuthorizedAdminAccountPhone(cleanPhone)) {
       return sendJsonResponse(res, 403, {
         success: false,
@@ -44,14 +52,14 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // Condition 2: Server-side PIN verification with rate limiting
-    const result = verifyAdminPin(cleanPhone, String(pin));
+    const result = await verifyAdminMasterCode(cleanPhone, cleanCode);
 
     if (result.locked) {
       return sendJsonResponse(res, 429, {
         success: false,
         locked: true,
         remainingAttempts: 0,
+        retryAfterSeconds: result.retryAfterSeconds,
         error: result.message || "Account temporarily locked due to repeated failed attempts."
       });
     }
@@ -60,13 +68,13 @@ export default async function handler(req: any, res: any) {
       return sendJsonResponse(res, 401, {
         success: false,
         remainingAttempts: result.remainingAttempts,
-        error: result.message || "Incorrect security PIN. Please try again."
+        error: result.message || "Incorrect Master Code. Please try again."
       });
     }
 
-    // Both conditions satisfied: Assign role (Master admin -> super_admin, Designated admin -> admin)
-    const isMaster = cleanPhone === AUTHORIZED_ADMIN_PHONE || cleanPhone === `91${AUTHORIZED_ADMIN_PHONE}`;
+    const isMaster = isMasterAdminPhone(cleanPhone);
     const assignedRole = isMaster ? 'super_admin' : 'admin';
+    const maskedPhone = maskAdminPhoneDisplay(cleanPhone);
 
     const token = createSignedSessionJwt(cleanPhone, assignedRole, {
       phone: cleanPhone,
@@ -78,15 +86,14 @@ export default async function handler(req: any, res: any) {
       token,
       role: assignedRole,
       isAuthorizedAdmin: true,
-      phone: cleanPhone,
-      navigationOptions: [
-        { id: 'dashboard', label: 'Open Admin Dashboard', route: isMaster ? 'super-admin' : 'admin' },
-        { id: 'settings', label: 'Open Admin Settings', route: 'admin' }
-      ],
-      message: "Administrator identity and PIN verified successfully."
+      phone: maskedPhone,
+      maskedPhone,
+      redirectTarget: 'admin',
+      redirectTab: 'settings',
+      message: "Administrator identity and Master Code verified successfully."
     });
   } catch (err: any) {
-    console.error("[Admin Verify PIN Error]:", err?.message || err);
+    console.error("[Admin Verify Master Code Error]:", err?.message || err);
     return sendJsonResponse(res, 500, {
       success: false,
       error: "An unexpected error occurred during administrative verification."

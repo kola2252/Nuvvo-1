@@ -6,7 +6,7 @@
  *
  * Displays:
  * - Meta WhatsApp Cloud API Configuration Status & Missing Environment Variables
- * - Fixed Admin WhatsApp Recipient (+91 9063692135)
+ * - Fixed Admin WhatsApp Recipient (Server-Protected & Masked)
  * - Latest Admin & Customer Notification Status & Lifecycle Breakdown
  * - Approval Status for all 7 Meta Message Templates (live Graph API lookup)
  * - Last Notification Error Diagnostics
@@ -35,6 +35,7 @@ import {
   Terminal,
   X
 } from 'lucide-react';
+import { getStoredAuthToken } from '../config/authConfig';
 
 interface TemplateStatusItem {
   key: string;
@@ -259,7 +260,7 @@ export default function AdminWhatsAppSettings({
   const [webhookRetryNotice, setWebhookRetryNotice] = useState<{ id: string; text: string; ok: boolean } | null>(null);
 
   const getAuthHeaders = () => {
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    const token = getStoredAuthToken();
     return {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
@@ -634,7 +635,7 @@ export default function AdminWhatsAppSettings({
               </span>
               <div className="flex items-center justify-between gap-2 pt-0.5">
                 <strong className="text-sm font-black font-mono text-zinc-900 dark:text-zinc-50 tabular-nums">
-                  {statusData.adminWhatsappNumber || '+919063692135'}
+                  {statusData.adminWhatsappNumber || statusData.businessRecipientMasked || 'Protected on Server'}
                 </strong>
                 <span className="px-2 py-0.5 rounded-md border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
                   FIXED

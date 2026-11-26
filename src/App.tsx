@@ -8,10 +8,10 @@ import { useApp } from './context/AppContext';
 import { Bell, X, WifiOff, Utensils } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Splash from './components/Splash';
+import LoadingScreen from './components/LoadingScreen';
 import Home from './components/Home';
 import BottomNav from './components/BottomNav';
 import DesktopSupportWidgets from './components/DesktopSupportWidgets';
-import WhatsAppSupportFab from './components/WhatsAppSupportFab';
 import { AdminSaveWarningModal, AdminSaveAlertBanner } from './components/AdminSaveWarningModal';
 import { isAdminRole, isSuperAdminRole } from './config/authConfig';
 
@@ -284,11 +284,7 @@ export default function App() {
 
       {/* Dynamic Viewport */}
       <main className="w-full">
-        <Suspense fallback={
-          <div className="min-h-[70vh] flex flex-col items-center justify-center p-8">
-            <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin" />
-          </div>
-        }>
+        <Suspense fallback={<LoadingScreen fullScreen={false} variant="suspense" />}>
           {renderedPage}
         </Suspense>
       </main>
@@ -303,11 +299,8 @@ export default function App() {
       {/* Persistent Swiggy Bottom Control Deck */}
       {showBottomNav && <BottomNav />}
 
-      {/* Responsive WhatsApp & AI Chatbot desktop widgets */}
+      {/* Unified bottom-right AI Chatbot & WhatsApp Customer Support dock */}
       <DesktopSupportWidgets />
-
-      {/* Persistent bottom-right WhatsApp Customer Support Floating Action Button */}
-      <WhatsAppSupportFab />
 
       {/* Lightweight Add-To-Cart success notification - 300ms timing constraint */}
       <AnimatePresence>

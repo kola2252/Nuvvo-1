@@ -9,12 +9,13 @@ import { motion } from 'motion/react';
 import { 
   Phone, Lock, User, Mail, MapPin, Globe, ShieldCheck, 
   ShoppingBag, Building, RotateCcw, CheckCircle2, KeyRound,
-  Eye, EyeOff, LayoutDashboard, Settings, Home
+  Eye, EyeOff, Home
 } from 'lucide-react';
 import NuvvoLogo from './NuvvoLogo';
 import ForgotPassword from './ForgotPassword';
 import { translations } from '../utils/translations';
 import { getAuthPersistencePreference } from '../utils/supabase/client';
+import { normalizeAdminPhoneDigits, normalizeAdminPhoneInput } from '../config/authConfig';
 
 type AuthStep = 
   | 'customer_login'           // Username or Email + Password
@@ -24,7 +25,6 @@ type AuthStep =
   | 'customer_recovery_reset'  // Supabase PASSWORD_RECOVERY New Password Form
   | 'admin_phone'              // Admin mobile entry
   | 'admin_pin'                // Server-prompted Admin PIN entry
-  | 'admin_choice_modal'       // Dialog: "Open Admin Dashboard" vs "Open Admin Settings"
   | 'partner_phone'            // Franchise mobile entry
   | 'partner_otp';             // Franchise mobile OTP
 
@@ -38,7 +38,6 @@ export default function Auth() {
     loginCustomerWithPassword,
     resendCustomerVerificationEmail,
     completeCustomerPasswordRecovery,
-    adminCheckPhone, 
     adminVerifyPin,
     loginWithPhone, 
     verifyOtpAndLogin, 
@@ -121,12 +120,10 @@ export default function Auth() {
   const [regWhatsappNumber, setRegWhatsappNumber] = useState('');
   const [regWhatsappOptIn, setRegWhatsappOptIn] = useState(false); // Explicitly unchecked by default
 
-  // Admin Security Flow - Admin must manually enter mobile number and master password/PIN
+  // Admin Security Flow - Admin must manually enter registered mobile number and Master Code
   const [adminPhoneNumber, setAdminPhoneNumber] = useState('');
   const [adminPinCode, setAdminPinCode] = useState('');
-  const [adminMaskedPhone, setAdminMaskedPhone] = useState('');
-  const [isAdminAccountConfirmed, setIsAdminAccountConfirmed] = useState(false);
-  const [confirmedAdminPhone, setConfirmedAdminPhone] = useState('');
+  const [showAdminMasterCode, setShowAdminMasterCode] = useState(false);
 
   // Partner / Franchise mobile state
   const [partnerPhone, setPartnerPhone] = useState('');
@@ -159,10 +156,8 @@ export default function Auth() {
     } else if (newRole === 'Admin') {
       setStep('admin_phone');
       setAdminPhoneNumber('');
-      setAdminMaskedPhone('');
-      setIsAdminAccountConfirmed(false);
-      setConfirmedAdminPhone('');
       setAdminPinCode('');
+      setShowAdminMasterCode(false);
     } else {
       setStep('partner_phone');
     }
@@ -267,6 +262,17 @@ export default function Auth() {
     setIsLoading(false);
 
     if (!res.success) {
+      if (res.code === 'ACCOUNT_PENDING_VERIFICATION' && res.email) {
+        setPendingVerifyEmail(res.email);
+        setLoginIdentifier(cleanUsername || res.email);
+        setResendTimer(30);
+        setSuccessMsg(
+          res.error ||
+            `Your account for ${res.email} is awaiting email verification. Please check your inbox or resend the link below.`
+        );
+        setStep('customer_verify_email');
+        return;
+      }
       setErrorMsg(res.error || 'Could not create your account. Please check your details and try again.');
       return;
     }
@@ -371,62 +377,38 @@ export default function Auth() {
   };
 
   // ==========================================
-  // ADMIN PHONE & SERVER PIN AUTH (PRESERVED)
+  // ADMIN MOBILE NUMBER & MASTER CODE AUTH
   // ==========================================
-  const handleAdminPhoneCheck = async (e: React.FormEvent) => {
+  const handleAdminVerifyMasterCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
 
-    const digits = adminPhoneNumber.replace(/\D/g, '');
-    if (!digits || digits.length < 10) {
+    const targetPhone = normalizeAdminPhoneDigits(adminPhoneNumber);
+    if (!targetPhone || targetPhone.length < 10) {
       setErrorMsg('Please enter a valid 10-digit administrator mobile number.');
       return;
     }
 
-    setIsLoading(true);
-    const res = await adminCheckPhone(digits);
-    setIsLoading(false);
-
-    if (res.success && res.promptForPin) {
-      setIsAdminAccountConfirmed(true);
-      setConfirmedAdminPhone(digits);
-      setAdminMaskedPhone(res.maskedPhone || '+91 ••••••••••');
-      setStep('admin_pin');
-      setAdminPinCode('');
-      setSuccessMsg('Authorized administrator mobile verified. Enter your Master Password / Security PIN to continue.');
-    } else {
-      setIsAdminAccountConfirmed(false);
-      setConfirmedAdminPhone('');
-      setStep('admin_phone');
-      setErrorMsg(res.error || 'Access Denied: Entered mobile number is not associated with an authorized Admin or Super Admin account.');
-    }
-  };
-
-  const handleAdminVerifyPinSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-
-    if (!isAdminAccountConfirmed && step !== 'admin_pin') {
-      setErrorMsg('Please enter and verify your administrator mobile number first.');
+    const masterCode = adminPinCode.trim();
+    if (!masterCode || masterCode.length < 4 || masterCode.length > 32) {
+      setErrorMsg('Please enter your Master Code (4 to 32 characters).');
       return;
     }
 
-    const pin = adminPinCode.trim();
-    if (!pin || pin.length < 4 || pin.length > 8) {
-      setErrorMsg('Please enter your Master Password / Security PIN.');
-      return;
-    }
-
-    const targetPhone = confirmedAdminPhone || adminPhoneNumber.replace(/\D/g, '');
+    setAdminPhoneNumber(targetPhone);
     setIsLoading(true);
-    const res = await adminVerifyPin(targetPhone, pin);
+    const res = await adminVerifyPin(targetPhone, masterCode);
     setIsLoading(false);
 
     if (res.success) {
-      setStep('admin_choice_modal');
+      setAdminPinCode('');
+      try {
+        localStorage.setItem('nuvvo_admin_target_tab', 'settings');
+      } catch {}
+      setCurrentPage('admin');
     } else {
-      setErrorMsg(res.error || 'Incorrect Master Password / PIN. Verification failed.');
+      setErrorMsg(res.error || 'Incorrect Master Code or unauthorized administrator mobile number.');
     }
   };
 
@@ -814,12 +796,12 @@ export default function Auth() {
                         id="reg-mobile"
                         name="tel"
                         type="tel"
-                        maxLength={10}
+                        maxLength={16}
                         required
                         autoComplete="tel-national"
                         placeholder="9876543210"
                         value={regMobile}
-                        onChange={e => setRegMobile(e.target.value.replace(/\D/g, ''))}
+                        onChange={e => setRegMobile(normalizeAdminPhoneInput(e.target.value))}
                         className="w-full bg-slate-50 dark:bg-zinc-800 pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold font-mono text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-orange-500"
                       />
                     </div>
@@ -945,10 +927,10 @@ export default function Auth() {
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-zinc-400">+91</span>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={16}
                       placeholder="10-digit WhatsApp number"
                       value={regWhatsappNumber}
-                      onChange={e => setRegWhatsappNumber(e.target.value.replace(/\D/g, ''))}
+                      onChange={e => setRegWhatsappNumber(normalizeAdminPhoneInput(e.target.value))}
                       className="w-full bg-white dark:bg-zinc-900 pl-10 pr-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold text-zinc-900 dark:text-zinc-100 font-mono focus:outline-none focus:border-orange-500"
                     />
                   </div>
@@ -1150,50 +1132,28 @@ export default function Auth() {
           )}
 
           {/* ========================================================= */}
-          {/* ADMIN LOGIN: PIN FIELD DISPLAYED ONLY AFTER SERVER CHECK */}
+          {/* ADMIN LOGIN: MOBILE NUMBER + MASTER CODE (NEVER PREFILLED) */}
           {/* ========================================================= */}
-          {roleOption === 'Admin' && step !== 'admin_choice_modal' && (
+          {roleOption === 'Admin' && (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
               <div className="text-center mb-5">
                 <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider mb-2 font-mono bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-950/40 dark:border-rose-900/40">
                   🛡️ Administrator Access Gateway
                 </div>
                 <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">
-                  {isAdminAccountConfirmed ? 'Step 2: Enter Master Password / PIN' : 'Step 1: Enter Admin Mobile Number'}
+                  Admin Master Code Login
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {isAdminAccountConfirmed
-                    ? 'Administrator account confirmed. Enter your Master Password / Security PIN to unlock.'
-                    : 'Manually enter your authorized administrator mobile number to continue.'}
+                  Enter your registered administrator mobile number and Master Code to open Admin Settings.
                 </p>
               </div>
 
-              <form onSubmit={isAdminAccountConfirmed ? handleAdminVerifyPinSubmit : handleAdminPhoneCheck} autoComplete="off" className="space-y-4">
-                {/* Mobile Number Input */}
+              <form onSubmit={handleAdminVerifyMasterCodeSubmit} autoComplete="off" className="space-y-4">
+                {/* Registered Administrator Mobile Number (never prefilled) */}
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label htmlFor="admin-phone-input" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider">
-                      Administrator Mobile Number
-                    </label>
-                    {isAdminAccountConfirmed && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsAdminAccountConfirmed(false);
-                          setConfirmedAdminPhone('');
-                          setAdminPhoneNumber('');
-                          setAdminMaskedPhone('');
-                          setAdminPinCode('');
-                          setStep('admin_phone');
-                          setErrorMsg('');
-                          setSuccessMsg('');
-                        }}
-                        className="text-[10px] font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
-                      >
-                        Change Number
-                      </button>
-                    )}
-                  </div>
+                  <label htmlFor="admin-phone-input" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Administrator Mobile Number
+                  </label>
                   <div className="relative">
                     <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 font-bold font-mono text-sm">+91</span>
                     <input
@@ -1202,158 +1162,62 @@ export default function Auth() {
                       type="tel"
                       inputMode="numeric"
                       autoComplete="off"
-                      maxLength={10}
+                      maxLength={16}
                       required
-                      disabled={isAdminAccountConfirmed || isLoading}
+                      disabled={isLoading}
                       placeholder="Enter 10-digit admin mobile"
-                      value={isAdminAccountConfirmed ? '••••••••••' : adminPhoneNumber}
-                      onChange={e => {
-                        setAdminPhoneNumber(e.target.value.replace(/\D/g, ''));
-                        if (isAdminAccountConfirmed) {
-                          setIsAdminAccountConfirmed(false);
-                          setConfirmedAdminPhone('');
-                          setAdminMaskedPhone('');
-                          setAdminPinCode('');
-                          setStep('admin_phone');
-                        }
-                      }}
-                      className={`w-full bg-slate-50 dark:bg-zinc-800 pl-14 pr-10 py-3 rounded-2xl border transition-all ${
-                        isAdminAccountConfirmed 
-                          ? 'border-emerald-500/70 bg-emerald-50/20 text-emerald-900 dark:text-emerald-100 font-bold' 
-                          : 'border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100'
-                      } font-mono text-base tracking-widest focus:outline-none focus:border-rose-500`}
+                      value={adminPhoneNumber}
+                      onChange={e => setAdminPhoneNumber(normalizeAdminPhoneInput(e.target.value))}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-14 pr-4 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 font-mono text-base tracking-widest focus:outline-none focus:border-rose-500"
                     />
-                    {isAdminAccountConfirmed && (
-                      <CheckCircle2 className="absolute right-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-emerald-500" />
-                    )}
                   </div>
                 </div>
 
-                {/* Confirmed Account Server Status Banner */}
-                {isAdminAccountConfirmed && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-2xl flex items-center gap-2 text-xs text-emerald-800 dark:text-emerald-300 font-medium"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Authorized identity confirmed. Enter your Master Password / Security PIN below.</span>
-                  </motion.div>
-                )}
-
-                {/* MASTER PASSWORD / PIN INPUT FIELD - RENDERED ONLY AFTER SERVER CONFIRMATION */}
-                {isAdminAccountConfirmed ? (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0, y: -6 }}
-                    animate={{ opacity: 1, height: 'auto', y: 0 }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.25 }}
-                    className="space-y-4"
-                  >
-                    <div>
-                      <label htmlFor="admin-master-pin" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
-                        Master Password / Security PIN
-                      </label>
-                      <div className="relative">
-                        <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-                        <input
-                          id="admin-master-pin"
-                          name="admin-master-pin"
-                          type="password"
-                          inputMode="numeric"
-                          autoComplete="off"
-                          maxLength={8}
-                          required
-                          autoFocus
-                          placeholder="Enter master PIN"
-                          value={adminPinCode}
-                          onChange={e => setAdminPinCode(e.target.value.replace(/\D/g, ''))}
-                          className="w-full bg-slate-50 dark:bg-zinc-800 pl-11 pr-4 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-center font-mono font-black text-2xl tracking-widest text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="text-[10px] text-zinc-400 text-center">
-                      Protected with server-side PBKDF2 hashing and 5-attempt rate-limiting.
-                    </div>
-
-                    <button
-                      type="submit"
+                {/* Master Code Input Field */}
+                <div>
+                  <label htmlFor="admin-master-pin" className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                    Master Code
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+                    <input
+                      id="admin-master-pin"
+                      name="admin-master-code"
+                      type={showAdminMasterCode ? 'text' : 'password'}
+                      autoComplete="off"
+                      maxLength={32}
+                      required
                       disabled={isLoading}
-                      className="w-full bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-rose-600/20 cursor-pointer active:scale-98 flex items-center justify-center gap-2"
-                    >
-                      <ShieldCheck className="w-4 h-4" />
-                      <span>{isLoading ? 'Authenticating with Server...' : 'Authenticate & Unlock'}</span>
-                    </button>
-                  </motion.div>
-                ) : (
-                  <>
-                    <div className="bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/40 p-3 rounded-2xl text-[11px] text-zinc-600 dark:text-zinc-300">
-                      <p className="font-bold text-rose-700 dark:text-rose-400">🔒 Server-Enforced Security:</p>
-                      <p className="mt-0.5">Both your authorized mobile number and Master Password / Security PIN must be entered manually to unlock Admin access.</p>
-                    </div>
-
+                      placeholder="Enter Admin Master Code"
+                      value={adminPinCode}
+                      onChange={e => setAdminPinCode(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 pl-11 pr-11 py-3 rounded-2xl border border-slate-200 dark:border-zinc-700 text-center font-mono font-black text-xl tracking-widest text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
                     <button
-                      type="submit"
-                      disabled={isLoading}
-                      className="w-full bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-rose-600/20 cursor-pointer active:scale-98 flex items-center justify-center gap-2"
+                      type="button"
+                      onClick={() => setShowAdminMasterCode(prev => !prev)}
+                      aria-label={showAdminMasterCode ? 'Hide Master Code' : 'Show Master Code'}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
                     >
-                      <ShieldCheck className="w-4 h-4" />
-                      <span>{isLoading ? 'Verifying Admin Identity...' : 'Verify Admin Mobile'}</span>
+                      {showAdminMasterCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
-                  </>
-                )}
+                  </div>
+                </div>
+
+                <div className="bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/40 p-3 rounded-2xl text-[11px] text-zinc-600 dark:text-zinc-300">
+                  <p className="font-bold text-rose-700 dark:text-rose-400">🔒 Server-Verified Master Code Security:</p>
+                  <p className="mt-0.5">Verified on the backend with PBKDF2-SHA512 hashing and automatic 5-attempt lockout protection.</p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-60 text-white py-3.5 rounded-2xl font-black text-sm transition-all shadow-md shadow-rose-600/20 cursor-pointer active:scale-98 flex items-center justify-center gap-2"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>{isLoading ? 'Verifying Master Code...' : 'Sign In & Open Admin Settings'}</span>
+                </button>
               </form>
-            </motion.div>
-          )}
-
-          {/* ========================================================= */}
-          {/* STEP: ADMIN CHOICE MODAL (PART 4 REQUIREMENT)            */}
-          {/* ========================================================= */}
-          {step === 'admin_choice_modal' && (
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="text-center py-2 space-y-4">
-              <div className="w-14 h-14 bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 mx-auto rounded-3xl flex items-center justify-center border border-emerald-200 dark:border-emerald-800 shadow-md">
-                <ShieldCheck className="w-8 h-8" />
-              </div>
-
-              <div>
-                <h3 className="text-lg font-black text-zinc-900 dark:text-zinc-50">
-                  Administrator Verified
-                </h3>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  Choose where you want to navigate:
-                </p>
-              </div>
-
-              <div className="space-y-2.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      localStorage.setItem('nuvvo_admin_target_tab', 'command');
-                    } catch {}
-                    setCurrentPage('super-admin');
-                  }}
-                  className="w-full p-4 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white rounded-2xl font-black text-sm transition-all shadow-md shadow-rose-600/20 flex items-center justify-center gap-2.5 cursor-pointer active:scale-98"
-                >
-                  <LayoutDashboard className="w-5 h-5" />
-                  <span>Open Admin Dashboard</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      localStorage.setItem('nuvvo_admin_target_tab', 'settings');
-                    } catch {}
-                    setCurrentPage('admin');
-                  }}
-                  className="w-full p-4 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-750 text-zinc-800 dark:text-zinc-100 border border-slate-200 dark:border-zinc-700 rounded-2xl font-black text-sm transition-all flex items-center justify-center gap-2.5 cursor-pointer active:scale-98"
-                >
-                  <Settings className="w-5 h-5 text-orange-500" />
-                  <span>Open Admin Settings</span>
-                </button>
-              </div>
             </motion.div>
           )}
 

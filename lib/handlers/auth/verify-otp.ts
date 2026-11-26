@@ -1,23 +1,24 @@
 import {
   AUTHORIZED_ADMIN_PHONE,
   isAuthorizedAdminAccountPhone,
+  isMasterAdminPhone,
+  maskAdminPhoneDisplay,
   normalizePhone,
   parseRequestBody,
   sendJsonResponse,
   verifyOtpChallenge,
-  verifyAdminPin,
+  verifyAdminMasterCode,
   createSignedSessionJwt
 } from "../../auth-utils";
 
 export default async function handler(req: any, res: any) {
-  // Handle CORS preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return sendJsonResponse(res, 200, { ok: true });
   }
 
   try {
     const body = await parseRequestBody(req);
-    const { phone, otp, requestedRole, challengeToken } = body || {};
+    const { phone, otp, challengeToken } = body || {};
 
     if (!phone) {
       return sendJsonResponse(res, 400, { success: false, error: "Phone number is required." });
@@ -29,22 +30,27 @@ export default async function handler(req: any, res: any) {
     }
 
     const inputCode = String(otp || '').trim();
-    if (!inputCode || inputCode.length < 4 || inputCode.length > 6) {
-      return sendJsonResponse(res, 400, { success: false, error: "A valid verification OTP code is required (6 digits)." });
+    if (!inputCode || inputCode.length < 4 || inputCode.length > 32) {
+      return sendJsonResponse(res, 400, { success: false, error: "A valid verification code is required." });
     }
 
     let isVerified = false;
     let isExpired = false;
 
-    // For authorized admin account, verify against PBKDF2 hashed PIN with rate limiting
     if (isAuthorizedAdminAccountPhone(cleanPhone)) {
-      const pinResult = verifyAdminPin(cleanPhone, inputCode);
+      const pinResult = await verifyAdminMasterCode(cleanPhone, inputCode);
+      if (pinResult.locked) {
+        return sendJsonResponse(res, 429, {
+          success: false,
+          locked: true,
+          error: pinResult.message || "Account temporarily locked due to repeated failed attempts."
+        });
+      }
       if (pinResult.verified) {
         isVerified = true;
       }
     }
 
-    // Verify using cryptographic signed challenge token
     if (!isVerified && typeof challengeToken === 'string' && challengeToken.startsWith('otp_')) {
       const challengeCheck = verifyOtpChallenge(challengeToken, cleanPhone, inputCode);
       if (challengeCheck.expired) {
@@ -64,27 +70,20 @@ export default async function handler(req: any, res: any) {
     if (!isVerified) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "The verification OTP code is incorrect. Please check the 6-digit code and try again."
+        error: "The verification code is incorrect. Please check and try again."
       });
     }
 
-    // Role assignment: strictly enforce super_admin role only for authorized admin phone
-    let role: 'normal_user' | 'admin' | 'super_admin' = 'normal_user';
-    if (cleanPhone === AUTHORIZED_ADMIN_PHONE) {
-      role = 'super_admin';
-    } else {
-      role = 'normal_user';
-    }
-
-    // Issue signed session JWT
+    const role: 'normal_user' | 'admin' | 'super_admin' = isMasterAdminPhone(cleanPhone) ? 'super_admin' : 'normal_user';
     const token = createSignedSessionJwt(cleanPhone, role);
+    const responsePhone = role === 'normal_user' ? cleanPhone : maskAdminPhoneDisplay(cleanPhone);
 
     return sendJsonResponse(res, 200, {
       success: true,
       token,
       role,
       isAuthorizedAdmin: role === 'super_admin',
-      phone: cleanPhone,
+      phone: responsePhone,
       message: "Verification successful."
     });
   } catch (err: any) {
@@ -92,7 +91,7 @@ export default async function handler(req: any, res: any) {
     try {
       const body = await parseRequestBody(req).catch(() => ({}));
       const phoneDigits = normalizePhone(body?.phone || '');
-      if (phoneDigits.length >= 10 && phoneDigits !== AUTHORIZED_ADMIN_PHONE) {
+      if (phoneDigits.length >= 10 && phoneDigits !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminAccountPhone(phoneDigits)) {
         const token = createSignedSessionJwt(phoneDigits, 'normal_user');
         return sendJsonResponse(res, 200, {
           success: true,
@@ -107,7 +106,7 @@ export default async function handler(req: any, res: any) {
 
     return sendJsonResponse(res, 400, {
       success: false,
-      error: "Verification failed. Please check the 6-digit code or use Default OTP 123456."
+      error: "Verification failed. Please check your verification code."
     });
   }
 }

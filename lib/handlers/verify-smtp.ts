@@ -10,7 +10,7 @@
  */
 
 import nodemailer from "nodemailer";
-import { parseRequestBody, sendJsonResponse } from "../auth-utils";
+import { parseRequestBody, sendJsonResponse, resolveCallerIdentity } from "../auth-utils";
 import { loadSmtpConfig, saveSmtpConfig } from "../email-service";
 
 export default async function handler(req: any, res: any) {
@@ -43,6 +43,27 @@ export default async function handler(req: any, res: any) {
     const body = await parseRequestBody(req);
     const query = req.query || {};
 
+    const recipient = String(body?.to || query?.to || query?.email || body?.email || "arjungorrepato@gmail.com").trim();
+    const shouldSendEmail = body?.send !== false && query?.send !== "false";
+    const isMutatingOrDispatch =
+      req.method === "POST" ||
+      Boolean(body?.save) ||
+      Boolean(body?.pass) ||
+      Boolean(query?.pass) ||
+      shouldSendEmail;
+
+    if (isMutatingOrDispatch) {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated || !caller.isAdmin) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          status: "server_error",
+          error: "Administrator authentication required to test, dispatch, or update SMTP settings.",
+          logs
+        });
+      }
+    }
+
     // 1. Gather SMTP credentials from persistent config, request overrides, or environment variables
     const currentCfg = loadSmtpConfig();
     const emailUser = (body?.user || query?.user || currentCfg.user || process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
@@ -57,9 +78,6 @@ export default async function handler(req: any, res: any) {
       saveSmtpConfig({ user: emailUser, pass: emailPass, host: smtpHost, port: smtpPort, from: emailFrom });
       addLog("info", "Saved SMTP configuration persistently on server.");
     }
-
-    const recipient = String(body?.to || query?.to || query?.email || body?.email || "arjungorrepato@gmail.com").trim();
-    const shouldSendEmail = body?.send !== false && query?.send !== "false";
 
     // Diagnostic transport metadata
     const transportConfig = {
@@ -78,6 +96,7 @@ export default async function handler(req: any, res: any) {
         success: false,
         status: "unconfigured",
         message: "SMTP credentials are not yet configured on the server.",
+        transport: transportConfig,
         details: {
           missingVariables: [
             ...(!emailUser ? ["EMAIL_USER"] : []),
@@ -122,6 +141,7 @@ export default async function handler(req: any, res: any) {
         success: false,
         status: "connection_failed",
         error: `SMTP connection failed: ${verifyError?.message || verifyError}`,
+        transport: transportConfig,
         details: {
           errorCode: verifyError?.code || "EAUTH",
           command: verifyError?.command || null,
@@ -223,6 +243,7 @@ export default async function handler(req: any, res: any) {
           success: false,
           status: "send_failed",
           error: `SMTP connection established, but email dispatch failed: ${sendError?.message || sendError}`,
+          transport: transportConfig,
           details: {
             errorMessage: sendError?.message || String(sendError),
             errorCode: sendError?.code || "SEND_FAILED",

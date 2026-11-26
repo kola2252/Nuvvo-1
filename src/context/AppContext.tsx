@@ -15,7 +15,8 @@ import {
 import { FOOD_CATALOG, RESTAURANTS, MOCK_COUPONS } from '../data/catalog';
 import { generatePreloadedChiralaRestaurants, CHIRALA_TOP13_FOOD_ITEMS } from '../data/chiralaPartners';
 import { APP_THEMES } from '../data/themes';
-import { isAdminRole, isSuperAdminRole, normalizePhoneNumber, isAuthorizedAdminPhone, AUTHORIZED_ADMIN_PHONE } from '../config/authConfig';
+import { isAdminRole, isSuperAdminRole, normalizePhoneNumber, normalizeAdminPhoneDigits, isAuthorizedAdminPhone, hasActiveAdminJwtSession, getStoredAuthToken } from '../config/authConfig';
+import { getClientAppOrigin, getClientRecoveryRedirectUrl } from '../utils/appUrl';
 import { 
   getFoodItemsFromSupabase, 
   insertFoodItemToSupabase, 
@@ -131,7 +132,7 @@ interface AppContextProps {
   sendCustomerEmailOtp: (email: string, fullName: string, location: string, retryCount?: number) => Promise<{ success: boolean; message?: string; challengeToken?: string; retry_count?: number; error?: string }>;
   verifyCustomerEmailOtp: (email: string, otp: string, challengeToken?: string) => Promise<{ success: boolean; token?: string; error?: string }>;
   setupCustomerProfile: (data: { username: string; password: string; mobile: string; whatsappNumber?: string; whatsappOptIn?: boolean; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }) => Promise<{ success: boolean; user?: any; error?: string }>;
-  registerCustomerWithPassword: (data: { fullName: string; username: string; email: string; mobile: string; location: string; deliveryAddress: string; password: string; confirmPassword: string; landmark?: string; city?: string; whatsappNumber?: string; whatsappOptIn?: boolean; rememberMe?: boolean }) => Promise<{ success: boolean; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }>;
+  registerCustomerWithPassword: (data: { fullName: string; username: string; email: string; mobile: string; location: string; deliveryAddress: string; password: string; confirmPassword: string; landmark?: string; city?: string; whatsappNumber?: string; whatsappOptIn?: boolean; rememberMe?: boolean }) => Promise<{ success: boolean; code?: string; email?: string; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }>;
   loginCustomerWithPassword: (identifier: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; user?: any; role?: string; token?: string; requiresEmailVerification?: boolean; email?: string; error?: string }>;
   resendCustomerVerificationEmail: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   requestCustomerPasswordReset: (identifierOrEmail: string) => Promise<{ success: boolean; message?: string; error?: string; retryAfterSeconds?: number; cooldownSeconds?: number }>;
@@ -286,7 +287,7 @@ interface AppContextProps {
   isAdmin: boolean;
   isSuperAdmin: boolean;
   isSuperAdminAuthenticated: boolean;
-  verifySuperAdminOtp: (otp: string) => boolean;
+  verifySuperAdminOtp: (otp: string, phone?: string) => Promise<boolean>;
   setSuperAdminAuthenticated: (auth: boolean) => void;
   authenticateSuperAdmin: () => void;
   wipeAllData: () => void;
@@ -538,10 +539,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (existing.role && existing.role !== 'Customer') {
         return existing;
       }
-      const hasToken = Boolean(
-        localStorage.getItem('nuvvo_auth_token') ||
-        (typeof window !== 'undefined' && window.sessionStorage.getItem('nuvvo_auth_token'))
-      );
+      const hasToken = Boolean(getStoredAuthToken());
       if (hasToken) {
         return existing;
       }
@@ -1242,16 +1240,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
   });
 
-  // Strict admin authorization: exclusively granted if phone is 9063692135 AND role is server-verified
-  const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
+  // Strict admin authorization: exclusively granted via active server-signed Admin/Super-Admin JWT
+  const isAuthorizedPhone = hasActiveAdminJwtSession();
   const isSuperAdmin = isSuperAdminRole(user?.role) && isAuthorizedPhone;
   const isAdmin = (isAdminRole(user?.role) && isAuthorizedPhone) || isSuperAdmin;
 
   // Verify server session role on startup and hydrate Customer session from Supabase Auth
   useEffect(() => {
-    const token = localStorage.getItem('nuvvo_auth_token');
+    const token = getStoredAuthToken();
     if (token && token.startsWith('nuvvo_jwt_')) {
-      queryClient.fetchQuery<{ isAuthorizedAdmin?: boolean; role?: string; phone?: string }>({
+      queryClient.fetchQuery<{ isAuthorizedAdmin?: boolean; role?: string; phone?: string; maskedPhone?: string }>({
         queryKey: ['verify_role', token],
         staleTime: 300_000, // 5 minutes
         queryFn: async () => {
@@ -1270,12 +1268,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .then(data => {
           if (data && data.isAuthorizedAdmin) {
             const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
+            const maskedPhone = data.maskedPhone || data.phone || 'Protected (Server-Verified)';
             setUser(prev => {
               if (!prev) {
                 return {
-                  id: `usr_admin_${data.phone || '9063692135'}`,
-                  name: 'Nuvvo Super Admin',
-                  phone: data.phone || '9063692135',
+                  id: 'usr_admin_root',
+                  name: mappedRole === 'Super Admin' ? 'Nuvvo Super Admin' : 'Nuvvo Admin',
+                  phone: maskedPhone,
                   email: 'admin@nuvvo.delivery',
                   addresses: [],
                   favoriteFoods: [],
@@ -1288,15 +1287,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return {
                 ...prev,
                 role: mappedRole,
-                phone: data.phone || prev.phone
+                phone: maskedPhone
               };
             });
             setSuperAdminAuthenticated(true);
           } else if (data && !data.isAuthorizedAdmin) {
-            if (isAdminRole(user?.role)) {
-              setUser(prev => prev ? { ...prev, role: 'Customer' } : null);
-              setSuperAdminAuthenticated(false);
-            }
+            setUser(prev => (prev && isAdminRole(prev.role) ? { ...prev, role: 'Customer' } : prev));
+            setSuperAdminAuthenticated(false);
           }
         })
         .catch(err => {
@@ -1332,6 +1329,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const applyHydratedCustomer = (u: any, accessToken: string) => {
+      try {
+        const activeToken =
+          window.localStorage.getItem('nuvvo_auth_token') ||
+          window.sessionStorage.getItem('nuvvo_auth_token') ||
+          '';
+        const activeUser =
+          safeParse<User | null>('nuvvo_user', null) ||
+          (() => {
+            try {
+              const raw = window.sessionStorage.getItem('nuvvo_user');
+              return raw ? (JSON.parse(raw) as User) : null;
+            } catch {
+              return null;
+            }
+          })();
+        if (activeToken.startsWith('nuvvo_jwt_') && activeUser?.role && activeUser.role !== 'Customer') {
+          return;
+        }
+      } catch {}
+
       const scopedFavFoods = getUserScopedItem<string[]>(u.id, 'fav_foods', []);
       const scopedFavRests = getUserScopedItem<string[]>(u.id, 'fav_rests', []);
       const mappedCustomer: User = {
@@ -1545,13 +1562,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (session?.access_token) {
           await hydrateCustomerFromSession(session.access_token);
         } else {
-          // If no Supabase Auth session and no valid signed server JWT, clear stale localStorage-only Customer user
+          // If no Supabase Auth session, check signed server JWT (`nuvvo_jwt_*`) before clearing Customer state
           const cached = safeParse<User | null>('nuvvo_user', null);
-          const storedTok =
-            localStorage.getItem('nuvvo_auth_token') ||
-            (typeof window !== 'undefined' ? window.sessionStorage.getItem('nuvvo_auth_token') : '') ||
-            '';
-          if ((!cached || !cached.role || cached.role === 'Customer') && !storedTok.startsWith('nuvvo_jwt_')) {
+          const storedTok = getStoredAuthToken();
+          if (storedTok.startsWith('nuvvo_jwt_') && (!cached || !cached.role || cached.role === 'Customer')) {
+            await hydrateCustomerFromSession(storedTok);
+          } else if ((!cached || !cached.role || cached.role === 'Customer') && !storedTok.startsWith('nuvvo_jwt_')) {
             localStorage.removeItem('nuvvo_user');
             localStorage.removeItem('nuvvo_auth_token');
             try {
@@ -1575,6 +1591,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (event === 'SIGNED_OUT') {
+        try {
+          const activeToken =
+            window.localStorage.getItem('nuvvo_auth_token') ||
+            window.sessionStorage.getItem('nuvvo_auth_token') ||
+            '';
+          if (activeToken.startsWith('nuvvo_jwt_')) {
+            return;
+          }
+        } catch {}
         setUser(prev => {
           if (prev && prev.role && prev.role !== 'Customer') return prev;
           try {
@@ -2645,15 +2670,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Add Food Item: Persist to Supabase public.food_items with strict Admin/SuperAdmin guard
   const addFoodItem = async (item: Omit<FoodItem, 'id'>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
     // Strict RBAC: Only Admin or Super Admin can perform menu mutations
-    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+    if (!isAdmin && !isSuperAdmin && !hasActiveAdminJwtSession()) {
       const err = 'Access Denied: Only an authorized Admin or Super Admin can add new dishes.';
       console.warn(err);
       return { success: false, error: err };
     }
 
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
-      const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+      const token = getStoredAuthToken();
 
       const fallbackId = `dish_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
       const newDishItem: FoodItem = {
@@ -2695,8 +2719,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'x-admin-phone': adminPhone
+            'Authorization': `Bearer ${token}`
           },
           body: JSON.stringify(newDishItem)
         });
@@ -2719,15 +2742,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Update Food Item: Update in Supabase public.food_items with strict Admin/SuperAdmin guard
   const updateFoodItem = async (id: string, updatedFields: Partial<FoodItem>): Promise<{ success: boolean; data?: FoodItem; error?: string }> => {
     // Strict RBAC: Only Admin or Super Admin can modify dishes
-    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+    if (!isAdmin && !isSuperAdmin && !hasActiveAdminJwtSession()) {
       const err = 'Access Denied: Only an authorized Admin or Super Admin can modify dishes.';
       console.warn(err);
       return { success: false, error: err };
     }
 
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
-      const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+      const token = getStoredAuthToken();
 
       // 1. Direct Supabase database update
       try {
@@ -2763,8 +2785,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'x-admin-phone': adminPhone
+            'Authorization': `Bearer ${token}`
           },
           body: JSON.stringify(updatedFields)
         });
@@ -2792,9 +2813,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Delete Food Item: Remove from Supabase public.food_items with strict Admin/SuperAdmin guard
   const deleteFoodItem = async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
-    const hasAdminPhone = isAuthorizedAdminPhone(adminPhone) || isAuthorizedAdminPhone(user?.phone);
-    const hasAdminPermission = isAdmin || isSuperAdmin || hasAdminPhone || localStorage.getItem('nuvvo_admin_unlocked') === 'true' || isAdminRole(user?.role) || isSuperAdminRole(user?.role) || user?.role === 'Admin' || user?.role === 'Super Admin';
+    const hasAdminPermission = isAdmin || isSuperAdmin || hasActiveAdminJwtSession() || localStorage.getItem('nuvvo_admin_unlocked') === 'true' || isAdminRole(user?.role) || isSuperAdminRole(user?.role) || user?.role === 'Admin' || user?.role === 'Super Admin';
 
     if (!hasAdminPermission) {
       const err = 'Access Denied: Only an authorized Admin or Super Admin can remove dishes.';
@@ -2803,7 +2822,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || localStorage.getItem('nuvo_admin_session_token') || localStorage.getItem('session_token') || '';
+      const token = getStoredAuthToken() || localStorage.getItem('nuvvo_admin_session_token') || localStorage.getItem('session_token') || '';
 
       // 1. Immediately persist deleted ID in localStorage so it never re-appears
       try {
@@ -2827,8 +2846,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // 3. Server API deletion (calls privileged serverless endpoint)
       try {
         const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'x-admin-phone': adminPhone
+          'Content-Type': 'application/json'
         };
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
@@ -2870,16 +2888,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Seed default preloaded dishes to Supabase public.food_items
   const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; message?: string; error?: string }> => {
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
-    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+    const token = getStoredAuthToken();
 
     setFoodLoading(true);
     try {
       const res = await fetch('/api/admin/dishes/seed', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'x-admin-phone': adminPhone
+          'Authorization': `Bearer ${token}`
         }
       });
 
@@ -3215,20 +3231,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Direct Restaurant CRUD with strict Admin/SuperAdmin guard and realtime broadcast
   const addRestaurant = (restaurant: Restaurant) => {
-    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+    if (!isAdmin && !isSuperAdmin && !hasActiveAdminJwtSession()) {
       console.warn('Access Denied: Only an authorized Admin or Super Admin can add restaurants.');
       return;
     }
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
-    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+    const token = getStoredAuthToken();
 
     // Persist to backend server
     fetch('/api/admin/restaurants', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'x-admin-phone': adminPhone
+        'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify(restaurant)
     }).catch(() => {});
@@ -3255,20 +3269,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateRestaurant = (id: string, updatedFields: Partial<Restaurant>) => {
-    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+    if (!isAdmin && !isSuperAdmin && !hasActiveAdminJwtSession()) {
       console.warn('Access Denied: Only an authorized Admin or Super Admin can modify restaurants.');
       return;
     }
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
-    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+    const token = getStoredAuthToken();
 
     // Persist to backend server
     fetch(`/api/admin/restaurants/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'x-admin-phone': adminPhone
+        'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify(updatedFields)
     }).catch(() => {});
@@ -3285,19 +3297,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteRestaurant = (id: string) => {
-    if (!isAdmin && !isSuperAdmin && !isAuthorizedAdminPhone(user?.phone)) {
+    if (!isAdmin && !isSuperAdmin && !hasActiveAdminJwtSession()) {
       console.warn('Access Denied: Only an authorized Admin or Super Admin can delete restaurants.');
       return;
     }
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
-    const adminPhone = user?.phone || localStorage.getItem('nuvvo_admin_phone') || '9063692135';
+    const token = getStoredAuthToken();
 
     // Persist to backend server
     fetch(`/api/admin/restaurants/${id}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'x-admin-phone': adminPhone
+        'Authorization': `Bearer ${token}`
       }
     }).catch(() => {});
 
@@ -3442,7 +3452,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearLogs = () => {
-    const hasAdminPhone = isAuthorizedAdminPhone(user?.phone);
+    const hasAdminPhone = hasActiveAdminJwtSession();
     if (!isAdmin && !isSuperAdmin && !hasAdminPhone) {
       console.warn('Access Denied: Only authorized Admin can clear activity audit logs.');
       return;
@@ -3453,7 +3463,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       action: 'Audit Trail Cleared',
       details: 'Authorized admin cleared application-managed activity audit history.',
       userRole: user?.role || 'Admin',
-      userPhone: user?.phone || '9063692135',
+      userPhone: user?.phone || 'Authorized Admin',
       timestamp: new Date().toISOString()
     };
     setLogs([resetEntry]);
@@ -3487,7 +3497,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsSavingConfirmedAction(true);
     try {
       await adminSaveConfirmation.onConfirm();
-      const currentAdminIdentity = user?.name ? `${user.name} (${user?.phone || 'Admin'})` : (user?.phone || '9063692135 [Super Admin]');
+      const currentAdminIdentity = user?.name || 'Authorized Super Admin';
       const alertItem: AdminSaveNotification = {
         id: `save_notice_${Date.now()}`,
         title: adminSaveConfirmation.title,
@@ -3514,7 +3524,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const triggerAdminSaveWarningNotice = (title: string, itemType: string, summary?: string) => {
-    const currentAdminIdentity = user?.name ? `${user.name} (${user?.phone || 'Admin'})` : (user?.phone || '9063692135 [Super Admin]');
+    const currentAdminIdentity = user?.name || 'Authorized Super Admin';
     const alertItem: AdminSaveNotification = {
       id: `save_notice_${Date.now()}`,
       title,
@@ -3557,18 +3567,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!resp.ok) {
-        // Prevent 500 error from stopping admin: fall back to Master PIN 2135
-        if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-          setOtpCode('2135');
-          addAuditLog('Admin OTP Fallback', `Server returned ${resp.status}. Admin Master PIN (2135) enabled automatically.`);
+        if (role === 'Admin') {
           return {
-            success: true,
-            sessionOtp: '2135',
-            devOtp: '2135',
-            isDevTesting: false,
-            setupNotice: 'Master PIN (2135) active for direct admin verification.',
-            smsConfigured: false,
-            expiresInSeconds: 300
+            success: false,
+            error: data?.error || 'Administrator access requires Master Code authentication on the Admin login tab.'
           };
         }
 
@@ -3584,18 +3586,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!data || !data.success) {
-        // Prevent OTP failure from stopping admin: fall back to Master PIN 2135
-        if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-          setOtpCode('2135');
-          addAuditLog('Admin OTP Fallback', `Admin Master PIN (2135) enabled automatically.`);
+        if (role === 'Admin') {
           return {
-            success: true,
-            sessionOtp: '2135',
-            devOtp: '2135',
-            isDevTesting: false,
-            setupNotice: 'Master PIN (2135) active for direct admin verification.',
-            smsConfigured: false,
-            expiresInSeconds: 300
+            success: false,
+            error: data?.error || 'Administrator access requires Master Code authentication on the Admin login tab.'
           };
         }
 
@@ -3624,22 +3618,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     } catch (e: any) {
       console.warn('Authentication server OTP fetch notice:', e?.message || e);
-      // Fallback for admin if server connection fails
-      if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-        setOtpCode('2135');
-        addAuditLog('Admin OTP Fallback', `Network exception caught. Admin Master PIN (2135) enabled automatically.`);
+      if (role === 'Admin') {
         return {
-          success: true,
-          sessionOtp: '2135',
-          devOtp: '2135',
-          isDevTesting: false,
-          setupNotice: 'Master PIN (2135) active for direct admin verification.',
-          smsConfigured: false,
-          expiresInSeconds: 300
+          success: false,
+          error: 'Network error contacting authentication server. Please retry Admin Master Code sign in.'
         };
       }
 
-      // Client session OTP fallback for customers when server is temporarily unreachable
+      // Client session OTP fallback for Franchise/Customer when server is temporarily unreachable
       const clientSessionOtp = Math.floor(100000 + Math.random() * 900000).toString();
       setOtpCode(clientSessionOtp);
       try {
@@ -3664,6 +3650,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const verifyOtpAndLogin = async (phone: string, otp: string, role: string = 'Customer'): Promise<{ success: boolean; role?: string; isAuthorizedAdmin?: boolean; error?: string }> => {
     const cleanPhone = normalizePhoneNumber(phone);
+
+    if (role === 'Admin') {
+      return await adminVerifyPin(cleanPhone, String(otp || '').trim());
+    }
 
     try {
       const challengeToken = (() => {
@@ -3703,43 +3693,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!resp.ok) {
-        // If this is the Admin phone and entered code is the Master PIN 2135 (or 9063), grant direct Super Admin access!
-        if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-          const inputOtp = String(otp || '').trim();
-          if (inputOtp === '2135' || inputOtp === '9063' || resp.status >= 500) {
-            const adminUser: User = {
-              id: `usr_admin_${cleanPhone}`,
-              name: 'Nuvvo Super Admin',
-              phone: cleanPhone,
-              email: 'admin@nuvvo.delivery',
-              addresses: [
-                {
-                  id: 'addr_admin_hq',
-                  type: 'Work',
-                  flatNo: 'Nuvvo Operations Central HQ',
-                  area: 'Chirala Central Hub',
-                  landmark: 'Near Clock Tower',
-                  city: 'Chirala',
-                  gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
-                }
-              ],
-              role: 'Super Admin',
-              isProfileComplete: true,
-              favoriteFoods: [],
-              favoriteRestaurants: [],
-              createdAt: new Date().toISOString()
-            };
-            setUser(adminUser);
-            localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
-            localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
-            setSuperAdminAuthenticated(true);
-            addAuditLog('Admin Direct Access', `Admin identity confirmed via Master PIN 2135 on ${cleanPhone}. Super Admin unlocked.`);
-            return { success: true, role: 'super_admin', isAuthorizedAdmin: true };
-          }
-        }
-
-        // If this is a Customer (NOT the Admin phone), provide graceful customer fallback so clients are NEVER blocked
-        if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
+        // Non-admin Franchise/Customer fallback so clients are never blocked by transient OTP issues
+        if (role !== 'Admin') {
           const directRes = await directLoginWithPhone(cleanPhone, role);
           if (directRes.success) {
             return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
@@ -3752,55 +3707,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
         }
         const errorMsg = data?.error || (resp.status >= 500 ? `Verification server error (HTTP ${resp.status}).` : 'Verification failed.');
-        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
+        addAuditLog('Login Failed', `Failed OTP attempt: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
 
       if (!data || !data.success) {
-        // If this is the Admin phone and entered code is the Master PIN 2135 (or 9063), grant direct Super Admin access!
-        if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-          const inputOtp = String(otp || '').trim();
-          if (inputOtp === '2135' || inputOtp === '9063') {
-            const adminUser: User = {
-              id: `usr_admin_${cleanPhone}`,
-              name: 'Nuvvo Super Admin',
-              phone: cleanPhone,
-              email: 'admin@nuvvo.delivery',
-              addresses: [
-                {
-                  id: 'addr_admin_hq',
-                  type: 'Work',
-                  flatNo: 'Nuvvo Operations Central HQ',
-                  area: 'Chirala Central Hub',
-                  landmark: 'Near Clock Tower',
-                  city: 'Chirala',
-                  gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
-                }
-              ],
-              role: 'Super Admin',
-              isProfileComplete: true,
-              favoriteFoods: [],
-              favoriteRestaurants: [],
-              createdAt: new Date().toISOString()
-            };
-            setUser(adminUser);
-            localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
-            localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
-            setSuperAdminAuthenticated(true);
-            addAuditLog('Admin Direct Access', `Admin identity confirmed via Master PIN 2135 on ${cleanPhone}. Super Admin unlocked.`);
-            return { success: true, role: 'super_admin', isAuthorizedAdmin: true };
-          }
-        }
-
-        // If this is a Customer (NOT the Admin phone), provide graceful customer fallback so clients are NEVER blocked
-        if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
+        if (role !== 'Admin') {
           const directRes = await directLoginWithPhone(cleanPhone, role);
           if (directRes.success) {
             return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
           }
         }
         const errorMsg = data?.error || 'The verification OTP code is incorrect. Please check the code and try again.';
-        addAuditLog('Login Failed', `Failed OTP attempt by phone cell ${cleanPhone}: ${errorMsg}`);
+        addAuditLog('Login Failed', `Failed OTP attempt: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
 
@@ -3808,20 +3727,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem('nuvvo_auth_token', data.token);
       }
 
-      // Check if Admin login was requested by an unauthorized phone
-      if (role === 'Admin' && !data.isAuthorizedAdmin && !isAuthorizedAdminPhone(cleanPhone)) {
-        addAuditLog('Admin Access Denied', `Cell ${cleanPhone} attempted Admin login but lacked server authorization.`);
-        return {
-          success: false,
-          error: `Access Denied: Mobile number +91 ${cleanPhone} is not configured as an authorized administrator.`
-        };
-      }
-
       let resolvedRole: 'Customer' | 'Admin' | 'Super Admin' | 'Delivery Partner' | 'Franchise' = 'Customer';
-      if (data.role === 'super_admin' || cleanPhone === '9063692135' || isAuthorizedAdminPhone(cleanPhone)) {
-        resolvedRole = 'Super Admin';
-      } else if (data.role === 'admin') {
-        resolvedRole = 'Admin';
+      const isServerAdmin = Boolean(data.isAuthorizedAdmin && (data.role === 'super_admin' || data.role === 'admin'));
+      if (isServerAdmin) {
+        resolvedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
       } else if (role === 'Delivery Partner') {
         resolvedRole = 'Delivery Partner';
       } else if (role === 'Franchise') {
@@ -3830,13 +3739,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resolvedRole = 'Customer';
       }
 
-      const isServerAdmin = !!(data.isAuthorizedAdmin || data.role === 'super_admin' || data.role === 'admin' || cleanPhone === '9063692135' || isAuthorizedAdminPhone(cleanPhone));
-
       if (isServerAdmin) {
+        const maskedAdminPhone = data.maskedPhone || data.phone || 'Protected (Server-Verified)';
         const adminUser: User = {
-          id: `usr_admin_${cleanPhone}`,
-          name: 'Nuvvo Super Admin',
-          phone: cleanPhone,
+          id: 'usr_admin_root',
+          name: resolvedRole === 'Super Admin' ? 'Nuvvo Super Admin' : 'Nuvvo Admin',
+          phone: maskedAdminPhone,
           email: 'admin@nuvvo.delivery',
           addresses: [
             {
@@ -3856,7 +3764,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           createdAt: new Date().toISOString()
         };
         setUser(adminUser);
-        localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
+        localStorage.setItem('nuvvo_registered_admin', JSON.stringify(adminUser));
         localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
         setSuperAdminAuthenticated(true);
         addAuditLog('Login Success', `${resolvedRole} authenticated and granted administrative access.`);
@@ -3909,57 +3817,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e: any) {
       console.warn('Backend verify-otp execution notice:', e?.message || e);
 
-      // Check if Admin phone is entering Master PIN 2135
-      if (cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin') {
-        const inputOtp = String(otp || '').trim();
-        if (inputOtp === '2135' || inputOtp === '9063') {
-          const adminUser: User = {
-            id: `usr_admin_${cleanPhone}`,
-            name: 'Nuvvo Super Admin',
-            phone: cleanPhone,
-            email: 'admin@nuvvo.delivery',
-            addresses: [
-              {
-                id: 'addr_admin_hq',
-                type: 'Work',
-                flatNo: 'Nuvvo Operations Central HQ',
-                area: 'Chirala Central Hub',
-                landmark: 'Near Clock Tower',
-                city: 'Chirala',
-                gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
+      // Check client fallback OTP for Franchise/Customer only
+      if (role !== 'Admin') {
+        try {
+          const storedFallback = sessionStorage.getItem('nuvvo_client_fallback_otp');
+          if (storedFallback) {
+            const parsed = JSON.parse(storedFallback);
+            if (parsed.phone === cleanPhone && String(parsed.otp).trim() === String(otp).trim() && parsed.expiresAt > Date.now()) {
+              const directRes = await directLoginWithPhone(cleanPhone, role);
+              if (directRes.success) {
+                return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
               }
-            ],
-            role: 'Super Admin',
-            isProfileComplete: true,
-            favoriteFoods: [],
-            favoriteRestaurants: [],
-            createdAt: new Date().toISOString()
-          };
-          setUser(adminUser);
-          localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
-          localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
-          setSuperAdminAuthenticated(true);
-          addAuditLog('Admin Direct Access', `Admin identity confirmed via Master PIN 2135 on ${cleanPhone}. Super Admin unlocked.`);
-          return { success: true, role: 'super_admin', isAuthorizedAdmin: true };
-        }
-      }
-
-      // Check client fallback OTP
-      try {
-        const storedFallback = sessionStorage.getItem('nuvvo_client_fallback_otp');
-        if (storedFallback) {
-          const parsed = JSON.parse(storedFallback);
-          if (parsed.phone === cleanPhone && String(parsed.otp).trim() === String(otp).trim() && parsed.expiresAt > Date.now()) {
-            const directRes = await directLoginWithPhone(cleanPhone, role);
-            if (directRes.success) {
-              return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
             }
           }
-        }
-      } catch {}
+        } catch {}
 
-      // If customer enters OTP in offline/network exception mode, grant client login
-      if (cleanPhone !== AUTHORIZED_ADMIN_PHONE && !isAuthorizedAdminPhone(cleanPhone) && role !== 'Admin') {
         const directRes = await directLoginWithPhone(cleanPhone, role);
         if (directRes.success) {
           return { success: true, role: 'normal_user', isAuthorizedAdmin: false };
@@ -3982,13 +3854,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Valid 10-digit mobile number required.' };
     }
 
-    const isAdminTarget = cleanPhone === AUTHORIZED_ADMIN_PHONE || isAuthorizedAdminPhone(cleanPhone) || role === 'Admin';
+    const isAdminTarget = role === 'Admin';
 
     if (isAdminTarget) {
       if (!masterPin) {
         return {
           success: false,
-          error: 'Administrator PIN authorization required.'
+          error: 'Administrator Master Code authorization required.'
         };
       }
       return await adminVerifyPin(cleanPhone, masterPin);
@@ -4337,7 +4209,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const setupCustomerProfile = async (data: { username: string; password: string; mobile: string; whatsappNumber?: string; whatsappOptIn?: boolean; location: string; deliveryAddress: string; landmark?: string; fullName?: string; email?: string }): Promise<{ success: boolean; user?: any; error?: string }> => {
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const token = getStoredAuthToken();
       const resp = await fetch('/api/auth/setup-profile', {
         method: 'POST',
         headers: {
@@ -4403,7 +4275,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     whatsappNumber?: string;
     whatsappOptIn?: boolean;
     rememberMe?: boolean;
-  }): Promise<{ success: boolean; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }> => {
+  }): Promise<{ success: boolean; code?: string; email?: string; requiresEmailVerification?: boolean; emailVerified?: boolean; user?: any; message?: string; error?: string }> => {
     try {
       const { rememberMe = true, ...payload } = data;
       setAuthPersistencePreference(rememberMe !== false);
@@ -4413,21 +4285,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload,
-          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+          redirectTo: getClientAppOrigin()
         })
       });
-      const resData = await resp.json().catch(() => null);
+      const rawText = await resp.text().catch(() => '');
+      let resData: any = null;
+      if (rawText) {
+        try {
+          resData = JSON.parse(rawText);
+        } catch {
+          resData = null;
+        }
+      }
       if (!resp.ok || !resData?.success) {
+        const parsedErr =
+          (typeof resData?.error === 'string' && resData.error.trim()) ||
+          (typeof resData?.message === 'string' && resData.message.trim()) ||
+          (resp.status >= 500
+            ? `Customer registration service returned an unexpected server error (HTTP ${resp.status}). Please try again.`
+            : resp.status === 404
+            ? 'Customer registration API route was not found (HTTP 404). Please verify backend deployment.'
+            : 'Unable to create customer account. Please verify your details and try again.');
+
         return {
           success: false,
-          error: resData?.error || 'Failed to create customer account. Please check your details and try again.'
+          code: resData?.code,
+          email: resData?.email,
+          requiresEmailVerification: Boolean(resData?.requiresEmailVerification),
+          error: parsedErr
         };
       }
 
-      if (resData.session?.access_token && resData.session?.refresh_token) {
+      const issuedToken: string = resData.session?.access_token || resData.token || '';
+      if (issuedToken) {
         // Clear any previous customer's in-memory/query cache before switching session
         tanstackQueryClient.clear();
         queryClient.clear();
+        clearUnscopedLegacyCustomerCache();
         setOrders([]);
         setCart([]);
         setAppliedCoupon(null);
@@ -4440,14 +4334,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setPointsToRedeem(0);
         setPointsHistory([]);
 
-        await supabase.auth.setSession({
-          access_token: resData.session.access_token,
-          refresh_token: resData.session.refresh_token
-        }).catch(() => {});
+        if (resData.session?.access_token && resData.session?.refresh_token) {
+          await supabase.auth.setSession({
+            access_token: resData.session.access_token,
+            refresh_token: resData.session.refresh_token
+          }).catch(() => {});
+        }
 
         try {
           const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
-          storage.setItem('nuvvo_auth_token', resData.session.access_token);
+          const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
+          storage.setItem('nuvvo_auth_token', issuedToken);
+          other.removeItem('nuvvo_auth_token');
         } catch {}
 
         if (resData.user) {
@@ -4472,13 +4370,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             favoriteRestaurants: [],
             createdAt: u.createdAt || new Date().toISOString()
           };
+          try {
+            const storage = rememberMe !== false ? window.localStorage : window.sessionStorage;
+            const other = rememberMe !== false ? window.sessionStorage : window.localStorage;
+            storage.setItem('nuvvo_user', JSON.stringify(mappedUser));
+            other.removeItem('nuvvo_user');
+          } catch {}
           setUser(mappedUser);
           if (mappedUser.addresses.length > 0) {
             setCurrentAddress(mappedUser.addresses[0]);
           } else {
             setCurrentAddress(null);
           }
-          addAuditLog('Customer Registered', `Customer @${u.username} created account via Supabase Auth.`);
+          addAuditLog('Customer Registered', `Customer @${u.username} created account cleanly.`);
         }
       }
 
@@ -4762,7 +4666,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           identifier: identifierOrEmail.trim(),
-          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+          redirectTo: getClientAppOrigin()
         })
       });
       const data = await resp.json().catch(() => null);
@@ -4777,7 +4681,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const requestCustomerPasswordReset = async (identifierOrEmail: string): Promise<{ success: boolean; message?: string; error?: string; retryAfterSeconds?: number; cooldownSeconds?: number }> => {
     const cleanIdentifier = identifierOrEmail.trim();
-    const redirectOrigin = typeof window !== 'undefined' ? `${window.location.origin}/?type=recovery` : undefined;
+    const redirectOrigin = getClientRecoveryRedirectUrl();
 
     try {
       const resp = await fetch('/api/auth/forgot-password', {
@@ -4785,7 +4689,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           identifier: cleanIdentifier,
-          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+          redirectTo: getClientAppOrigin()
         })
       });
       const data = await resp.json().catch(() => null);
@@ -4967,7 +4871,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteCustomerAccount = async (password: string): Promise<{ success: boolean; error?: string; message?: string }> => {
     try {
       const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-      const token = session?.access_token || localStorage.getItem('nuvvo_auth_token') || '';
+      const token = session?.access_token || getStoredAuthToken();
       const email = user?.email || '';
       const phone = user?.phone || '';
       const resp = await fetch('/api/auth/delete-account', {
@@ -4998,17 +4902,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // --- SECURE SERVER ADMIN PHONE & PIN AUTHENTICATION ---
   const adminCheckPhone = async (phone: string): Promise<{ success: boolean; promptForPin: boolean; maskedPhone?: string; error?: string }> => {
     try {
+      const normalizedInput = normalizeAdminPhoneDigits(phone);
       let resp = await fetch('/api/admin/check-phone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone })
+        body: JSON.stringify({ phone: normalizedInput })
       });
 
       if (!resp.ok && resp.status === 404) {
         resp = await fetch('/api/auth/admin-check-phone', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone })
+          body: JSON.stringify({ phone: normalizedInput })
         });
       }
 
@@ -5036,17 +4941,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const adminVerifyPin = async (phone: string, pin: string): Promise<{ success: boolean; role?: string; token?: string; error?: string }> => {
     try {
+      const normalizedInput = normalizeAdminPhoneDigits(phone);
       let resp = await fetch('/api/admin/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, pin })
+        body: JSON.stringify({ phone: normalizedInput, pin, masterCode: pin })
       });
 
       if (!resp.ok && resp.status === 404) {
         resp = await fetch('/api/auth/admin-verify-pin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, pin })
+          body: JSON.stringify({ phone: normalizedInput, pin, masterCode: pin })
         });
       }
 
@@ -5054,19 +4960,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!resp.ok || !data?.success) {
         return {
           success: false,
-          error: data?.error || 'PIN verification failed. Please enter the correct PIN.'
+          error: data?.error || 'Master Code verification failed. Please enter the correct Master Code.'
         };
       }
 
-      if (data.token) {
-        localStorage.setItem('nuvvo_auth_token', data.token);
-      }
-
-      const cleanPhone = normalizePhoneNumber(phone);
+      const maskedAdminPhone = data.maskedPhone || data.phone || 'Protected (Server-Verified)';
+      const mappedRole = data.role === 'super_admin' ? 'Super Admin' : 'Admin';
       const adminUser: User = {
-        id: `usr_admin_${cleanPhone}`,
-        name: 'Nuvvo Super Admin',
-        phone: cleanPhone,
+        id: 'usr_admin_root',
+        name: mappedRole === 'Super Admin' ? 'Nuvvo Super Admin' : 'Nuvvo Admin',
+        phone: maskedAdminPhone,
         email: 'admin@nuvvo.delivery',
         addresses: [
           {
@@ -5079,22 +4982,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             gpsCoordinates: { lat: 15.8281, lng: 80.3544 }
           }
         ],
-        role: 'Super Admin',
+        role: mappedRole,
         isProfileComplete: true,
         favoriteFoods: [],
         favoriteRestaurants: [],
         createdAt: new Date().toISOString()
       };
+
+      try {
+        // Store verified Admin JWT first so any local Supabase signOut listener respects active nuvvo_jwt_ session
+        if (data.token) {
+          localStorage.setItem('nuvvo_auth_token', data.token);
+        }
+        localStorage.setItem('nuvvo_registered_admin', JSON.stringify(adminUser));
+        localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
+        localStorage.setItem('nuvvo_auth_role', 'Admin');
+        window.sessionStorage.removeItem('nuvvo_auth_token');
+        window.sessionStorage.removeItem('nuvvo_user');
+      } catch {}
+
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+      clearAllSupabaseAuthStorage();
+
       setUser(adminUser);
-      localStorage.setItem(`nuvvo_registered_${cleanPhone}`, JSON.stringify(adminUser));
-      localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
       setSuperAdminAuthenticated(true);
-      addAuditLog('Admin Direct Access', `Admin identity confirmed strictly by server on ${cleanPhone}. Super Admin unlocked.`);
+      addAuditLog('Admin Direct Access', `Admin identity and Master Code verified by server. ${mappedRole} unlocked.`);
       return { success: true, role: data.role, token: data.token };
     } catch (err: any) {
       return {
         success: false,
-        error: err?.message || 'Network error during PIN authorization.'
+        error: err?.message || 'Network error during Master Code authorization.'
       };
     }
   };
@@ -7290,7 +7207,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isAdmin && !isSuperAdmin) {
       return { success: false, message: 'Access Denied: Administrative role authorization required.' };
     }
-    const token = localStorage.getItem('nuvvo_auth_token') || '';
+    const token = getStoredAuthToken();
     try {
       const resp = await fetch('/api/admin/reset-data', {
         method: 'POST',
@@ -7391,20 +7308,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('Franchise Status Changed', `Inquiry application ID ${id} transitioned status state to ${status}`);
   };
 
-  // Super Admin validation
-  const verifySuperAdminOtp = (otp: string): boolean => {
-    const adminPasskey = '2135';
-    if (otp === adminPasskey || otp === '9063') {
-      setSuperAdminAuthenticated(true);
-      addAuditLog('Super Admin Verified', `Elevated systemic parameters cleared via passkey validation`);
-      return true;
+  // Super Admin validation (verified strictly on server via Master Code)
+  const verifySuperAdminOtp = async (otp: string, phone?: string): Promise<boolean> => {
+    const cleanCode = String(otp || '').trim();
+    if (!cleanCode) return false;
+    if (phone) {
+      const res = await adminVerifyPin(phone, cleanCode);
+      return Boolean(res.success);
     }
     return false;
   };
 
   const authenticateSuperAdmin = () => {
-    setSuperAdminAuthenticated(true);
-    addAuditLog('Super Admin Session Opened', `Super Admin console access granted directly.`);
+    if (hasActiveAdminJwtSession()) {
+      setSuperAdminAuthenticated(true);
+      addAuditLog('Super Admin Session Opened', 'Super Admin console access confirmed via active server token.');
+    }
   };
 
   const wipeAllData = () => {
@@ -7470,12 +7389,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  // Live support Click to WhatsApp Redirection
+  // Live support Click to WhatsApp Redirection (uses optional public support env; never leaks admin mobile)
   const clickToWhatsAppSupport = (message: string) => {
-    const targetNo = '919063692135';
+    const publicSupportNo = String((import.meta as any).env?.VITE_SUPPORT_WHATSAPP_NUMBER || '').replace(/\D/g, '');
     const escapedText = encodeURIComponent(`[Nuvvo Support Alert] ${message}`);
-    const whatsappUrl = `https://wa.me/${targetNo}?text=${escapedText}`;
-    addAuditLog('WhatsApp Hook Called', `Redirected query token to Nuvvo Helpline: ${targetNo}`);
+    const whatsappUrl = publicSupportNo
+      ? `https://wa.me/${publicSupportNo}?text=${escapedText}`
+      : `https://wa.me/?text=${escapedText}`;
+    addAuditLog('WhatsApp Hook Called', 'Opened Nuvvo support WhatsApp inquiry.');
     window.open(whatsappUrl, '_blank');
   };
 
@@ -7489,7 +7410,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customerPhone?: string;
     customNote?: string;
   } | string) => {
-    const targetNo = '919063692135';
+    const publicSupportNo = String((import.meta as any).env?.VITE_SUPPORT_WHATSAPP_NUMBER || '').replace(/\D/g, '');
     let messageText = '';
 
     if (typeof details === 'string') {
@@ -7512,8 +7433,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const escapedText = encodeURIComponent(messageText);
-    const whatsappUrl = `https://wa.me/${targetNo}?text=${escapedText}`;
-    addAuditLog('WhatsApp Food Booking', `Redirected food booking inquiry to WhatsApp: ${targetNo}`);
+    const whatsappUrl = publicSupportNo
+      ? `https://wa.me/${publicSupportNo}?text=${escapedText}`
+      : `https://wa.me/?text=${escapedText}`;
+    addAuditLog('WhatsApp Food Booking', 'Opened WhatsApp food booking inquiry.');
     window.open(whatsappUrl, '_blank');
   };
 

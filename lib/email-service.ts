@@ -7,10 +7,13 @@
  */
 
 import nodemailer from "nodemailer";
+import { resolveCanonicalAppUrl } from "./auth-utils";
 import fs from "fs";
 import path from "path";
 
 const SMTP_CONFIG_FILE = path.join(process.cwd(), '.server_smtp_config.json');
+
+let runtimeSmtpConfig: Partial<SmtpConfig> | null = null;
 
 export interface SmtpConfig {
   user: string;
@@ -23,16 +26,17 @@ export interface SmtpConfig {
 export function loadSmtpConfig(): SmtpConfig {
   let fileConfig: Partial<SmtpConfig> = {};
   try {
-    if (fs.existsSync(SMTP_CONFIG_FILE)) {
+    if (!process.env.VERCEL && fs.existsSync(SMTP_CONFIG_FILE)) {
       fileConfig = JSON.parse(fs.readFileSync(SMTP_CONFIG_FILE, 'utf8')) || {};
     }
   } catch {}
 
-  const user = (fileConfig.user || process.env.EMAIL_USER || process.env.SMTP_USER || "officialnuvvo@gmail.com").trim();
-  const pass = (fileConfig.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
-  const host = (fileConfig.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
-  const port = Number(fileConfig.port || process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
-  const from = (fileConfig.from || process.env.EMAIL_FROM || process.env.SMTP_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
+  const activeConfig = runtimeSmtpConfig || fileConfig;
+  const user = (activeConfig.user || fileConfig.user || process.env.EMAIL_USER || process.env.SMTP_USER || "").trim();
+  const pass = (activeConfig.pass || fileConfig.pass || process.env.EMAIL_PASS || process.env.SMTP_PASS || "").trim();
+  const host = (activeConfig.host || fileConfig.host || process.env.SMTP_HOST || "smtp.gmail.com").trim();
+  const port = Number(activeConfig.port || fileConfig.port || process.env.SMTP_PORT) || (host.includes("gmail") ? 465 : 587);
+  const from = (activeConfig.from || fileConfig.from || process.env.EMAIL_FROM || process.env.SMTP_FROM || user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>").trim();
 
   return { user, pass, host, port, from };
 }
@@ -44,8 +48,9 @@ export function saveSmtpConfig(config: Partial<SmtpConfig>): SmtpConfig {
     pass: (config.pass ?? current.pass).trim(),
     host: (config.host ?? current.host).trim() || "smtp.gmail.com",
     port: Number(config.port) || current.port || 465,
-    from: (config.from ?? current.from).trim() || current.user
+    from: (config.from ?? current.from).trim() || current.user || "Nuvvo Food Delivery <no-reply@nuvvo.delivery>"
   };
+  runtimeSmtpConfig = updated;
   try {
     if (!process.env.VERCEL) {
       fs.writeFileSync(SMTP_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf8');
@@ -379,6 +384,7 @@ export interface OrderEmailPayload {
   deliveryInstructions?: string;
   date?: string;
   eta?: number;
+  appBaseUrl?: string;
 }
 
 /**
@@ -403,8 +409,11 @@ export async function sendOrderConfirmationEmail(payload: OrderEmailPayload): Pr
     deliveryAddress,
     deliveryInstructions,
     date = new Date().toISOString(),
-    eta = 25
+    eta = 25,
+    appBaseUrl
   } = payload;
+  const resolvedBaseUrl = resolveCanonicalAppUrl(undefined, appBaseUrl);
+  const trackingLink = `${resolvedBaseUrl}/?orderId=${encodeURIComponent(orderId)}&track=true`;
 
   if (!customerEmail || !customerEmail.includes("@")) {
     return {
@@ -575,7 +584,7 @@ export async function sendOrderConfirmationEmail(payload: OrderEmailPayload): Pr
               <table width="100%" border="0" cellspacing="0" cellpadding="0">
                 <tr>
                   <td align="center">
-                    <a href="https://ais-dev-doqwgurnhhm6f2nyj4d7mf-343969814096.asia-southeast1.run.app" style="display: inline-block; background: linear-gradient(135deg, #ea580c, #f97316); color: #ffffff; text-decoration: none; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 12px; box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);">
+                    <a href="${trackingLink}" style="display: inline-block; background: linear-gradient(135deg, #ea580c, #f97316); color: #ffffff; text-decoration: none; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 12px; box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);">
                       Track Your Live Delivery →
                     </a>
                   </td>

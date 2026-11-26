@@ -17,6 +17,7 @@ import {
 import { OrderStatus } from '../types';
 import { APIProvider, Map, AdvancedMarker, Pin, InfoWindow, MapControl, ControlPosition, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 import WhatsAppOrderConfirmation from './WhatsAppOrderConfirmation';
+import { getClientAppOrigin } from '../utils/appUrl';
 
 // Stable GPS Seed coordinates for Chirala area (Center: 15.8246, 80.3533)
 const CHIRALA_CENTER = { lat: 15.8246, lng: 80.3533 };
@@ -309,19 +310,13 @@ function LiveRouteTracker({
             </div>
 
             <div className="flex gap-1.5 mt-2">
-              <a 
-                href="tel:+919063692135"
-                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition"
-              >
-                📞 Helpline
-              </a>
               {onOpenChat && (
                 <button
                   type="button"
                   onClick={onOpenChat}
                   className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-bold text-[10px] py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition cursor-pointer"
                 >
-                  💬 Message
+                  💬 Support Chat
                 </button>
               )}
             </div>
@@ -398,7 +393,7 @@ export default function TrackingScreen() {
   const hasAssignedRider = Boolean(activeTrackingOrder?.deliveryPartnerId || assignedPartner);
 
   const riderName = activeTrackingOrder?.deliveryPartnerName || assignedPartner?.name || 'Delivery Partner';
-  const riderPhone = '9063692135';
+  const riderPhone = assignedPartner?.phone ? String(assignedPartner.phone).replace(/\D/g, '') : '';
   const riderVehicle = activeTrackingOrder?.deliveryPartnerVehicle || (assignedPartner ? `${assignedPartner.vehicleType || 'Bike'} (${assignedPartner.bikeNumber || ''})` : 'Nuvvo Delivery Fleet');
   const riderAvatar = activeTrackingOrder?.deliveryPartnerAvatar || assignedPartner?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
   const riderRating = activeTrackingOrder?.deliveryPartnerRating || assignedPartner?.rating || 5.0;
@@ -484,7 +479,9 @@ export default function TrackingScreen() {
   const [shareError, setShareError] = useState(false);
 
   const handleShareTrackingLink = async () => {
-    const trackingUrl = `${window.location.origin}${window.location.pathname}?orderId=${activeTrackingOrder?.id}&track=true`;
+    const trackingOrigin = getClientAppOrigin();
+    const trackingPath = typeof window !== 'undefined' && window.location.pathname ? window.location.pathname : '/';
+    const trackingUrl = `${trackingOrigin}${trackingPath}?orderId=${activeTrackingOrder?.id}&track=true`;
     
     const shareData = {
       title: `🍔 Track my Nuvvo Feast Live!`,
@@ -1243,12 +1240,22 @@ export default function TrackingScreen() {
                       <MessageSquare className="w-3 h-3" /> Instructions
                     </button>
 
-                    <a
-                      href="tel:+919063692135"
-                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition"
-                    >
-                      <Phone className="w-3 h-3" /> Helpline
-                    </a>
+                    {riderPhone ? (
+                      <a
+                        href={`tel:+91${riderPhone}`}
+                        className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition"
+                      >
+                        <Phone className="w-3 h-3" /> Call Rider
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => clickToWhatsAppSupport(`Hi Nuvvo Support, I need assistance with my order #${activeTrackingOrder.id.slice(-6).toUpperCase()}.`)}
+                        className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-[10.5px] py-1.5 px-2.5 rounded-xl flex items-center gap-1 shadow transition cursor-pointer"
+                      >
+                        <Phone className="w-3 h-3" /> Support
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1655,7 +1662,7 @@ export default function TrackingScreen() {
                   <div className="flex items-center gap-1.5 mt-1 text-xs">
                     <span className="text-zinc-400 font-bold text-[10px] uppercase">Order Support:</span>
                     <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-lg border border-emerald-200/60 dark:border-emerald-800/40">
-                      Protected Relay (+91 9063692135)
+                      Protected Relay (In-App Order Support)
                     </span>
                   </div>
                 </div>
@@ -1672,23 +1679,33 @@ export default function TrackingScreen() {
                   <MessageSquare className="w-4 h-4" /> Message
                 </button>
 
-                <a 
-                  href="tel:+919063692135"
-                  className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
-                  title="Call Nuvvo Dispatch Helpline"
-                >
-                  <Phone className="w-4 h-4" /> Helpline
-                </a>
+                {riderPhone ? (
+                  <a 
+                    href={`tel:+91${riderPhone}`}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
+                    title="Call Assigned Rider"
+                  >
+                    <Phone className="w-4 h-4" /> Call Rider
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage('account')}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 transition-all cursor-pointer text-center"
+                    title="Open Nuvvo Support Desk"
+                  >
+                    <Phone className="w-4 h-4" /> Support
+                  </button>
+                )}
 
-                <a 
-                  href={`https://wa.me/919063692135?text=${encodeURIComponent(`Hi Nuvvo Support, I need assistance with my order #${activeTrackingOrder.id.slice(-6).toUpperCase()}.`)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => clickToWhatsAppSupport(`Hi Nuvvo Support, I need assistance with my order #${activeTrackingOrder.id.slice(-6).toUpperCase()}.`)}
                   className="bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-black text-xs py-2.5 px-2 rounded-2xl flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer text-center"
                   title="WhatsApp Nuvvo Order Support"
                 >
                   <Send className="w-3.5 h-3.5" /> WhatsApp
-                </a>
+                </button>
               </div>
 
               {/* Customer Checkout Drop-off Notes */}
@@ -1919,7 +1936,7 @@ export default function TrackingScreen() {
               Verified Order Tracking
             </h4>
             <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Live stage progression, ETA countdown, and protected Nuvvo dispatch support (+91 9063692135).
+              Live stage progression, ETA countdown, and protected Nuvvo dispatch support.
             </p>
           </div>
           <span className="shrink-0 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase">
@@ -2159,7 +2176,7 @@ export default function TrackingScreen() {
       </div>
 
       {/* FLOATING ACTION CHAT SUPPORT TRIGGER BUTTON */}
-      <div className="fixed bottom-36 right-4 md:bottom-40 md:right-6 z-50 flex flex-col items-end gap-3">
+      <div className="fixed bottom-24 left-4 z-30 flex flex-col items-start gap-3">
         {/* Unread Pill notification when chat is closed */}
         {!isChatOpen && (unreadDriverCount + unreadRestaurantCount > 0) && (
           <div className="bg-rose-500 border border-white dark:border-zinc-900 text-white text-[9.5px] font-black rounded-full px-2.5 py-1 shadow-md animate-bounce select-none">
@@ -2234,11 +2251,11 @@ export default function TrackingScreen() {
             )}
 
             <div className="flex items-center gap-1">
-              {activeTab === 'driver' && (
+              {activeTab === 'driver' && riderPhone && (
                 <a
-                  href="tel:+919063692135"
+                  href={`tel:+91${riderPhone}`}
                   className="p-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 transition cursor-pointer"
-                  title="Call Nuvvo Dispatch Helpline"
+                  title="Call Assigned Rider"
                 >
                   <Phone className="w-4 h-4" />
                 </a>

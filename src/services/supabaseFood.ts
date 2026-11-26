@@ -2,6 +2,7 @@ import { supabase } from '../utils/supabase/client';
 import { FoodItem, VegIndicator } from '../types';
 import { queryClient, fetchWithCache } from '../utils/apiCache';
 import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateFoodCatalog } from '../utils/tanstackQuery';
+import { getStoredAuthToken } from '../config/authConfig';
 
 export interface SupabaseFoodRow {
   id: string | number;
@@ -167,7 +168,7 @@ export async function insertFoodItemToSupabase(item: Partial<FoodItem>): Promise
   invalidateFoodCache();
   // First attempt: Server API which manages Supabase insertion and persistent storage
   try {
-    const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+    const token = getStoredAuthToken();
     const res = await fetch('/api/admin/dishes', {
       method: 'POST',
       headers: {
@@ -243,7 +244,7 @@ export async function updateFoodItemInSupabase(
 }> {
   // First attempt: Server API endpoint
   try {
-    const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+    const token = getStoredAuthToken();
     const res = await fetch(`/api/admin/dishes/${id}`, {
       method: 'PUT',
       headers: {
@@ -306,7 +307,7 @@ export async function deleteFoodItemFromSupabase(id: string): Promise<{
 }> {
   invalidateFoodCache();
   try {
-    const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+    const token = getStoredAuthToken();
     await fetch(`/api/admin/dishes/${id}`, {
       method: 'DELETE',
       headers: {

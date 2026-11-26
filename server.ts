@@ -34,11 +34,19 @@ import adminVerifyHandler from "./lib/handlers/admin/verify";
 import verifyEmailHandler from "./lib/handlers/verify-email";
 import verifySmtpHandler from "./lib/handlers/verify-smtp";
 import { 
+  AUTHORIZED_ADMIN_PHONE,
+  SESSION_SECRET,
+  createSignedSessionJwt,
+  verifySignedSessionJwt,
   verifyAdminPin, 
+  verifyAdminMasterCode,
   isAuthorizedAdminAccountPhone,
+  isMasterAdminPhone,
+  maskAdminPhoneDisplay,
   normalizePhone,
   resolveCallerIdentity,
-  isOrderOwnedByCaller
+  isOrderOwnedByCaller,
+  resolveCanonicalAppUrl
 } from "./lib/auth-utils";
 import { 
   sendOrderConfirmationWhatsApp,
@@ -82,13 +90,8 @@ const supabaseServer = new Proxy({} as ReturnType<typeof createServerClient>, {
   }
 });
 
-// Protected administrator identity stored securely on the server
-// The client never receives or inspects this value.
-const AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || '9063692135';
-
-// Stable cryptographic secret for signing session and OTP challenge tokens
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || 'nuvvo_production_secure_secret_chirala_2026';
-if (!process.env.SESSION_SECRET && (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production')) {
+// Keep cryptographic secret check (actual SESSION_SECRET and AUTHORIZED_ADMIN_PHONE live in ./lib/auth-utils)
+if (!process.env.SESSION_SECRET && !process.env.JWT_SECRET && (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production')) {
   console.warn('[SECURITY NOTICE] SESSION_SECRET is not explicitly set in environment variables. For maximum cryptographic security, set SESSION_SECRET in your Vercel Project Settings.');
 }
 
@@ -228,25 +231,10 @@ function persistServerOrders(map: Map<string, any>) {
 
 const serverOrders = loadServerOrders();
 
-interface SessionPayload {
-  phone: string;
-  role: 'normal_user' | 'admin' | 'super_admin';
-  createdAt: number;
-  exp: number;
-}
-
 export function createSignedSessionToken(phone: string, role: 'normal_user' | 'admin' | 'super_admin'): string {
-  const payload: SessionPayload = {
-    phone,
-    role,
-    createdAt: Date.now(),
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days validity
-  };
-  const payloadStr = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payloadStr).digest('base64url');
-  const token = `nuvvo_jwt_${payloadStr}.${signature}`;
-  
-  serverSessions.set(token, { phone, role, createdAt: payload.createdAt });
+  const cleanPhone = normalizePhone(phone) || phone;
+  const token = createSignedSessionJwt(cleanPhone, role, { phone: cleanPhone });
+  serverSessions.set(token, { phone: cleanPhone, role, createdAt: Date.now() });
   persistSessions(serverSessions);
   return token;
 }
@@ -254,29 +242,17 @@ export function createSignedSessionToken(phone: string, role: 'normal_user' | 'a
 export function verifySignedSessionToken(token: string): { valid: boolean; phone?: string; role?: 'normal_user' | 'admin' | 'super_admin' } {
   if (!token) return { valid: false };
 
-  if (token.startsWith('nuvvo_jwt_')) {
-    try {
-      const raw = token.replace('nuvvo_jwt_', '');
-      const dotIndex = raw.lastIndexOf('.');
-      if (dotIndex === -1) return { valid: false };
-      const payloadStr = raw.substring(0, dotIndex);
-      const signature = raw.substring(dotIndex + 1);
-      const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadStr).digest('base64url');
-      if (signature.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
-        return { valid: false };
-      }
-      const payload: SessionPayload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf8'));
-      if (Date.now() > payload.exp) {
-        return { valid: false };
-      }
-      return { valid: true, phone: payload.phone, role: payload.role };
-    } catch {
-      return { valid: false };
-    }
+  const jwtCheck = verifySignedSessionJwt(token);
+  if (jwtCheck.valid && jwtCheck.role) {
+    return {
+      valid: true,
+      phone: jwtCheck.phone || jwtCheck.payload?.phone || jwtCheck.payload?.sub,
+      role: jwtCheck.role
+    };
   }
 
-  // Legacy in-memory session token fallback
-  if (serverSessions.has(token)) {
+  // Legacy in-memory session token fallback (non-JWT tokens only)
+  if (!token.startsWith('nuvvo_jwt_') && serverSessions.has(token)) {
     const s = serverSessions.get(token)!;
     return { valid: true, phone: s.phone, role: s.role };
   }
@@ -1362,7 +1338,10 @@ Current User Query: ${message}`;
       }
 
       const { sendOrderConfirmationEmail } = await import("./lib/email-service");
-      const result = await sendOrderConfirmationEmail(payload);
+      const result = await sendOrderConfirmationEmail({
+        ...payload,
+        appBaseUrl: resolveCanonicalAppUrl(req)
+      });
       return res.status(200).json(result);
     } catch (err: any) {
       console.error("[Order Confirmation Email Endpoint Error]:", err?.message || err);
@@ -1518,7 +1497,7 @@ Current User Query: ${message}`;
     }
   });
 
-  app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
+  app.post(["/api/auth/verify-otp", "/auth/verify-otp"], async (req, res) => {
     try {
       const { phone, otp, requestedRole, challengeToken } = req.body || {};
       if (!phone) {
@@ -1536,16 +1515,23 @@ Current User Query: ${message}`;
       }
 
       const inputCode = String(otp || '').trim();
-      if (!inputCode || inputCode.length < 4 || inputCode.length > 6) {
-        return res.status(400).json({ success: false, error: "A valid verification OTP code is required (6 digits)." });
+      if (!inputCode || inputCode.length < 4 || inputCode.length > 32) {
+        return res.status(400).json({ success: false, error: "A valid verification code is required." });
       }
 
       let isVerified = false;
       let isExpired = false;
 
-      // For authorized admin account, verify against PBKDF2 hashed PIN with rate limiting
+      // For authorized admin account, verify against PBKDF2 hashed Master Code with rate limiting
       if (isAuthorizedAdminAccountPhone(cleanPhone)) {
-        const pinCheck = verifyAdminPin(cleanPhone, inputCode);
+        const pinCheck = await verifyAdminMasterCode(cleanPhone, inputCode);
+        if (pinCheck.locked) {
+          return res.status(429).json({
+            success: false,
+            locked: true,
+            error: pinCheck.message || "Account temporarily locked due to repeated failed attempts."
+          });
+        }
         if (pinCheck.verified) {
           isVerified = true;
         }
@@ -1654,24 +1640,19 @@ Current User Query: ${message}`;
         });
       }
 
-      // Strictly enforce role: ONLY verified admin phone with valid OTP/PIN gets super_admin
-      // Never bypass OTP or grant admin access without verification!
-      let role: 'normal_user' | 'admin' | 'super_admin' = 'normal_user';
-      if (cleanPhone === AUTHORIZED_ADMIN_PHONE) {
-        role = 'super_admin';
-      } else {
-        role = 'normal_user';
-      }
+      // Strictly enforce role: ONLY verified admin phone with valid OTP/Master Code gets super_admin
+      const role: 'normal_user' | 'admin' | 'super_admin' = isMasterAdminPhone(cleanPhone) ? 'super_admin' : 'normal_user';
 
       // Generate stateless HMAC-signed session token
       const token = createSignedSessionToken(cleanPhone, role);
+      const responsePhone = role === 'normal_user' ? cleanPhone : maskAdminPhoneDisplay(cleanPhone);
 
       return res.json({
         success: true,
         token,
         role,
         isAuthorizedAdmin: role === 'super_admin',
-        phone: cleanPhone
+        phone: responsePhone
       });
     } catch (err: any) {
       console.warn("[OTP Notice] Verification error in /api/auth/verify-otp:", err?.message || err);
@@ -1700,10 +1681,12 @@ Current User Query: ${message}`;
     if (!verified.valid) {
       return res.json({ role: 'normal_user', isAuthorizedAdmin: false });
     }
+    const isAuthAdmin = verified.role === 'admin' || verified.role === 'super_admin';
     res.json({
       role: verified.role,
-      phone: verified.phone,
-      isAuthorizedAdmin: verified.role === 'admin' || verified.role === 'super_admin'
+      phone: isAuthAdmin ? maskAdminPhoneDisplay(verified.phone) : verified.phone,
+      maskedPhone: isAuthAdmin ? maskAdminPhoneDisplay(verified.phone) : undefined,
+      isAuthorizedAdmin: isAuthAdmin
     });
   });
 
@@ -2728,12 +2711,8 @@ Current User Query: ${message}`;
       const customerPhone = String(order.customer_phone || order.customerPhone || '9876543210');
       const customerId = String(order.customer_id || order.customerId || '');
 
-      // Resolve application base URL for callbacks & browser redirects
-      const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-      const host = req.headers['x-forwarded-host'] || req.headers.host;
-      const origin = req.headers.origin;
-      const detectedUrl = origin ? String(origin) : `${proto}://${host}`;
-      const appBaseUrl = process.env.APP_URL || detectedUrl;
+      // Resolve canonical application base URL for callbacks & browser redirects
+      const appBaseUrl = resolveCanonicalAppUrl(req);
 
       // Initiate PhonePe Standard Checkout session
       const initiateResult = await createPhonePePaymentRequest(
@@ -3173,7 +3152,7 @@ Current User Query: ${message}`;
           id: r.id,
           orderId: r.order_id,
           recipientRole: r.recipient_role,
-          recipientMasked: r.recipient_role === 'admin' ? '+91 ••••••2135' : maskPhone(r.recipient),
+          recipientMasked: r.recipient_role === 'admin' ? '+91 ••••••••35' : maskPhone(r.recipient),
           notificationType: r.notification_type,
           templateName: r.template_name,
           status: r.status,
@@ -3303,35 +3282,47 @@ Current User Query: ${message}`;
         skippedNoConsent: notifications.filter(n => n.status === 'skipped_no_consent').length
       };
 
+      const maskedAdminLabel = '+91 ••••••••35';
+      const sanitizeAdminNotif = (n: any) =>
+        n && n.recipient_role === 'admin'
+          ? { ...n, recipient: maskedAdminLabel }
+          : n;
+      const sanitizedTemplates = (templates || []).map((t: any) => ({
+        ...t,
+        description: typeof t?.description === 'string'
+          ? t.description.replace(/(\+?91[\s-]?)?9063692135/g, maskedAdminLabel)
+          : t?.description
+      }));
+
       const recentFailedNotifications = recentFailed24hList.slice(0, 5).map(n => ({
         id: n.id,
         orderId: n.order_id,
         recipientRole: n.recipient_role,
-        recipient: n.recipient,
+        recipient: n.recipient_role === 'admin' ? maskedAdminLabel : n.recipient,
         templateName: n.template_name,
         errorMessage: n.error_message,
         timestamp: n.failed_at || n.updated_at || n.created_at
       }));
 
-      const baseAppUrl = process.env.APP_URL
-        ? process.env.APP_URL.replace(/\/+$/, '')
-        : `${req.protocol}://${req.get('host')}`;
+      const baseAppUrl = resolveCanonicalAppUrl(req);
 
       return res.json({
         success: true,
         ...configStatus,
+        businessRecipientMasked: maskedAdminLabel,
+        adminWhatsappNumber: maskedAdminLabel,
         webhookUrl: `${baseAppUrl}/api/webhooks/whatsapp`,
-        templates,
+        templates: sanitizedTemplates,
         summaryCounts,
         recentFailedNotifications,
-        latestAdminNotification: adminNotifs[0] || null,
+        latestAdminNotification: adminNotifs[0] ? sanitizeAdminNotif(adminNotifs[0]) : null,
         latestCustomerNotification: customerNotifs[0] || null,
         lastError: failedNotif
           ? {
               id: failedNotif.id,
               orderId: failedNotif.order_id,
               recipientRole: failedNotif.recipient_role,
-              recipient: failedNotif.recipient,
+              recipient: failedNotif.recipient_role === 'admin' ? maskedAdminLabel : failedNotif.recipient,
               message: failedNotif.error_message,
               timestamp: failedNotif.failed_at || failedNotif.updated_at
             }
@@ -3345,7 +3336,9 @@ Current User Query: ${message}`;
   app.get("/api/admin/order-notifications", requireAdminAuth, async (req, res) => {
     try {
       const orderId = req.query?.orderId ? String(req.query.orderId) : undefined;
-      const notifications = await listOrderNotifications({ orderId, limit: 150 });
+      const notifications = (await listOrderNotifications({ orderId, limit: 150 })).map(n =>
+        n && n.recipient_role === 'admin' ? { ...n, recipient: '+91 ••••••••35' } : n
+      );
       return res.json({ success: true, notifications });
     } catch (err: any) {
       return res.json({ success: true, notifications: [], error: err?.message });
@@ -3421,10 +3414,52 @@ Current User Query: ${message}`;
   });
 
   // --- APP SETTINGS SUPABASE PERSISTENCE APIS ---
-  const serverSettings = new Map<string, any>();
+  const SETTINGS_STORE_FILE = path.join(process.cwd(), '.server_settings.json');
+  const loadServerSettingsMap = (): Map<string, any> => {
+    const map = new Map<string, any>();
+    try {
+      if (!process.env.VERCEL && fs.existsSync(SETTINGS_STORE_FILE)) {
+        const parsed = JSON.parse(fs.readFileSync(SETTINGS_STORE_FILE, 'utf8'));
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            map.set(k, v);
+          }
+        }
+      }
+    } catch {}
+    return map;
+  };
+  const persistServerSettingsMap = (map: Map<string, any>) => {
+    try {
+      if (process.env.VERCEL) return;
+      const obj: Record<string, any> = {};
+      for (const [k, v] of map.entries()) {
+        obj[k] = v;
+      }
+      fs.writeFileSync(SETTINGS_STORE_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch {}
+  };
+  const isSensitiveSettingKey = (rawKey: string): boolean => {
+    const lower = String(rawKey || '').trim().toLowerCase();
+    return (
+      lower.startsWith('account_') ||
+      lower.includes('master_code') ||
+      lower.includes('master_pin') ||
+      lower.includes('security_pin') ||
+      lower.includes('smtp') ||
+      lower.includes('secret') ||
+      lower.includes('password') ||
+      lower === 'customer_usernames'
+    );
+  };
+  const serverSettings = loadServerSettingsMap();
 
   app.get("/api/settings/:key", async (req, res) => {
     const { key } = req.params;
+    if (isSensitiveSettingKey(String(key))) {
+      return res.status(403).json({ success: false, error: "Forbidden: Internal setting key." });
+    }
+
     try {
       const { client } = getAdminSupabaseServerClient();
       if (client) {
@@ -3435,7 +3470,7 @@ Current User Query: ${message}`;
           .maybeSingle();
 
         if (!error && data && data.value !== undefined) {
-          return res.json({ success: true, key: data.key, value: data.value, setting: data });
+          return res.json({ success: true, key: data.key, value: data.value, found: true, setting: data });
         }
       }
     } catch (e: any) {
@@ -3444,16 +3479,19 @@ Current User Query: ${message}`;
 
     if (serverSettings.has(String(key))) {
       const cached = serverSettings.get(String(key));
-      return res.json({ success: true, key, value: cached.value, setting: cached });
+      return res.json({ success: true, key, value: cached.value, found: true, setting: cached });
     }
 
-    return res.status(404).json({ success: false, error: `Setting ${key} not found` });
+    return res.json({ success: true, key, value: null, found: false });
   });
 
   app.post("/api/settings", requireAdminAuth, async (req, res) => {
     const { key, value, description } = req.body;
     if (!key || value === undefined) {
       return res.status(400).json({ success: false, error: "Key and value are required." });
+    }
+    if (isSensitiveSettingKey(String(key))) {
+      return res.status(403).json({ success: false, error: "Forbidden: Internal setting key cannot be overwritten here." });
     }
 
     const payload = {
@@ -3464,8 +3502,9 @@ Current User Query: ${message}`;
       updated_by: (req as any).user?.phone || 'admin'
     };
 
-    // Cache locally immediately
+    // Persist locally immediately
     serverSettings.set(String(key), payload);
+    persistServerSettingsMap(serverSettings);
 
     try {
       const { client } = getAdminSupabaseServerClient();
@@ -3476,11 +3515,11 @@ Current User Query: ${message}`;
           .select();
 
         if (error) {
-          console.warn(`[Settings POST] Supabase app_settings table notice (run migration):`, error.message);
-          return res.json({ 
-            success: true, 
-            setting: payload, 
-            notice: "Cached in server memory. Run supabase_production_migration.sql to enable permanent database storage." 
+          console.warn(`[Settings POST] Supabase app_settings table notice (saved to local store):`, error.message);
+          return res.json({
+            success: true,
+            setting: payload,
+            notice: "Saved persistently on backend server."
           });
         }
 
@@ -3488,7 +3527,7 @@ Current User Query: ${message}`;
       }
     } catch (e: any) {
       console.warn(`[Settings POST] Exception writing to Supabase:`, e?.message);
-      return res.json({ success: true, setting: payload, notice: "Cached in server memory" });
+      return res.json({ success: true, setting: payload, notice: "Saved persistently on backend server." });
     }
 
     return res.json({ success: true, setting: payload });

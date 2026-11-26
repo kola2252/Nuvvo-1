@@ -9,17 +9,16 @@
  */
 
 import {
+  AUTHORIZED_ADMIN_PHONE,
   parseRequestBody,
   sendJsonResponse,
-  verifyAdminPin,
+  verifyAdminMasterCode,
   hashPassword,
-  setAdminPinHash,
+  saveAdminMasterCodeHash,
   verifySignedSessionJwt
 } from "../../auth-utils";
-import { getAdminSupabaseServerClient } from "../../../src/utils/supabase/server";
 
 export default async function handler(req: any, res: any) {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -29,14 +28,16 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    // 1. Authorize caller via signed session token (must be admin or super_admin)
-    const authHeader = req.headers?.authorization;
+    const body = await parseRequestBody(req);
+
+    // Authorized Admin Change Master Code (requires active session + current credential verification)
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
     const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : '';
 
     if (!token) {
       return sendJsonResponse(res, 401, {
         success: false,
-        error: "Unauthorized: Active administrator session required to update PIN."
+        error: "Unauthorized: Active administrator session required to update Master Code."
       });
     }
 
@@ -44,35 +45,33 @@ export default async function handler(req: any, res: any) {
     if (!sessionCheck.valid || (sessionCheck.role !== 'admin' && sessionCheck.role !== 'super_admin')) {
       return sendJsonResponse(res, 403, {
         success: false,
-        error: "Forbidden: Only an authenticated Admin or Super Admin may update security PINs."
+        error: "Forbidden: Only an authenticated Admin or Super Admin may update Master Code."
       });
     }
 
-    const adminPhone = sessionCheck.phone || '9063692135';
+    const adminPhone = sessionCheck.phone || AUTHORIZED_ADMIN_PHONE;
 
-    // 2. Validate request body
-    const body = await parseRequestBody(req);
-    const { currentPin, newPin } = body || {};
+    const currentCode = body?.currentMasterCode || body?.currentPin;
+    const newCode = body?.newMasterCode || body?.newPin;
 
-    if (!currentPin || !newPin) {
+    if (!currentCode || !newCode) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Current PIN and New PIN are both required."
+        error: "Current Master Code and New Master Code are both required."
       });
     }
 
-    const cleanCurrent = String(currentPin).trim();
-    const cleanNew = String(newPin).trim();
+    const cleanCurrent = String(currentCode).trim();
+    const cleanNew = String(newCode).trim();
 
-    if (cleanNew.length < 4 || cleanNew.length > 8) {
+    if (cleanNew.length < 4 || cleanNew.length > 32) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "New PIN must be between 4 and 8 digits."
+        error: "New Master Code must be between 4 and 32 characters."
       });
     }
 
-    // 3. Verify current PIN with rate limiting
-    const verifyResult = verifyAdminPin(adminPhone, cleanCurrent);
+    const verifyResult = await verifyAdminMasterCode(adminPhone, cleanCurrent);
     if (verifyResult.locked) {
       return sendJsonResponse(res, 429, {
         success: false,
@@ -85,40 +84,22 @@ export default async function handler(req: any, res: any) {
       return sendJsonResponse(res, 401, {
         success: false,
         remainingAttempts: verifyResult.remainingAttempts,
-        error: "Current PIN verification failed. PIN was not updated."
+        error: "Current Master Code verification failed. Master Code was not updated."
       });
     }
 
-    // 4. Hash new PIN with PBKDF2-SHA512
     const newHash = hashPassword(cleanNew);
-    setAdminPinHash(newHash);
-
-    // 5. Persist to Supabase app_settings table (under admin_security_pin_hash key)
-    try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        await adminClient
-          .from('app_settings')
-          .upsert([{
-            key: 'admin_security_pin_hash',
-            value: newHash,
-            description: 'PBKDF2-SHA512 hashed administrator security PIN',
-            updated_at: new Date().toISOString()
-          }], { onConflict: 'key' });
-      }
-    } catch (dbErr: any) {
-      console.warn('[Admin Update PIN] Supabase sync notice:', dbErr?.message);
-    }
+    await saveAdminMasterCodeHash(newHash);
 
     return sendJsonResponse(res, 200, {
       success: true,
-      message: "Administrator security PIN updated and hashed successfully."
+      message: "Administrator Master Code updated and stored securely with PBKDF2-SHA512 hashing."
     });
   } catch (err: any) {
-    console.error("[Admin Update PIN Error]:", err?.message || err);
+    console.error("[Admin Update Master Code Error]:", err?.message || err);
     return sendJsonResponse(res, 500, {
       success: false,
-      error: "An unexpected error occurred while updating administrator PIN."
+      error: "An unexpected error occurred while updating administrator Master Code."
     });
   }
 }

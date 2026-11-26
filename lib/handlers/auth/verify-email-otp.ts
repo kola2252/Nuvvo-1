@@ -14,7 +14,8 @@ import {
   verifyEmailOtpChallenge,
   createSignedSessionJwt,
   recordEmailOtpVerifyAttempt,
-  fallbackCustomerAccounts
+  fallbackCustomerAccounts,
+  upsertLocalCustomerProfileIndex
 } from "../../auth-utils";
 import { getPublicSupabaseServerClient, getAdminSupabaseServerClient } from "../../../src/utils/supabase/server";
 import { logEmailOtpAttempt } from "../../../src/services/supabaseEmailLogs";
@@ -202,7 +203,7 @@ export default async function handler(req: any, res: any) {
     const nowIso = new Date().toISOString();
 
     const profileRecord = {
-      customer_id: customerId,
+      id: customerId,
       full_name: registrationMeta.fullName || 'Valued Customer',
       email: cleanEmail,
       location: registrationMeta.location || 'Chirala',
@@ -217,7 +218,7 @@ export default async function handler(req: any, res: any) {
         // Attempt upsert into public.customer_profiles
         const { error: upsertErr } = await adminClient
           .from('customer_profiles')
-          .upsert([profileRecord], { onConflict: 'email' });
+          .upsert([profileRecord], { onConflict: 'id' });
 
         if (upsertErr) {
           // If customer_profiles table does not exist in schema yet, persist in app_settings registry
@@ -238,7 +239,18 @@ export default async function handler(req: any, res: any) {
       console.warn("[Database Notice]:", dbErr?.message);
     }
 
-    // Maintain in persistent memory cache
+    // Maintain in local index and memory cache
+    upsertLocalCustomerProfileIndex({
+      id: customerId,
+      fullName: profileRecord.full_name,
+      username: cleanEmail.split('@')[0],
+      usernameLower: cleanEmail.split('@')[0].toLowerCase(),
+      email: cleanEmail,
+      location: profileRecord.location,
+      role: 'Customer',
+      createdAt: nowIso,
+      updatedAt: nowIso
+    });
     const existing = fallbackCustomerAccounts.get(cleanEmail) || {};
     fallbackCustomerAccounts.set(cleanEmail, {
       ...existing,

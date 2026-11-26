@@ -1,4 +1,3 @@
-import app from "../server";
 import dishesHandler from "../lib/handlers/dishes";
 import streamHandler from "../lib/handlers/catalog-stream";
 import sendOtpHandler from "../lib/handlers/auth/send-otp";
@@ -101,93 +100,112 @@ function resolveRequestTarget(req: any): { pathname: string; queryString: string
 /**
  * Single Consolidated Vercel Serverless Function handling all /api and /api/* endpoints.
  */
-export default function handler(req: any, res: any) {
-  const { pathname, queryString } = resolveRequestTarget(req);
-  const cleanSub = pathname.replace(/^\/api\/?/, '').replace(/^\/+/, '').toLowerCase();
+export default async function handler(req: any, res: any) {
+  try {
+    const { pathname, queryString } = resolveRequestTarget(req);
+    const cleanSub = pathname.replace(/^\/api\/?/, '').replace(/^\/+/, '').toLowerCase();
 
-  req.url = pathname + queryString;
+    req.url = pathname + queryString;
 
-  // Fast-path micro-handlers (preserve exact routes & security controls)
-  if (cleanSub === 'dishes' && (!req.method || req.method === 'GET' || req.method === 'OPTIONS')) {
-    return dishesHandler(req, res);
-  }
-  if (cleanSub === 'catalog/stream') {
-    return streamHandler(req, res);
-  }
-  if (cleanSub === 'verify-email') {
-    return verifyEmailHandler(req, res);
-  }
-  if (cleanSub === 'verify-smtp') {
-    return verifySmtpHandler(req, res);
-  }
-  if (cleanSub === 'admin/check-phone') {
-    return adminCheckPhoneHandler(req, res);
-  }
-  if (cleanSub === 'admin/verify') {
-    return adminVerifyHandler(req, res);
-  }
-  if (cleanSub === 'auth/send-email-otp') {
-    return sendEmailOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/verify-email-otp') {
-    return verifyEmailOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/verify-db-otp') {
-    return verifyDbOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/setup-profile') {
-    return setupProfileHandler(req, res);
-  }
-  if (cleanSub === 'auth/customer-register') {
-    return customerRegisterHandler(req, res);
-  }
-  if (cleanSub === 'auth/customer-login') {
-    return customerLoginHandler(req, res);
-  }
-  if (cleanSub === 'auth/customer-profile') {
-    return customerProfileHandler(req, res);
-  }
-  if (cleanSub === 'auth/forgot-password') {
-    return forgotPasswordHandler(req, res);
-  }
-  if (cleanSub === 'auth/resend-verification') {
-    return resendVerificationHandler(req, res);
-  }
-  if (cleanSub === 'auth/reset-password') {
-    return resetPasswordHandler(req, res);
-  }
-  if (cleanSub === 'auth/change-password') {
-    return changePasswordHandler(req, res);
-  }
-  if (cleanSub === 'auth/delete-account') {
-    return deleteAccountHandler(req, res);
-  }
-  if (cleanSub === 'auth/admin-check-phone') {
-    return adminCheckPhoneHandler(req, res);
-  }
-  if (cleanSub === 'auth/admin-verify-pin') {
-    return adminVerifyPinHandler(req, res);
-  }
-  if (cleanSub === 'auth/admin-update-pin') {
-    return adminUpdatePinHandler(req, res);
-  }
-  if (cleanSub === 'auth/email-diagnostics') {
-    return emailDiagnosticsHandler(req, res);
-  }
-  if (cleanSub === 'auth/debug-otp') {
-    return debugOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/send-otp') {
-    return sendOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/verify-otp') {
-    return verifyOtpHandler(req, res);
-  }
-  if (cleanSub === 'auth/verify-role') {
-    return verifyRoleHandler(req, res);
-  }
+    // Fast-path micro-handlers (preserve exact routes & security controls)
+    if (cleanSub === 'dishes' && (!req.method || req.method === 'GET' || req.method === 'OPTIONS')) {
+      return await dishesHandler(req, res);
+    }
+    if (cleanSub === 'catalog/stream') {
+      return await streamHandler(req, res);
+    }
+    if (cleanSub === 'verify-email') {
+      return await verifyEmailHandler(req, res);
+    }
+    if (cleanSub === 'verify-smtp') {
+      return await verifySmtpHandler(req, res);
+    }
+    if (cleanSub === 'admin/check-phone') {
+      return await adminCheckPhoneHandler(req, res);
+    }
+    if (cleanSub === 'admin/verify') {
+      return await adminVerifyHandler(req, res);
+    }
+    if (cleanSub === 'auth/send-email-otp') {
+      return await sendEmailOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/verify-email-otp') {
+      return await verifyEmailOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/verify-db-otp') {
+      return await verifyDbOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/setup-profile') {
+      return await setupProfileHandler(req, res);
+    }
+    if (cleanSub === 'auth/customer-register') {
+      return await customerRegisterHandler(req, res);
+    }
+    if (cleanSub === 'auth/customer-login') {
+      return await customerLoginHandler(req, res);
+    }
+    if (cleanSub === 'auth/customer-profile') {
+      return await customerProfileHandler(req, res);
+    }
+    if (cleanSub === 'auth/forgot-password') {
+      return await forgotPasswordHandler(req, res);
+    }
+    if (cleanSub === 'auth/resend-verification') {
+      return await resendVerificationHandler(req, res);
+    }
+    if (cleanSub === 'auth/reset-password') {
+      return await resetPasswordHandler(req, res);
+    }
+    if (cleanSub === 'auth/change-password') {
+      return await changePasswordHandler(req, res);
+    }
+    if (cleanSub === 'auth/delete-account') {
+      return await deleteAccountHandler(req, res);
+    }
+    if (cleanSub === 'auth/admin-check-phone') {
+      return await adminCheckPhoneHandler(req, res);
+    }
+    if (cleanSub === 'auth/admin-verify-pin') {
+      return await adminVerifyPinHandler(req, res);
+    }
+    if (cleanSub === 'auth/admin-update-pin') {
+      return await adminUpdatePinHandler(req, res);
+    }
+    if (cleanSub === 'auth/email-diagnostics') {
+      return await emailDiagnosticsHandler(req, res);
+    }
+    if (cleanSub === 'auth/debug-otp') {
+      return await debugOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/send-otp') {
+      return await sendOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/verify-otp') {
+      return await verifyOtpHandler(req, res);
+    }
+    if (cleanSub === 'auth/verify-role') {
+      return await verifyRoleHandler(req, res);
+    }
 
-  return app(req, res);
+    const { default: app } = await import("../server");
+    return app(req, res);
+  } catch (err: any) {
+    console.error("[API Gateway Error]:", err?.message || err);
+    if (!res.headersSent) {
+      try {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      } catch {}
+      const payload = JSON.stringify({
+        success: false,
+        error: err?.message || "Unexpected server error while processing your request."
+      });
+      if (typeof res.status === 'function' && typeof res.json === 'function') {
+        return res.status(500).json(JSON.parse(payload));
+      }
+      res.statusCode = 500;
+      if (typeof res.end === 'function') {
+        return res.end(payload);
+      }
+    }
+  }
 }
-
-export { app };

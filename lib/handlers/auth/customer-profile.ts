@@ -12,7 +12,9 @@ import {
   parseRequestBody,
   sendJsonResponse,
   findLocalCustomerById,
-  upsertLocalCustomerProfileIndex
+  findLocalCustomerAccountByEmail,
+  upsertLocalCustomerProfileIndex,
+  resolveCallerIdentity
 } from "../../auth-utils";
 import {
   getAdminSupabaseServerClient,
@@ -43,17 +45,46 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const publicSupabase = getPublicSupabaseServerClient();
-    const { data: userData, error: authErr } = await publicSupabase.auth.getUser(token);
+    let authUser: any = null;
+    let isNuvvoCustomerJwt = false;
+    if (token.startsWith("nuvvo_jwt_")) {
+      const caller = await resolveCallerIdentity(req);
+      if (!caller.authenticated || !caller.userId) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Your session has expired or is invalid. Please sign in again."
+        });
+      }
+      isNuvvoCustomerJwt = true;
+      const acc = (caller.email ? findLocalCustomerAccountByEmail(caller.email) : null) || findLocalCustomerById(caller.userId);
+      authUser = {
+        id: caller.userId,
+        email: caller.email || acc?.email || "",
+        email_confirmed_at: (acc as any)?.isEmailVerified ? (acc as any)?.updatedAt : undefined,
+        created_at: acc?.createdAt || new Date().toISOString(),
+        user_metadata: {
+          full_name: acc?.fullName,
+          username: acc?.username,
+          mobile: (acc as any)?.phone || (acc as any)?.mobile || caller.phone,
+          location: acc?.location,
+          delivery_address: acc?.deliveryAddress,
+          addresses: acc?.addresses,
+          preferred_language: acc?.preferredLanguage || "te"
+        }
+      };
+    } else {
+      const publicSupabase = getPublicSupabaseServerClient();
+      const { data: userData, error: authErr } = await publicSupabase.auth.getUser(token);
 
-    if (authErr || !userData?.user?.id) {
-      return sendJsonResponse(res, 401, {
-        success: false,
-        error: "Your session has expired or is invalid. Please sign in again."
-      });
+      if (authErr || !userData?.user?.id) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Your session has expired or is invalid. Please sign in again."
+        });
+      }
+      authUser = userData.user;
     }
 
-    const authUser = userData.user;
     const authUserId = authUser.id;
     const emailVerified = Boolean(authUser.email_confirmed_at);
     const emailVerifiedAt = authUser.email_confirmed_at || undefined;
@@ -73,19 +104,21 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const userClient = createUserScopedSupabaseClient(token);
+    const userClient = isNuvvoCustomerJwt ? null : createUserScopedSupabaseClient(token);
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
 
     if (req.method === "GET") {
       let dbProfile: any = null;
-      try {
-        const { data } = await userClient
-          .from("customer_profiles")
-          .select("*")
-          .eq("id", authUserId)
-          .maybeSingle();
-        if (data) dbProfile = data;
-      } catch {}
+      if (userClient) {
+        try {
+          const { data } = await userClient
+            .from("customer_profiles")
+            .select("*")
+            .eq("id", authUserId)
+            .maybeSingle();
+          if (data) dbProfile = data;
+        } catch {}
+      }
 
       const localIdx = findLocalCustomerById(authUserId);
       const source = dbProfile || localIdx || {};
@@ -101,7 +134,7 @@ export default async function handler(req: any, res: any) {
         name: source.full_name || source.fullName || meta.full_name || authUser.email?.split("@")[0] || "Customer",
         username: source.username || meta.username || undefined,
         email: authUser.email || source.email || "",
-        phone: source.mobile || meta.mobile || "",
+        phone: source.mobile || source.phone || meta.mobile || "",
         location: source.location || meta.location || "",
         deliveryAddress: source.delivery_address || source.deliveryAddress || meta.delivery_address || "",
         addresses: resolvedAddresses,

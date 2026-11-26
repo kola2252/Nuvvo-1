@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { X, Send, Bot, Minimize2, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import WhatsAppSupportFab from './WhatsAppSupportFab';
 
 interface ChatMessage {
   id: string;
@@ -148,36 +149,42 @@ function DesktopSupportWidgets() {
 
   return (
     <>
-      {/* AI Chatbot Floating Action Button - Hidden on small viewports, stacked cleanly above WhatsAppSupportFab on desktop (md+) */}
+      {/* Unified AI Chatbot & Highlighted WhatsApp Support Dock (bottom-right above BottomNav) */}
       <div 
         id="desktop-support-action-dock"
-        className="fixed bottom-24 right-6 z-[200] hidden md:flex flex-col items-end gap-3 pointer-events-auto"
+        className="fixed bottom-22 right-4 z-30 flex flex-col items-end gap-2.5 pointer-events-auto"
       >
         {/* AI Chatbot Float Trigger Button */}
         <button
+          type="button"
           onClick={() => setIsOpen(prev => !prev)}
-          className={`w-12 h-12 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 cursor-pointer relative group border ${
+          className={`inline-flex h-10 items-center justify-center gap-1.5 px-3.5 rounded-full shadow-xl border-2 border-white dark:border-zinc-900 transition-all duration-200 hover:scale-105 active:scale-95 cursor-pointer relative group ${
             isOpen 
-              ? 'bg-zinc-900 text-white border-zinc-800' 
-              : 'bg-purple-600 hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-800 text-white border-purple-500/20'
+              ? 'bg-zinc-900 text-white' 
+              : 'bg-purple-600 hover:bg-purple-700 dark:bg-purple-700 text-white'
           }`}
-          title="AI Assistant Chatbot"
+          title={isOpen ? 'Close Chatbot' : 'AI Assistant Chatbot'}
+          aria-label={isOpen ? 'Close Chatbot' : 'AI Assistant Chatbot'}
           id="desktop-ai-chatbot-btn"
         >
-          {isOpen ? <X className="w-5 h-5" /> : (
+          {isOpen ? (
             <>
-              <Bot className="w-5 h-5" />
-              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center bg-amber-500 rounded-full text-[8.5px] font-black text-amber-950 shadow-sm">
+              <X className="w-4 h-4 shrink-0" />
+              <span className="text-[11px] font-black tracking-wide whitespace-nowrap">Close AI</span>
+            </>
+          ) : (
+            <>
+              <Bot className="w-4 h-4 shrink-0" />
+              <span className="text-[11px] font-black tracking-wide whitespace-nowrap">AI Chat</span>
+              <span className="bg-amber-500 text-amber-950 text-[8.5px] font-black px-1.5 py-0.5 rounded-full leading-none">
                 AI
               </span>
             </>
           )}
-          
-          {/* Tooltip */}
-          <span className="absolute right-14 bg-zinc-900 text-white text-[10px] font-black px-2.5 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap tracking-wide uppercase pointer-events-none shadow-md">
-            {isOpen ? 'Close Chatbot' : 'AI Assistant Chatbot'}
-          </span>
         </button>
+
+        {/* Highlighted WhatsApp Support Button right below Chatbot */}
+        <WhatsAppSupportFab inline />
       </div>
 
       {/* Interactive Chatbot Window Overlay */}
@@ -189,7 +196,7 @@ function DesktopSupportWidgets() {
             exit={{ opacity: 0, scale: 0.95, y: 30 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             id="desktop-support-chatbot-window"
-            className="fixed bottom-40 right-6 z-[210] hidden md:flex flex-col w-[380px] h-[540px] max-h-[75vh] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-850 rounded-3xl shadow-2xl overflow-hidden transition-all duration-200"
+            className="fixed bottom-24 right-4 md:right-8 z-50 flex flex-col w-[calc(100vw-32px)] md:w-[410px] h-[540px] max-h-[80vh] bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-850 rounded-3xl shadow-2xl overflow-hidden transition-all duration-200"
           >
             {/* Header */}
             <div className="bg-gradient-to-r from-purple-700 to-indigo-800 dark:from-purple-900 dark:to-zinc-900 p-4 text-white flex items-center justify-between border-b border-purple-500/10">

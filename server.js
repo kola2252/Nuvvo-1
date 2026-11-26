@@ -1995,14 +1995,13 @@ function generateOtpDiagnostics() {
   const fast2SmsKey = process.env.FAST2SMS_API_KEY || "";
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY || "";
-  const adminPhoneVal = process.env.ADMIN_PHONE || "9063692135";
-  const adminPinVal = process.env.ADMIN_SECURITY_PIN || "2026";
+  const adminPhoneVal = process.env.ADMIN_PHONE || "";
+  const adminPinVal = process.env.ADMIN_MASTER_CODE_HASH || process.env.ADMIN_PIN_HASH || process.env.ADMIN_MASTER_CODE || process.env.ADMIN_PIN || process.env.ADMIN_SECURITY_PIN || "";
   const disableTwilio = process.env.DISABLE_TWILIO === "true" || process.env.BLOCK_TWILIO === "true";
   const isTwilioFullyConfigured = !disableTwilio && Boolean(twilioSid.trim() && twilioToken.trim() && twilioPhone.trim());
   const isFast2SmsConfigured = Boolean(fast2SmsKey.trim());
   const isRealSmsProviderActive = isTwilioFullyConfigured || isFast2SmsConfigured;
-  const cleanAdminPhone = adminPhoneVal.replace(/\D/g, "");
-  const maskedAdminPhone = cleanAdminPhone.length >= 4 ? "*".repeat(Math.max(0, cleanAdminPhone.length - 4)) + cleanAdminPhone.slice(-4) : "****";
+  const maskedAdminPhone = adminPhoneVal ? "Configured (Private)" : "Managed Privately on Server";
   let randomIntFunctional = false;
   let pbkdf2Functional = false;
   let hmacSha256Functional = false;
@@ -2185,10 +2184,14 @@ import crypto4 from "crypto";
 import crypto2 from "crypto";
 import fs from "fs";
 import path from "path";
-var AUTHORIZED_ADMIN_PHONE = process.env.ADMIN_PHONE || "9063692135";
-var ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || process.env.ADMIN_PIN || "2135";
+var AUTHORIZED_ADMIN_PHONE = normalizePhone(process.env.ADMIN_PHONE || "9063692135") || "9063692135";
 var SESSION_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || process.env.SUPABASE_SECRET_KEY || "nuvvo_production_secure_secret_chirala_2026";
 var OTP_EXPIRY_MS = 5 * 60 * 1e3;
+function maskAdminPhoneDisplay(phone) {
+  const clean = normalizePhone(phone || "");
+  if (!clean || clean.length < 4) return "Protected (Server-Verified)";
+  return `+91 \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022${clean.slice(-2)}`;
+}
 var fallbackCustomerAccounts = /* @__PURE__ */ new Map();
 var fallbackUsernamesRegistry = /* @__PURE__ */ new Map();
 var customerAuthRateStore = /* @__PURE__ */ new Map();
@@ -2474,6 +2477,7 @@ function sendJsonResponse(res, status, data) {
 }
 function normalizePhone(phone) {
   const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.length === 13 && digits.startsWith("091")) return digits.slice(3);
   if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
   return digits;
@@ -2625,7 +2629,7 @@ function verifyPassword(password, storedHash) {
 }
 var DESIGNATED_ADMIN_PHONES = /* @__PURE__ */ new Set([
   AUTHORIZED_ADMIN_PHONE,
-  // '9063692135'
+  "9063692135",
   "9999900000",
   "9848022338",
   "9440511220",
@@ -2633,51 +2637,183 @@ var DESIGNATED_ADMIN_PHONES = /* @__PURE__ */ new Set([
 ]);
 function isAuthorizedAdminAccountPhone(phone) {
   const clean = normalizePhone(phone);
-  return clean === AUTHORIZED_ADMIN_PHONE || clean === `91${AUTHORIZED_ADMIN_PHONE}` || DESIGNATED_ADMIN_PHONES.has(clean);
+  if (!clean || clean.length !== 10) return false;
+  return clean === AUTHORIZED_ADMIN_PHONE || DESIGNATED_ADMIN_PHONES.has(clean);
+}
+function isMasterAdminPhone(phone) {
+  const clean = normalizePhone(phone);
+  return Boolean(clean && (clean === AUTHORIZED_ADMIN_PHONE || clean === "9063692135"));
 }
 var pinAttemptStore = /* @__PURE__ */ new Map();
-var currentAdminPinHash = (() => {
-  if (process.env.ADMIN_PIN_HASH && process.env.ADMIN_PIN_HASH.startsWith("pbkdf2$")) {
-    return process.env.ADMIN_PIN_HASH;
+var ownerResetAttemptStore = /* @__PURE__ */ new Map();
+var ADMIN_CREDENTIAL_FILE = path.join(process.cwd(), ".server_admin_credentials.json");
+var runtimeAdminPinHash = null;
+function extractPbkdf2Hash(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string" && raw.startsWith("pbkdf2$")) return raw;
+  if (typeof raw === "object" && typeof raw.hash === "string" && raw.hash.startsWith("pbkdf2$")) {
+    return raw.hash;
   }
-  const initialPin = process.env.ADMIN_PIN || process.env.ADMIN_SECURITY_PIN || "2135";
-  return hashPassword(initialPin);
-})();
-function getAdminPinHash() {
-  return currentAdminPinHash;
+  return null;
 }
-function setAdminPinHash(newHash) {
-  if (newHash && typeof newHash === "string" && newHash.startsWith("pbkdf2$")) {
-    currentAdminPinHash = newHash;
-    return true;
+function readLocalAdminCredentialHash() {
+  try {
+    if (process.env.VERCEL || !fs.existsSync(ADMIN_CREDENTIAL_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(ADMIN_CREDENTIAL_FILE, "utf8"));
+    return extractPbkdf2Hash(parsed?.masterCodeHash || parsed?.hash);
+  } catch {
+    return null;
   }
-  return false;
 }
-function verifyAdminPin(phone, pin) {
+function writeLocalAdminCredentialHash(newHash) {
+  try {
+    if (process.env.VERCEL) return;
+    fs.writeFileSync(
+      ADMIN_CREDENTIAL_FILE,
+      JSON.stringify({ masterCodeHash: newHash, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2),
+      "utf8"
+    );
+  } catch {
+  }
+}
+function getEnvMasterCodeHash() {
+  const envHash = (process.env.ADMIN_MASTER_CODE_HASH || process.env.ADMIN_PIN_HASH || "").trim();
+  if (envHash.startsWith("pbkdf2$")) {
+    return { hash: envHash, source: "env_hash" };
+  }
+  const envPlain = (process.env.ADMIN_MASTER_CODE || process.env.ADMIN_PIN || process.env.ADMIN_SECURITY_PIN || "").trim();
+  if (envPlain.length >= 4) {
+    return { hash: hashPassword(envPlain), source: "env_plain" };
+  }
+  return null;
+}
+async function resolveAdminCredentialRecord() {
+  if (runtimeAdminPinHash && runtimeAdminPinHash.startsWith("pbkdf2$")) {
+    return { configured: true, hash: runtimeAdminPinHash, source: "memory" };
+  }
+  try {
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (adminClient) {
+      if (isServiceRole) {
+        const { data: credRow } = await adminClient.from("admin_credentials").select("hash").eq("id", "master_code").maybeSingle();
+        const foundCred = extractPbkdf2Hash(credRow?.hash);
+        if (foundCred) {
+          runtimeAdminPinHash = foundCred;
+          return { configured: true, hash: foundCred, source: "supabase" };
+        }
+      }
+      const { data: settingRows } = await adminClient.from("app_settings").select("key, value").in("key", ["admin_master_code_hash", "admin_security_pin_hash"]);
+      if (Array.isArray(settingRows) && settingRows.length > 0) {
+        const masterRow = settingRows.find((r) => r.key === "admin_master_code_hash");
+        const legacyRow = settingRows.find((r) => r.key === "admin_security_pin_hash");
+        const foundHash = extractPbkdf2Hash(masterRow?.value) || extractPbkdf2Hash(legacyRow?.value);
+        if (foundHash) {
+          runtimeAdminPinHash = foundHash;
+          return { configured: true, hash: foundHash, source: "supabase" };
+        }
+      }
+    }
+  } catch {
+  }
+  const localHash = readLocalAdminCredentialHash();
+  if (localHash) {
+    runtimeAdminPinHash = localHash;
+    return { configured: true, hash: localHash, source: "local_store" };
+  }
+  const envCred = getEnvMasterCodeHash();
+  if (envCred) {
+    runtimeAdminPinHash = envCred.hash;
+    return { configured: true, hash: envCred.hash, source: envCred.source };
+  }
+  return { configured: false, hash: null, source: "none" };
+}
+async function saveAdminMasterCodeHash(newHash) {
+  if (!newHash || typeof newHash !== "string" || !newHash.startsWith("pbkdf2$")) {
+    return false;
+  }
+  runtimeAdminPinHash = newHash;
+  writeLocalAdminCredentialHash(newHash);
+  try {
+    const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
+    if (adminClient && isServiceRole) {
+      try {
+        await adminClient.from("admin_credentials").upsert([{
+          id: "master_code",
+          hash: newHash,
+          updated_at: (/* @__PURE__ */ new Date()).toISOString()
+        }], { onConflict: "id" });
+      } catch {
+      }
+      try {
+        await adminClient.from("app_settings").upsert([
+          {
+            key: "admin_master_code_hash",
+            value: newHash,
+            description: "PBKDF2-SHA512 hashed administrator Master Code",
+            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            key: "admin_security_pin_hash",
+            value: newHash,
+            description: "PBKDF2-SHA512 hashed administrator security credential",
+            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ], { onConflict: "key" });
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return true;
+}
+async function verifyAdminMasterCode(phone, masterCode) {
   const cleanPhone = normalizePhone(phone);
   if (!isAuthorizedAdminAccountPhone(cleanPhone)) {
-    return { verified: false, locked: false, message: "Unauthorized account identification." };
+    return {
+      verified: false,
+      locked: false,
+      configured: true,
+      unauthorizedPhone: true,
+      message: "Access Denied: This mobile number is not authorized for administrative access."
+    };
   }
   const now = Date.now();
   const record = pinAttemptStore.get(cleanPhone) || { attempts: 0, lockedUntil: 0 };
   if (record.lockedUntil > now) {
-    const minsLeft = Math.ceil((record.lockedUntil - now) / 6e4);
+    const retryAfterSeconds = Math.max(1, Math.ceil((record.lockedUntil - now) / 1e3));
+    const minsLeft = Math.ceil(retryAfterSeconds / 60);
     return {
       verified: false,
       locked: true,
+      configured: true,
       remainingAttempts: 0,
-      message: `Account is temporarily locked due to repeated failed PIN attempts. Please retry in ${minsLeft} minute(s).`
+      retryAfterSeconds,
+      message: `Account is temporarily locked due to repeated failed Master Code attempts. Please retry in ${minsLeft} minute(s).`
     };
   }
-  const cleanPin = String(pin || "").trim();
-  if (!cleanPin) {
-    return { verified: false, locked: false, message: "Security PIN is required." };
+  const cred = await resolveAdminCredentialRecord();
+  if (!cred.configured || !cred.hash) {
+    return {
+      verified: false,
+      locked: false,
+      configured: false,
+      requiresOwnerReset: true,
+      message: "Master Code credential record is unavailable on the server. A project-owner-authorized reset is required."
+    };
   }
-  const storedHash = getAdminPinHash();
-  const isMatch = verifyPassword(cleanPin, storedHash);
+  const cleanCode = String(masterCode || "").trim();
+  if (!cleanCode) {
+    return {
+      verified: false,
+      locked: false,
+      configured: true,
+      message: "Master Code is required."
+    };
+  }
+  const isMatch = verifyPassword(cleanCode, cred.hash);
   if (isMatch) {
     pinAttemptStore.delete(cleanPhone);
-    return { verified: true, locked: false };
+    return { verified: true, locked: false, configured: true };
   }
   record.attempts += 1;
   const maxAttempts = 5;
@@ -2688,16 +2824,87 @@ function verifyAdminPin(phone, pin) {
     return {
       verified: false,
       locked: true,
+      configured: true,
       remainingAttempts: 0,
-      message: "Maximum failed PIN attempts reached (5/5). Account locked for 15 minutes."
+      retryAfterSeconds: 900,
+      message: "Maximum failed Master Code attempts reached (5/5). Account temporarily locked for 15 minutes."
     };
   }
   pinAttemptStore.set(cleanPhone, record);
   return {
     verified: false,
     locked: false,
+    configured: true,
     remainingAttempts: remaining,
-    message: `Invalid security PIN. ${remaining} attempt(s) remaining before temporary lockout.`
+    message: `Incorrect Master Code. ${remaining} attempt(s) remaining before temporary lockout.`
+  };
+}
+async function authorizeOwnerMasterCodeReset(phone, ownerResetToken, newMasterCode) {
+  const cleanPhone = normalizePhone(phone);
+  if (!isAuthorizedAdminAccountPhone(cleanPhone)) {
+    return {
+      success: false,
+      status: 403,
+      message: "Access Denied: Mobile number is not an authorized administrator account."
+    };
+  }
+  const now = Date.now();
+  const attemptRec = ownerResetAttemptStore.get(cleanPhone) || { attempts: 0, lockedUntil: 0 };
+  if (attemptRec.lockedUntil > now) {
+    const minsLeft = Math.ceil((attemptRec.lockedUntil - now) / 6e4);
+    return {
+      success: false,
+      status: 429,
+      locked: true,
+      message: `Too many reset attempts. Please try again in ${minsLeft} minute(s).`
+    };
+  }
+  const configuredToken = (process.env.ADMIN_OWNER_RESET_TOKEN || "").trim();
+  if (!configuredToken || configuredToken.length < 8) {
+    return {
+      success: false,
+      status: 428,
+      message: "Project-owner reset token is not configured on the server. Set ADMIN_OWNER_RESET_TOKEN (or ADMIN_MASTER_CODE_HASH) in server environment settings."
+    };
+  }
+  const providedDigest = crypto2.createHash("sha256").update(String(ownerResetToken || "").trim()).digest();
+  const expectedDigest = crypto2.createHash("sha256").update(configuredToken).digest();
+  const isTokenValid = crypto2.timingSafeEqual(providedDigest, expectedDigest);
+  if (!isTokenValid) {
+    attemptRec.attempts += 1;
+    if (attemptRec.attempts >= 5) {
+      attemptRec.lockedUntil = now + 15 * 60 * 1e3;
+      ownerResetAttemptStore.set(cleanPhone, attemptRec);
+      return {
+        success: false,
+        status: 429,
+        locked: true,
+        message: "Too many invalid owner reset tokens (5/5). Locked for 15 minutes."
+      };
+    }
+    ownerResetAttemptStore.set(cleanPhone, attemptRec);
+    return {
+      success: false,
+      status: 403,
+      message: `Invalid project-owner authorization token. ${5 - attemptRec.attempts} attempt(s) remaining.`
+    };
+  }
+  const cleanNew = String(newMasterCode || "").trim();
+  if (cleanNew.length < 4 || cleanNew.length > 32) {
+    return {
+      success: false,
+      status: 400,
+      message: "New Master Code must be between 4 and 32 characters."
+    };
+  }
+  ownerResetAttemptStore.delete(cleanPhone);
+  pinAttemptStore.delete(cleanPhone);
+  const newHash = hashPassword(cleanNew);
+  await saveAdminMasterCodeHash(newHash);
+  return {
+    success: true,
+    status: 200,
+    message: "Master Code reset authorized and stored securely with PBKDF2-SHA512 hashing."
   };
 }
 function createSignedSessionJwt(subject, role, meta) {
@@ -7073,11 +7280,14 @@ async function handler14(req, res) {
     const cleanPhone = normalizePhone(phone);
     const isAuthorized = isAuthorizedAdminAccountPhone(cleanPhone);
     if (isAuthorized) {
-      const maskedPhone = cleanPhone.length >= 10 ? `+91 ${cleanPhone.slice(0, 2)}\u2022\u2022\u2022\u2022\u2022\u2022${cleanPhone.slice(-2)}` : `+91 ${cleanPhone}`;
+      const cred = await resolveAdminCredentialRecord();
+      const maskedPhone = maskAdminPhoneDisplay(cleanPhone);
       return sendJsonResponse(res, 200, {
         success: true,
         isAuthorizedAdmin: true,
         promptForPin: true,
+        masterCodeConfigured: cred.configured,
+        requiresOwnerReset: !cred.configured,
         maskedPhone,
         message: "Authorized administrator account verified."
       });
@@ -7104,38 +7314,56 @@ async function handler15(req, res) {
   }
   try {
     const body = await parseRequestBody(req);
-    const { phone, pin } = body || {};
-    if (!phone || !pin) {
+    const rawPhone = body?.phone || body?.mobile || body?.mobileNumber;
+    const rawCode = body?.masterCode || body?.pin || body?.securityPin || body?.adminPin;
+    if (!rawPhone || !rawCode) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Mobile number and Security PIN are required."
+        error: "Administrator mobile number and Master Code are required."
       });
     }
-    const cleanPhone = normalizePhone(phone);
+    const cleanPhone = normalizePhone(rawPhone);
+    const cleanCode = String(rawCode).trim();
+    if (cleanCode.length < 4 || cleanCode.length > 32) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Master Code must be between 4 and 32 characters."
+      });
+    }
     if (!isAuthorizedAdminAccountPhone(cleanPhone)) {
       return sendJsonResponse(res, 403, {
         success: false,
         error: "Access Denied: This mobile number is not authorized for administrative access."
       });
     }
-    const result = verifyAdminPin(cleanPhone, String(pin));
+    const result = await verifyAdminMasterCode(cleanPhone, cleanCode);
     if (result.locked) {
       return sendJsonResponse(res, 429, {
         success: false,
         locked: true,
         remainingAttempts: 0,
+        retryAfterSeconds: result.retryAfterSeconds,
         error: result.message || "Account temporarily locked due to repeated failed attempts."
+      });
+    }
+    if (result.requiresOwnerReset || !result.configured) {
+      return sendJsonResponse(res, 428, {
+        success: false,
+        configured: false,
+        requiresOwnerReset: true,
+        error: result.message || "Master Code credential record is unavailable. Project-owner-authorized reset is required."
       });
     }
     if (!result.verified) {
       return sendJsonResponse(res, 401, {
         success: false,
         remainingAttempts: result.remainingAttempts,
-        error: result.message || "Incorrect security PIN. Please try again."
+        error: result.message || "Incorrect Master Code. Please try again."
       });
     }
-    const isMaster = cleanPhone === AUTHORIZED_ADMIN_PHONE || cleanPhone === `91${AUTHORIZED_ADMIN_PHONE}`;
+    const isMaster = isMasterAdminPhone(cleanPhone);
     const assignedRole = isMaster ? "super_admin" : "admin";
+    const maskedPhone = maskAdminPhoneDisplay(cleanPhone);
     const token = createSignedSessionJwt(cleanPhone, assignedRole, {
       phone: cleanPhone,
       username: isMaster ? "nuvvo_super_admin" : `admin_${cleanPhone.slice(-4)}`
@@ -7145,15 +7373,16 @@ async function handler15(req, res) {
       token,
       role: assignedRole,
       isAuthorizedAdmin: true,
-      phone: cleanPhone,
+      phone: maskedPhone,
+      maskedPhone,
       navigationOptions: [
         { id: "dashboard", label: "Open Admin Dashboard", route: isMaster ? "super-admin" : "admin" },
         { id: "settings", label: "Open Admin Settings", route: "admin" }
       ],
-      message: "Administrator identity and PIN verified successfully."
+      message: "Administrator identity and Master Code verified successfully."
     });
   } catch (err) {
-    console.error("[Admin Verify PIN Error]:", err?.message || err);
+    console.error("[Admin Verify Master Code Error]:", err?.message || err);
     return sendJsonResponse(res, 500, {
       success: false,
       error: "An unexpected error occurred during administrative verification."
@@ -7170,39 +7399,64 @@ async function handler16(req, res) {
     return sendJsonResponse(res, 405, { success: false, error: "Method not allowed. Use POST." });
   }
   try {
-    const authHeader = req.headers?.authorization;
+    const body = await parseRequestBody(req);
+    const reqUrl = String(req?.url || "").toLowerCase();
+    const isOwnerResetRequest = body?.action === "owner_reset" || reqUrl.includes("admin-reset-master-code") || reqUrl.includes("reset-master-code");
+    if (isOwnerResetRequest) {
+      const targetPhone = body?.phone || body?.mobile || "";
+      const ownerResetToken = body?.ownerResetToken || body?.ownerToken || "";
+      const newCode2 = body?.newMasterCode || body?.newPin || "";
+      if (!targetPhone || !ownerResetToken || !newCode2) {
+        return sendJsonResponse(res, 400, {
+          success: false,
+          error: "Administrator mobile number, project-owner authorization token, and new Master Code are required."
+        });
+      }
+      const resetRes = await authorizeOwnerMasterCodeReset(
+        String(targetPhone),
+        String(ownerResetToken),
+        String(newCode2)
+      );
+      return sendJsonResponse(res, resetRes.status, {
+        success: resetRes.success,
+        locked: Boolean(resetRes.locked),
+        message: resetRes.success ? resetRes.message : void 0,
+        error: resetRes.success ? void 0 : resetRes.message
+      });
+    }
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
     const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
     if (!token) {
       return sendJsonResponse(res, 401, {
         success: false,
-        error: "Unauthorized: Active administrator session required to update PIN."
+        error: "Unauthorized: Active administrator session required to update Master Code."
       });
     }
     const sessionCheck = verifySignedSessionJwt(token);
     if (!sessionCheck.valid || sessionCheck.role !== "admin" && sessionCheck.role !== "super_admin") {
       return sendJsonResponse(res, 403, {
         success: false,
-        error: "Forbidden: Only an authenticated Admin or Super Admin may update security PINs."
+        error: "Forbidden: Only an authenticated Admin or Super Admin may update Master Code."
       });
     }
-    const adminPhone = sessionCheck.phone || "9063692135";
-    const body = await parseRequestBody(req);
-    const { currentPin, newPin } = body || {};
-    if (!currentPin || !newPin) {
+    const adminPhone = sessionCheck.phone || AUTHORIZED_ADMIN_PHONE;
+    const currentCode = body?.currentMasterCode || body?.currentPin;
+    const newCode = body?.newMasterCode || body?.newPin;
+    if (!currentCode || !newCode) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Current PIN and New PIN are both required."
+        error: "Current Master Code and New Master Code are both required."
       });
     }
-    const cleanCurrent = String(currentPin).trim();
-    const cleanNew = String(newPin).trim();
-    if (cleanNew.length < 4 || cleanNew.length > 8) {
+    const cleanCurrent = String(currentCode).trim();
+    const cleanNew = String(newCode).trim();
+    if (cleanNew.length < 4 || cleanNew.length > 32) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "New PIN must be between 4 and 8 digits."
+        error: "New Master Code must be between 4 and 32 characters."
       });
     }
-    const verifyResult = verifyAdminPin(adminPhone, cleanCurrent);
+    const verifyResult = await verifyAdminMasterCode(adminPhone, cleanCurrent);
     if (verifyResult.locked) {
       return sendJsonResponse(res, 429, {
         success: false,
@@ -7210,37 +7464,31 @@ async function handler16(req, res) {
         error: verifyResult.message || "Account is locked due to repeated failed attempts."
       });
     }
+    if (verifyResult.requiresOwnerReset || !verifyResult.configured) {
+      return sendJsonResponse(res, 428, {
+        success: false,
+        requiresOwnerReset: true,
+        error: verifyResult.message || "No existing Master Code credential is configured. Use a project-owner-authorized reset."
+      });
+    }
     if (!verifyResult.verified) {
       return sendJsonResponse(res, 401, {
         success: false,
         remainingAttempts: verifyResult.remainingAttempts,
-        error: "Current PIN verification failed. PIN was not updated."
+        error: "Current Master Code verification failed. Master Code was not updated."
       });
     }
     const newHash = hashPassword(cleanNew);
-    setAdminPinHash(newHash);
-    try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        await adminClient.from("app_settings").upsert([{
-          key: "admin_security_pin_hash",
-          value: newHash,
-          description: "PBKDF2-SHA512 hashed administrator security PIN",
-          updated_at: (/* @__PURE__ */ new Date()).toISOString()
-        }], { onConflict: "key" });
-      }
-    } catch (dbErr) {
-      console.warn("[Admin Update PIN] Supabase sync notice:", dbErr?.message);
-    }
+    await saveAdminMasterCodeHash(newHash);
     return sendJsonResponse(res, 200, {
       success: true,
-      message: "Administrator security PIN updated and hashed successfully."
+      message: "Administrator Master Code updated and stored securely with PBKDF2-SHA512 hashing."
     });
   } catch (err) {
-    console.error("[Admin Update PIN Error]:", err?.message || err);
+    console.error("[Admin Update Master Code Error]:", err?.message || err);
     return sendJsonResponse(res, 500, {
       success: false,
-      error: "An unexpected error occurred while updating administrator PIN."
+      error: "An unexpected error occurred while updating administrator Master Code."
     });
   }
 }
@@ -7372,73 +7620,83 @@ async function handler18(req, res) {
   try {
     const body = await parseRequestBody(req);
     const rawPhone = body?.phone || body?.mobile || body?.mobileNumber || body?.phoneNumber;
-    const rawPin = body?.pin || body?.securityPin || body?.adminPin;
-    if (!rawPhone || !rawPin) {
+    const rawMasterCode = body?.masterCode || body?.pin || body?.securityPin || body?.adminPin;
+    if (!rawPhone || !rawMasterCode) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Admin mobile number and Security PIN are required."
+        error: "Administrator mobile number and Master Code are required."
       });
     }
     const cleanPhone = normalizePhone(String(rawPhone));
-    const cleanPin = String(rawPin).trim();
+    const cleanCode = String(rawMasterCode).trim();
     if (!cleanPhone || cleanPhone.length < 10) {
       return sendJsonResponse(res, 400, {
         success: false,
         error: "A valid 10-digit administrator mobile number is required."
       });
     }
-    if (!cleanPin || cleanPin.length < 4 || cleanPin.length > 8) {
+    if (!cleanCode || cleanCode.length < 4 || cleanCode.length > 32) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Security PIN must be between 4 and 8 digits."
+        error: "Master Code must be between 4 and 32 characters."
       });
     }
     const isAuthorized = isAuthorizedAdminAccountPhone(cleanPhone);
-    const maskedPhone = cleanPhone.length >= 10 ? `+91 ${cleanPhone.slice(0, 2)}\u2022\u2022\u2022\u2022\u2022\u2022${cleanPhone.slice(-2)}` : `+91 ${cleanPhone}`;
+    const maskedPhone = maskAdminPhoneDisplay(cleanPhone);
     if (!isAuthorized) {
-      console.warn(`[SECURITY AUDIT] Unauthorized admin verification attempt for cellular identifier: ${maskedPhone} at ${(/* @__PURE__ */ new Date()).toISOString()}`);
+      console.warn(`[SECURITY AUDIT] Unauthorized admin verification attempt at ${(/* @__PURE__ */ new Date()).toISOString()}`);
       return sendJsonResponse(res, 403, {
         success: false,
         error: "Access Denied: This mobile number is not authorized for administrative access."
       });
     }
-    const result = verifyAdminPin(cleanPhone, cleanPin);
+    const result = await verifyAdminMasterCode(cleanPhone, cleanCode);
     if (result.locked) {
-      console.warn(`[SECURITY AUDIT] Administrative account ${maskedPhone} is temporarily locked out due to repeated failed PIN attempts.`);
+      console.warn(`[SECURITY AUDIT] Administrative account ${maskedPhone} temporarily locked out.`);
       return sendJsonResponse(res, 429, {
         success: false,
         locked: true,
         remainingAttempts: 0,
-        error: result.message || "Account temporarily locked due to repeated failed attempts. Please retry in 15 minutes."
+        retryAfterSeconds: result.retryAfterSeconds,
+        error: result.message || "Account temporarily locked due to repeated failed attempts. Please retry later."
+      });
+    }
+    if (result.requiresOwnerReset || !result.configured) {
+      return sendJsonResponse(res, 428, {
+        success: false,
+        configured: false,
+        requiresOwnerReset: true,
+        error: result.message || "Master Code credential record is unavailable. Project-owner-authorized reset is required."
       });
     }
     if (!result.verified) {
-      console.warn(`[SECURITY AUDIT] Failed PIN verification attempt for administrator ${maskedPhone}. Remaining attempts: ${result.remainingAttempts}`);
+      console.warn(`[SECURITY AUDIT] Failed Master Code verification for ${maskedPhone}. Remaining attempts: ${result.remainingAttempts}`);
       return sendJsonResponse(res, 401, {
         success: false,
         locked: false,
         remainingAttempts: result.remainingAttempts,
-        error: result.message || "Incorrect security PIN. Please try again."
+        error: result.message || "Incorrect Master Code. Please try again."
       });
     }
-    const isMaster = cleanPhone === AUTHORIZED_ADMIN_PHONE || cleanPhone === "9063692135" || cleanPhone === `91${AUTHORIZED_ADMIN_PHONE}`;
+    const isMaster = isMasterAdminPhone(cleanPhone);
     const assignedRole = isMaster ? "super_admin" : "admin";
     const token = createSignedSessionJwt(cleanPhone, assignedRole, {
       phone: cleanPhone,
       username: isMaster ? "nuvvo_super_admin" : `admin_${cleanPhone.slice(-4)}`
     });
-    console.log(`[SECURITY AUDIT] Administrative login verified successfully for ${maskedPhone} as [${assignedRole}] at ${(/* @__PURE__ */ new Date()).toISOString()}`);
+    console.log(`[SECURITY AUDIT] Administrative login verified for ${maskedPhone} as [${assignedRole}] at ${(/* @__PURE__ */ new Date()).toISOString()}`);
     return sendJsonResponse(res, 200, {
       success: true,
       token,
       role: assignedRole,
       isAuthorizedAdmin: true,
-      phone: cleanPhone,
+      phone: maskedPhone,
+      maskedPhone,
       navigationOptions: [
         { id: "dashboard", label: "Open Admin Dashboard", route: isMaster ? "super-admin" : "admin" },
-        { id: "settings", label: "Open Settings", route: "admin" }
+        { id: "settings", label: "Open Admin Settings", route: "admin" }
       ],
-      message: "Administrator credentials and PIN verified successfully."
+      message: "Administrator credentials and Master Code verified successfully."
     });
   } catch (err) {
     console.error("[Admin Verify Error]:", err?.message || err);
@@ -8467,9 +8725,7 @@ var supabaseServer = new Proxy({}, {
     return typeof value === "function" ? value.bind(client) : value;
   }
 });
-var AUTHORIZED_ADMIN_PHONE3 = process.env.ADMIN_PHONE || "9063692135";
-var SESSION_SECRET2 = process.env.SESSION_SECRET || process.env.SUPABASE_SECRET_KEY || "nuvvo_production_secure_secret_chirala_2026";
-if (!process.env.SESSION_SECRET && (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production")) {
+if (!process.env.SESSION_SECRET && !process.env.JWT_SECRET && (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production")) {
   console.warn("[SECURITY NOTICE] SESSION_SECRET is not explicitly set in environment variables. For maximum cryptographic security, set SESSION_SECRET in your Vercel Project Settings.");
 }
 var SESSIONS_FILE = path4.join(process.cwd(), ".server_sessions.json");
@@ -8593,43 +8849,23 @@ function persistServerOrders(map) {
 }
 var serverOrders = loadServerOrders();
 function createSignedSessionToken(phone, role) {
-  const payload = {
-    phone,
-    role,
-    createdAt: Date.now(),
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1e3
-    // 30 days validity
-  };
-  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signature = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
-  const token = `nuvvo_jwt_${payloadStr}.${signature}`;
-  serverSessions.set(token, { phone, role, createdAt: payload.createdAt });
+  const cleanPhone = normalizePhone(phone) || phone;
+  const token = createSignedSessionJwt(cleanPhone, role, { phone: cleanPhone });
+  serverSessions.set(token, { phone: cleanPhone, role, createdAt: Date.now() });
   persistSessions(serverSessions);
   return token;
 }
 function verifySignedSessionToken(token) {
   if (!token) return { valid: false };
-  if (token.startsWith("nuvvo_jwt_")) {
-    try {
-      const raw = token.replace("nuvvo_jwt_", "");
-      const dotIndex = raw.lastIndexOf(".");
-      if (dotIndex === -1) return { valid: false };
-      const payloadStr = raw.substring(0, dotIndex);
-      const signature = raw.substring(dotIndex + 1);
-      const expectedSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
-      if (signature.length !== expectedSig.length || !crypto7.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
-        return { valid: false };
-      }
-      const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
-      if (Date.now() > payload.exp) {
-        return { valid: false };
-      }
-      return { valid: true, phone: payload.phone, role: payload.role };
-    } catch {
-      return { valid: false };
-    }
+  const jwtCheck = verifySignedSessionJwt(token);
+  if (jwtCheck.valid && jwtCheck.role) {
+    return {
+      valid: true,
+      phone: jwtCheck.phone || jwtCheck.payload?.phone || jwtCheck.payload?.sub,
+      role: jwtCheck.role
+    };
   }
-  if (serverSessions.has(token)) {
+  if (!token.startsWith("nuvvo_jwt_") && serverSessions.has(token)) {
     const s = serverSessions.get(token);
     return { valid: true, phone: s.phone, role: s.role };
   }
@@ -9497,7 +9733,7 @@ app.all(["/api/admin/check-phone", "/admin/check-phone", "/api/auth/admin-check-
 app.all(["/api/auth/admin-verify-pin", "/auth/admin-verify-pin"], (req, res) => {
   return handler15(req, res);
 });
-app.all(["/api/auth/admin-update-pin", "/auth/admin-update-pin"], (req, res) => {
+app.all(["/api/auth/admin-update-pin", "/auth/admin-update-pin", "/api/auth/admin-reset-master-code", "/api/admin/reset-master-code"], (req, res) => {
   return handler16(req, res);
 });
 var OTP_EXPIRY_MS2 = 5 * 60 * 1e3;
@@ -9534,7 +9770,7 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
       isDevOtp: !isSmsConfigured
     };
     const challengeStr = Buffer.from(JSON.stringify(challengePayload)).toString("base64url");
-    const challengeSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(challengeStr).digest("base64url");
+    const challengeSig = crypto7.createHmac("sha256", SESSION_SECRET).update(challengeStr).digest("base64url");
     const challengeToken = `otp_${challengeStr}.${challengeSig}`;
     serverOtpStore.set(cleanPhone, {
       codeHash,
@@ -9569,7 +9805,7 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
       });
     }
     const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
-    const backupHmac = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
+    const backupHmac = crypto7.createHmac("sha256", SESSION_SECRET).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
     const uniqueMobileBackupCode = String(parseInt(backupHmac.substring(0, 8), 16) % 9e5 + 1e5);
     return res.json({
       success: true,
@@ -9586,7 +9822,7 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
     console.warn("[OTP Notice] Handled failure in /api/auth/send-otp with resilient customer-unique OTP:", err?.message || err);
     const cleanPhoneDigits = String(req?.body?.phone || "9876543210").replace(/\D/g, "").slice(-10);
     const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
-    const fallbackHmac = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhoneDigits}_${epochWindow}`).digest("hex");
+    const fallbackHmac = crypto7.createHmac("sha256", SESSION_SECRET).update(`mobile_backup_${cleanPhoneDigits}_${epochWindow}`).digest("hex");
     const uniqueFallbackOtp = String(parseInt(fallbackHmac.substring(0, 8), 16) % 9e5 + 1e5);
     return res.status(200).json({
       success: true,
@@ -9601,7 +9837,7 @@ app.post(["/api/auth/send-otp", "/auth/send-otp"], async (req, res) => {
     });
   }
 });
-app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
+app.post(["/api/auth/verify-otp", "/auth/verify-otp"], async (req, res) => {
   try {
     const { phone, otp, requestedRole, challengeToken } = req.body || {};
     if (!phone) {
@@ -9615,13 +9851,20 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
       return res.status(400).json({ success: false, error: "Valid 10-digit mobile number required." });
     }
     const inputCode = String(otp || "").trim();
-    if (!inputCode || inputCode.length < 4 || inputCode.length > 6) {
-      return res.status(400).json({ success: false, error: "A valid verification OTP code is required (6 digits)." });
+    if (!inputCode || inputCode.length < 4 || inputCode.length > 32) {
+      return res.status(400).json({ success: false, error: "A valid verification code is required." });
     }
     let isVerified = false;
     let isExpired = false;
     if (isAuthorizedAdminAccountPhone(cleanPhone)) {
-      const pinCheck = verifyAdminPin(cleanPhone, inputCode);
+      const pinCheck = await verifyAdminMasterCode(cleanPhone, inputCode);
+      if (pinCheck.locked) {
+        return res.status(429).json({
+          success: false,
+          locked: true,
+          error: pinCheck.message || "Account temporarily locked due to repeated failed attempts."
+        });
+      }
       if (pinCheck.verified) {
         isVerified = true;
       }
@@ -9633,7 +9876,7 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
         if (dotIndex !== -1) {
           const payloadStr = raw.substring(0, dotIndex);
           const signature = raw.substring(dotIndex + 1);
-          const expectedSig = crypto7.createHmac("sha256", SESSION_SECRET2).update(payloadStr).digest("base64url");
+          const expectedSig = crypto7.createHmac("sha256", SESSION_SECRET).update(payloadStr).digest("base64url");
           if (signature.length === expectedSig.length && crypto7.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
             const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString("utf8"));
             if (payload.phone === cleanPhone) {
@@ -9693,8 +9936,8 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
     if (!isVerified && !isExpired) {
       const epochWindow = Math.floor(Date.now() / (10 * 60 * 1e3));
       const prevEpochWindow = epochWindow - 1;
-      const backupHmacCurrent = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
-      const backupHmacPrev = crypto7.createHmac("sha256", SESSION_SECRET2).update(`mobile_backup_${cleanPhone}_${prevEpochWindow}`).digest("hex");
+      const backupHmacCurrent = crypto7.createHmac("sha256", SESSION_SECRET).update(`mobile_backup_${cleanPhone}_${epochWindow}`).digest("hex");
+      const backupHmacPrev = crypto7.createHmac("sha256", SESSION_SECRET).update(`mobile_backup_${cleanPhone}_${prevEpochWindow}`).digest("hex");
       const uniqueCurrent = String(parseInt(backupHmacCurrent.substring(0, 8), 16) % 9e5 + 1e5);
       const uniquePrev = String(parseInt(backupHmacPrev.substring(0, 8), 16) % 9e5 + 1e5);
       if (inputCode === uniqueCurrent || inputCode === uniquePrev) {
@@ -9715,19 +9958,15 @@ app.post(["/api/auth/verify-otp", "/auth/verify-otp"], (req, res) => {
         error: "The verification code is incorrect or invalid. Please check the 6-digit code and try again."
       });
     }
-    let role = "normal_user";
-    if (cleanPhone === AUTHORIZED_ADMIN_PHONE3) {
-      role = "super_admin";
-    } else {
-      role = "normal_user";
-    }
+    const role = isMasterAdminPhone(cleanPhone) ? "super_admin" : "normal_user";
     const token = createSignedSessionToken(cleanPhone, role);
+    const responsePhone = role === "normal_user" ? cleanPhone : maskAdminPhoneDisplay(cleanPhone);
     return res.json({
       success: true,
       token,
       role,
       isAuthorizedAdmin: role === "super_admin",
-      phone: cleanPhone
+      phone: responsePhone
     });
   } catch (err) {
     console.warn("[OTP Notice] Verification error in /api/auth/verify-otp:", err?.message || err);
@@ -9753,10 +9992,12 @@ app.post(["/api/auth/verify-role", "/auth/verify-role"], (req, res) => {
   if (!verified.valid) {
     return res.json({ role: "normal_user", isAuthorizedAdmin: false });
   }
+  const isAuthAdmin = verified.role === "admin" || verified.role === "super_admin";
   res.json({
     role: verified.role,
-    phone: verified.phone,
-    isAuthorizedAdmin: verified.role === "admin" || verified.role === "super_admin"
+    phone: isAuthAdmin ? maskAdminPhoneDisplay(verified.phone) : verified.phone,
+    maskedPhone: isAuthAdmin ? maskAdminPhoneDisplay(verified.phone) : void 0,
+    isAuthorizedAdmin: isAuthAdmin
   });
 });
 app.get("/api/admin/diagnostics/supabase", requireAdminAuth, async (_req, res) => {
@@ -10922,7 +11163,7 @@ app.get("/api/orders/:orderId/notifications", async (req, res) => {
         id: r.id,
         orderId: r.order_id,
         recipientRole: r.recipient_role,
-        recipientMasked: r.recipient_role === "admin" ? "+91 \u2022\u2022\u2022\u2022\u2022\u20222135" : maskPhone(r.recipient),
+        recipientMasked: r.recipient_role === "admin" ? "+91 \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u202235" : maskPhone(r.recipient),
         notificationType: r.notification_type,
         templateName: r.template_name,
         status: r.status,
@@ -11039,11 +11280,17 @@ app.get("/api/admin/whatsapp/status", requireAdminAuth, async (req, res) => {
       recentFailedCustomer24h: recentFailed24hList.filter((n) => n.recipient_role === "customer").length,
       skippedNoConsent: notifications.filter((n) => n.status === "skipped_no_consent").length
     };
+    const maskedAdminLabel = "+91 \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u202235";
+    const sanitizeAdminNotif = (n) => n && n.recipient_role === "admin" ? { ...n, recipient: maskedAdminLabel } : n;
+    const sanitizedTemplates = (templates || []).map((t) => ({
+      ...t,
+      description: typeof t?.description === "string" ? t.description.replace(/(\+?91[\s-]?)?9063692135/g, maskedAdminLabel) : t?.description
+    }));
     const recentFailedNotifications = recentFailed24hList.slice(0, 5).map((n) => ({
       id: n.id,
       orderId: n.order_id,
       recipientRole: n.recipient_role,
-      recipient: n.recipient,
+      recipient: n.recipient_role === "admin" ? maskedAdminLabel : n.recipient,
       templateName: n.template_name,
       errorMessage: n.error_message,
       timestamp: n.failed_at || n.updated_at || n.created_at
@@ -11052,17 +11299,19 @@ app.get("/api/admin/whatsapp/status", requireAdminAuth, async (req, res) => {
     return res.json({
       success: true,
       ...configStatus,
+      businessRecipientMasked: maskedAdminLabel,
+      adminWhatsappNumber: maskedAdminLabel,
       webhookUrl: `${baseAppUrl}/api/webhooks/whatsapp`,
-      templates,
+      templates: sanitizedTemplates,
       summaryCounts,
       recentFailedNotifications,
-      latestAdminNotification: adminNotifs[0] || null,
+      latestAdminNotification: adminNotifs[0] ? sanitizeAdminNotif(adminNotifs[0]) : null,
       latestCustomerNotification: customerNotifs[0] || null,
       lastError: failedNotif ? {
         id: failedNotif.id,
         orderId: failedNotif.order_id,
         recipientRole: failedNotif.recipient_role,
-        recipient: failedNotif.recipient,
+        recipient: failedNotif.recipient_role === "admin" ? maskedAdminLabel : failedNotif.recipient,
         message: failedNotif.error_message,
         timestamp: failedNotif.failed_at || failedNotif.updated_at
       } : null
@@ -11074,7 +11323,9 @@ app.get("/api/admin/whatsapp/status", requireAdminAuth, async (req, res) => {
 app.get("/api/admin/order-notifications", requireAdminAuth, async (req, res) => {
   try {
     const orderId = req.query?.orderId ? String(req.query.orderId) : void 0;
-    const notifications = await listOrderNotifications({ orderId, limit: 150 });
+    const notifications = (await listOrderNotifications({ orderId, limit: 150 })).map(
+      (n) => n && n.recipient_role === "admin" ? { ...n, recipient: "+91 \u2022\u2022\u2022\u2022\u2022\u2022\u2022\u202235" } : n
+    );
     return res.json({ success: true, notifications });
   } catch (err) {
     return res.json({ success: true, notifications: [], error: err?.message });

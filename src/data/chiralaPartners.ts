@@ -274,7 +274,7 @@ export const generatePreloadedChiralaRestaurants = (): Restaurant[] => {
       isActive: true, // Default active/available
       businessType: vendor.type as any,
       distance,
-      phone: '9063692135'
+      phone: '9848022334'
     };
   });
 };

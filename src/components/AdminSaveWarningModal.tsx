@@ -120,7 +120,7 @@ export const AdminSaveWarningModal: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <UserCheck className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-              <span>Operator: <strong className="text-zinc-800 dark:text-zinc-200">{user?.name || user?.phone || '9063692135'}</strong></span>
+              <span>Operator: <strong className="text-zinc-800 dark:text-zinc-200">{user?.name || user?.phone || 'Authorized Super Admin'}</strong></span>
             </div>
           </div>
 

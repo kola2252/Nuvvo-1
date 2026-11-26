@@ -12,7 +12,7 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, LineChart, Line, Cell
 } from 'recharts';
-import { isSuperAdminRole } from '../config/authConfig';
+import { isSuperAdminRole, normalizeAdminPhoneInput, normalizeAdminPhoneDigits, getStoredAuthToken } from '../config/authConfig';
 import AdminCatalogManager from './AdminCatalogManager';
 import AdminEmailTool from './AdminEmailTool';
 import AdminWhatsAppSettings from './AdminWhatsAppSettings';
@@ -27,7 +27,7 @@ import {
 
 export default function SuperAdminPanel() {
   const { 
-    user, isSuperAdminAuthenticated, authenticateSuperAdmin, 
+    user, isSuperAdminAuthenticated, adminVerifyPin, 
     logs, clearLogs, wipeAllData, clearSystemCache, restaurants, toggleRestaurantActiveStatus, 
     approveRestaurant, registerNewRestaurantRequest, addFoodItem,
     deliveryPartners, addDeliveryPartner, removeDeliveryPartner, toggleDeliveryPartnerAvailability,
@@ -84,7 +84,9 @@ export default function SuperAdminPanel() {
     );
   }
 
+  const [superAdminPhone, setSuperAdminPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
+  const [superAdminVerifying, setSuperAdminVerifying] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [selectedMailToPreview, setSelectedMailToPreview] = useState<any | null>(null);
   
@@ -103,7 +105,7 @@ export default function SuperAdminPanel() {
 
   const fetchSuperAdminWhatsappFailedCount = React.useCallback(async () => {
     try {
-      const token = localStorage.getItem('nuvvo_auth_token') || '';
+      const token = getStoredAuthToken();
       if (!token) return;
       const res = await fetch('/api/admin/whatsapp/status', {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -392,13 +394,29 @@ export default function SuperAdminPanel() {
     );
   }
 
-  const handleVerifyOtp = (e: React.FormEvent) => {
+  const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (otpCode === '9063') {
-      authenticateSuperAdmin();
-      setErrorMsg('');
+    const targetPhone = normalizeAdminPhoneDigits(superAdminPhone);
+    const code = otpCode.trim();
+    if (!targetPhone || targetPhone.length < 10) {
+      setErrorMsg('Please enter your registered 10-digit administrator mobile number.');
+      return;
+    }
+    if (!code || code.length < 4 || code.length > 32) {
+      setErrorMsg('Please enter your Master Code (4 to 32 characters).');
+      return;
+    }
+
+    setErrorMsg('');
+    setSuperAdminVerifying(true);
+    const res = await adminVerifyPin(targetPhone, code);
+    setSuperAdminVerifying(false);
+
+    if (!res.success) {
+      setErrorMsg(res.error || 'Incorrect Master Code or unauthorized mobile number.');
     } else {
-      setErrorMsg('Incorrect multi-factor pass-key credential.');
+      setOtpCode('');
+      setSuperAdminPhone('');
     }
   };
 
@@ -537,9 +555,10 @@ export default function SuperAdminPanel() {
   };
 
   // Click-To-WhatsApp function for onboarding assistance
-  const launchWhatsAppOnboarding = (phoneStr: string = '919063692135') => {
+  const launchWhatsAppOnboarding = (phoneStr: string = '') => {
+    const cleanPhone = String(phoneStr || (import.meta as any).env?.VITE_SUPPORT_WHATSAPP_NUMBER || '').replace(/\D/g, '');
     const textMsg = encodeURIComponent("Hi Nuvvo Support, I want to complete my partner restaurant verification and onboard quickly inside Chirala Region!");
-    const targetUrl = `https://wa.me/${phoneStr}?text=${textMsg}`;
+    const targetUrl = cleanPhone ? `https://wa.me/${cleanPhone}?text=${textMsg}` : `https://wa.me/?text=${textMsg}`;
     window.open(targetUrl, '_blank');
   };
 
@@ -1203,23 +1222,47 @@ export default function SuperAdminPanel() {
               <p className="text-red-500 font-bold text-center bg-red-50 dark:bg-red-950/20 p-2 rounded-xl text-[10px]">{errorMsg}</p>
             )}
 
-            <form onSubmit={handleVerifyOtp} className="space-y-3">
+            <form onSubmit={handleVerifyOtp} autoComplete="off" className="space-y-3">
               <div>
                 <label className="block text-[10px] uppercase font-bold text-zinc-500 mb-1 text-center font-mono">
-                  Input Security Pass-Key
+                  Registered Admin Mobile
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-zinc-400">+91</span>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={16}
+                    required
+                    disabled={superAdminVerifying}
+                    placeholder="10-digit mobile"
+                    value={superAdminPhone}
+                    onChange={e => setSuperAdminPhone(normalizeAdminPhoneInput(e.target.value))}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 pl-11 pr-3 py-2.5 rounded-xl border text-center font-bold font-mono text-sm tracking-widest focus:outline-none focus:border-red-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-zinc-500 mb-1 text-center font-mono">
+                  Input Master Code
                 </label>
                 <input 
                   type="password" 
-                  maxLength={4}
-                  placeholder="••••"
+                  autoComplete="off"
+                  maxLength={32}
+                  required
+                  disabled={superAdminVerifying}
+                  placeholder="Enter Master Code"
                   value={otpCode}
                   onChange={e => setOtpCode(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 px-3 py-3 rounded-xl border text-center font-black font-mono text-xl tracking-widest focus:outline-none focus:border-red-500"
                 />
               </div>
 
-              <button type="submit" className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl uppercase tracking-wider hover:scale-[1.01] transition-transform cursor-pointer">
-                Unlock Secure Session
+              <button type="submit" disabled={superAdminVerifying} className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold py-3 rounded-xl uppercase tracking-wider hover:scale-[1.01] transition-transform cursor-pointer">
+                {superAdminVerifying ? 'Verifying...' : 'Unlock Secure Session'}
               </button>
             </form>
           </div>
@@ -1238,7 +1281,7 @@ export default function SuperAdminPanel() {
                 <p className="text-[10px] text-zinc-500">Live chat onboarding operations route directly through our dedicated team.</p>
               </div>
               <button 
-                onClick={() => launchWhatsAppOnboarding('919063692135')}
+                onClick={() => launchWhatsAppOnboarding()}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5 shrink-0 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer uppercase"
               >
                 <PhoneCall className="w-3.5 h-3.5" /> Chat Now

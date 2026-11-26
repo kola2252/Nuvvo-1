@@ -8,15 +8,15 @@
  */
 
 import {
-  AUTHORIZED_ADMIN_PHONE,
   isAuthorizedAdminAccountPhone,
+  maskAdminPhoneDisplay,
   normalizePhone,
   parseRequestBody,
+  resolveAdminCredentialRecord,
   sendJsonResponse
 } from "../../auth-utils";
 
 export default async function handler(req: any, res: any) {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -33,20 +33,19 @@ export default async function handler(req: any, res: any) {
     const isAuthorized = isAuthorizedAdminAccountPhone(cleanPhone);
 
     if (isAuthorized) {
-      const maskedPhone = cleanPhone.length >= 10
-        ? `+91 ${cleanPhone.slice(0, 2)}••••••${cleanPhone.slice(-2)}`
-        : `+91 ${cleanPhone}`;
+      const cred = await resolveAdminCredentialRecord();
+      const maskedPhone = maskAdminPhoneDisplay(cleanPhone);
 
       return sendJsonResponse(res, 200, {
         success: true,
         isAuthorizedAdmin: true,
         promptForPin: true,
+        masterCodeConfigured: cred.configured,
         maskedPhone,
         message: "Authorized administrator account verified."
       });
     }
 
-    // For any unauthorized number, return 403 and never prompt for PIN
     return sendJsonResponse(res, 403, {
       success: false,
       isAuthorizedAdmin: false,

@@ -19,6 +19,8 @@ import {
   recordCustomerAuthFailure,
   clearCustomerAuthRateLimit,
   findLocalCustomerByUsername,
+  findLocalCustomerAccountByEmail,
+  findLocalCustomerAccountByUsername,
   upsertLocalCustomerProfileIndex,
   fallbackCustomerAccounts,
   fallbackUsernamesRegistry,
@@ -135,9 +137,11 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // Check local non-secret username index & memory registry
+      // Check local username indexes & memory registry
       if (!targetEmail) {
-        const localMatch = findLocalCustomerByUsername(cleanUsernameLower);
+        const localMatch =
+          findLocalCustomerAccountByUsername(cleanUsernameLower) ||
+          findLocalCustomerByUsername(cleanUsernameLower);
         if (localMatch?.email) {
           targetEmail = normalizeEmail(localMatch.email);
         }
@@ -232,12 +236,31 @@ export default async function handler(req: any, res: any) {
 
         try {
           const writer = isServiceRole && adminClient ? adminClient : userClient;
-          const { data: inserted } = await writer
+          const { data: inserted, error: insertErr } = await writer
             .from("customer_profiles")
             .upsert([newRow], { onConflict: "id" })
             .select("*")
             .maybeSingle();
-          if (inserted) dbProfile = inserted;
+          if (inserted) {
+            dbProfile = inserted;
+          } else if (insertErr && (insertErr.code === "PGRST204" || insertErr.code === "42703")) {
+            const { data: minInserted } = await writer
+              .from("customer_profiles")
+              .upsert([{
+                id: authUser.id,
+                full_name: newRow.full_name,
+                username: newRow.username,
+                email: newRow.email,
+                mobile: newRow.mobile,
+                location: newRow.location,
+                delivery_address: newRow.delivery_address,
+                addresses: newRow.addresses,
+                role: "Customer"
+              }], { onConflict: "id" })
+              .select("*")
+              .maybeSingle();
+            if (minInserted) dbProfile = minInserted;
+          }
         } catch {}
 
         if (!dbProfile) {
@@ -367,6 +390,48 @@ export default async function handler(req: any, res: any) {
       } catch {}
     }
 
+    // Durable local PBKDF2 server-managed customer account verification (when Supabase email mailer was rate-limited)
+    if (!hasSupabaseAuthAccount) {
+      const localAcc = findLocalCustomerAccountByEmail(targetEmail);
+      const localHash = localAcc?.passwordHash;
+      if (localAcc && localHash && verifyPassword(cleanPassword, localHash)) {
+        clearCustomerAuthRateLimit("login", accountLimitKey);
+        const token = createSignedSessionJwt(localAcc.id || targetEmail, "normal_user", {
+          email: targetEmail,
+          phone: localAcc.phone,
+          username: localAcc.username
+        });
+        const mappedLocalUser = {
+          id: localAcc.id,
+          name: localAcc.fullName || localAcc.username,
+          username: localAcc.username,
+          email: targetEmail,
+          phone: localAcc.phone || "",
+          location: localAcc.location || "",
+          addresses: Array.isArray(localAcc.addresses) ? localAcc.addresses : [],
+          preferredLanguage: localAcc.preferredLanguage || "te",
+          role: "Customer" as const,
+          isProfileComplete: true,
+          isEmailVerified: Boolean(localAcc.isEmailVerified),
+          whatsappNumber: localAcc.whatsappNumber || undefined,
+          whatsappOptIn: Boolean(localAcc.whatsappOptIn),
+          whatsappOptInAt: localAcc.whatsappOptInAt || undefined,
+          whatsappOptInSource: localAcc.whatsappOptInSource || undefined,
+          favoriteFoods: [],
+          favoriteRestaurants: [],
+          createdAt: localAcc.createdAt || new Date().toISOString()
+        };
+        return sendJsonResponse(res, 200, {
+          success: true,
+          token,
+          emailVerified: Boolean(localAcc.isEmailVerified),
+          user: mappedLocalUser,
+          role: "Customer",
+          message: "Login successful."
+        });
+      }
+    }
+
     // Legacy in-memory fallback check ONLY if no Supabase Auth account exists
     const legacyMem = !hasSupabaseAuthAccount ? fallbackCustomerAccounts.get(targetEmail) : null;
     if (legacyMem?.password_hash && verifyPassword(cleanPassword, legacyMem.password_hash)) {
@@ -378,6 +443,7 @@ export default async function handler(req: any, res: any) {
       });
       const safeMem = { ...legacyMem, role: "Customer" };
       delete safeMem.password_hash;
+      delete safeMem.passwordHash;
       return sendJsonResponse(res, 200, {
         success: true,
         token,

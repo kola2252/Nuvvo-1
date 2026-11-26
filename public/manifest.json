@@ -1,8 +1,10 @@
 {
+  "id": "/",
   "name": "Nuvvo - Food Delivery",
   "short_name": "Nuvvo",
   "description": "Premium food ordering and instant delivery with real-time GPS tracking and zero packaging charges.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#18181b",

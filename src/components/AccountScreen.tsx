@@ -43,7 +43,7 @@ export default function AccountScreen() {
     submitSupportTicket
   } = useApp();
 
-  // Role-based authorization verified securely on the server and strictly locked to phone 9063692135
+  // Role-based authorization verified securely via server-signed JWT
   const isAuthorizedPhone = isAuthorizedAdminPhone(user?.phone);
   const isAuthorizedAdmin = isAuthorizedPhone || ((isAdmin || isAdminRole(user?.role)) && isAuthorizedPhone);
   const isSuperAdminCell = isAuthorizedPhone || ((isSuperAdmin || isSuperAdminRole(user?.role)) && isAuthorizedPhone);
@@ -1198,10 +1198,10 @@ Thank you for dining with Nuvvo Gourmet!`;
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 pb-32 transition-colors duration-300">
+    <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 pb-36 transition-colors duration-300">
       
       {/* Header */}
-      <div className="sticky top-0 bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800 p-4 z-10 flex items-center justify-between">
+      <div className="sticky top-0 bg-white dark:bg-zinc-900 border-b border-slate-100 dark:border-zinc-800 p-4 z-40 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
             onClick={pageHistory.length > 1 ? goBack : closePage}
@@ -1223,7 +1223,7 @@ Thank you for dining with Nuvvo Gourmet!`;
         </div>
         <button 
           onClick={logoutUser}
-          className="text-xs text-rose-500 font-extrabold flex items-center gap-1 hover:underline cursor-pointer"
+          className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-400 font-extrabold flex items-center gap-1.5 cursor-pointer shrink-0 transition-all"
         >
           <LogOut className="w-3.5 h-3.5" /> Log Out
         </button>
@@ -1313,7 +1313,7 @@ Thank you for dining with Nuvvo Gourmet!`;
                   )}
                 </div>
                 <p className="text-[10px] text-zinc-400 font-mono font-bold mt-1 tracking-tight">
-                  {user?.username ? `@${user.username} • ` : ''}MOBILE: +91 {user?.phone || 'Not Set'}
+                  {user?.username ? `@${user.username} • ` : ''}MOBILE: {isAuthorizedAdmin ? (user?.phone || 'Protected (Server-Verified)') : `+91 ${user?.phone || 'Not Set'}`}
                 </p>
                 <div className="mt-1 flex gap-1 items-center flex-wrap">
                   {user?.username && (
@@ -1336,7 +1336,7 @@ Thank you for dining with Nuvvo Gourmet!`;
                       <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
                       <div>
                         <p className="text-[11px] font-black text-red-700 dark:text-red-300">Master Admin Clearance</p>
-                        <p className="text-[9.5px] text-zinc-500 font-mono">+91 {user?.phone || ''}</p>
+                        <p className="text-[9.5px] text-zinc-500 font-mono">{user?.phone || 'Protected (Server-Verified)'}</p>
                       </div>
                     </div>
                     <button
@@ -4191,14 +4191,14 @@ Thank you for dining with Nuvvo Gourmet!`;
                     Help, FAQ &amp; Customer Support
                   </h4>
                   <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                    Chirala Support Desk • Helpline +91 9063692135
+                    Chirala Support Desk • 24/7 Ticket &amp; Chat Support
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => clickToWhatsAppSupport('Hi Nuvvo Support Desk, I need help with my order.')}
-                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-black cursor-pointer self-start sm:self-auto"
+                className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-500 text-white border border-emerald-400 shadow-md shadow-emerald-500/25 text-[11px] font-black cursor-pointer self-start sm:self-auto transition-all active:scale-95"
               >
                 WhatsApp Support Desk
               </button>

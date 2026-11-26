@@ -63,8 +63,14 @@ export function generateOtpDiagnostics(): OtpDiagnosticReport {
   const fast2SmsKey = process.env.FAST2SMS_API_KEY || "";
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY || "";
-  const adminPhoneVal = process.env.ADMIN_PHONE || "9063692135";
-  const adminPinVal = process.env.ADMIN_SECURITY_PIN || "2026";
+  const adminPhoneVal = process.env.ADMIN_PHONE || "";
+  const adminPinVal =
+    process.env.ADMIN_MASTER_CODE_HASH ||
+    process.env.ADMIN_PIN_HASH ||
+    process.env.ADMIN_MASTER_CODE ||
+    process.env.ADMIN_PIN ||
+    process.env.ADMIN_SECURITY_PIN ||
+    "";
 
   const disableTwilio =
     process.env.DISABLE_TWILIO === "true" || process.env.BLOCK_TWILIO === "true";
@@ -75,12 +81,8 @@ export function generateOtpDiagnostics(): OtpDiagnosticReport {
   const isFast2SmsConfigured = Boolean(fast2SmsKey.trim());
   const isRealSmsProviderActive = isTwilioFullyConfigured || isFast2SmsConfigured;
 
-  // Mask admin phone safely: show only last 4 digits
-  const cleanAdminPhone = adminPhoneVal.replace(/\D/g, "");
-  const maskedAdminPhone =
-    cleanAdminPhone.length >= 4
-      ? "*".repeat(Math.max(0, cleanAdminPhone.length - 4)) + cleanAdminPhone.slice(-4)
-      : "****";
+  // Mask admin phone safely without leaking digits
+  const maskedAdminPhone = adminPhoneVal ? "Configured (Private)" : "Managed Privately on Server";
 
   // 2. Cryptographic subsystem readiness checks
   let randomIntFunctional = false;

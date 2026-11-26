@@ -6,6 +6,7 @@
  */
 
 import { supabase } from '../utils/supabase/client';
+import { getStoredAuthToken } from '../config/authConfig';
 import { queryClient, fetchWithCache } from '../utils/apiCache';
 import { tanstackQueryClient, STALE_TIMES, QUERY_KEYS, invalidateAppSetting } from '../utils/tanstackQuery';
 
@@ -36,16 +37,15 @@ export async function getAppSettingFromSupabase<T = any>(key: string, defaultVal
           .maybeSingle();
 
         if (!error) {
-          if (data && data.value !== undefined) {
+          if (data && data.value !== undefined && data.value !== null) {
             return data.value as T;
           }
-          // Row does not exist yet in app_settings — return default without firing redundant backend 404 request
-          return defaultValue !== undefined ? defaultValue : null;
+          // Row does not exist yet in app_settings — check server store/default cleanly
         }
 
-        // 2. Fallback to server proxy endpoint only when direct Supabase query encountered an error
-        const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
-        const res = await fetchWithCache<{ success?: boolean; value?: T }>(
+        // 2. Fallback to server proxy endpoint when Supabase row is missing or errored
+        const token = getStoredAuthToken();
+        const res = await fetchWithCache<{ success?: boolean; value?: T | null }>(
           `/api/settings/${encodeURIComponent(key)}`,
           {
             headers: token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -53,7 +53,7 @@ export async function getAppSettingFromSupabase<T = any>(key: string, defaultVal
           { staleTime: STALE_TIMES.APP_SETTINGS, retry: 0 }
         );
 
-        if (res && res.success && res.value !== undefined) {
+        if (res && res.success && res.value !== undefined && res.value !== null) {
           return res.value as T;
         }
       } catch (err: any) {
@@ -96,7 +96,7 @@ export async function saveAppSettingToSupabase<T = any>(
       queryClient.setQueryData(['app_setting', key], value);
       // Also notify backend server to synchronize its state
       try {
-        const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+        const token = getStoredAuthToken();
         await fetch('/api/settings', {
           method: 'POST',
           headers: {
@@ -117,7 +117,7 @@ export async function saveAppSettingToSupabase<T = any>(
 
   // 2. Fallback via server API (uses elevated service role if client lacks direct table permission)
   try {
-    const token = typeof localStorage !== 'undefined' ? (localStorage.getItem('nuvvo_auth_token') || '') : '';
+    const token = getStoredAuthToken();
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: {
@@ -129,6 +129,9 @@ export async function saveAppSettingToSupabase<T = any>(
 
     const json = await res.json();
     if (res.ok && json.success) {
+      tanstackQueryClient.setQueryData(QUERY_KEYS.APP_SETTING(key), value);
+      invalidateAppSetting(key);
+      queryClient.setQueryData(['app_setting', key], value);
       return { success: true };
     }
     return { success: false, error: json.error || 'Server rejected setting update' };

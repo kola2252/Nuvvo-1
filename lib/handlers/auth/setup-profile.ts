@@ -15,7 +15,11 @@ import {
   verifySignedSessionJwt,
   createSignedSessionJwt,
   fallbackCustomerAccounts,
-  fallbackUsernamesRegistry
+  fallbackUsernamesRegistry,
+  findLocalCustomerByUsername,
+  findLocalCustomerAccountByUsername,
+  upsertLocalCustomerAccount,
+  upsertLocalCustomerProfileIndex
 } from "../../auth-utils";
 import { getAdminSupabaseServerClient } from "../../../src/utils/supabase/server";
 import { parseValidWhatsAppPhone, saveCustomerWhatsAppConsent } from "../../../src/lib/whatsapp";
@@ -204,6 +208,15 @@ export default async function handler(req: any, res: any) {
       console.warn("[Profile Setup Database Notice]:", dbErr?.message);
     }
 
+    // Check local username index uniqueness
+    const localExistingUser = findLocalCustomerAccountByUsername(cleanUsername) || findLocalCustomerByUsername(cleanUsername);
+    if (localExistingUser && normalizeEmail(localExistingUser.email) !== cleanEmail) {
+      return sendJsonResponse(res, 409, {
+        success: false,
+        error: `The username "${cleanUsername}" is already taken. Please choose another username.`
+      });
+    }
+
     // Persist validated WhatsApp consent preference in Supabase if WhatsApp number was provided
     if (validatedWhatsappE164) {
       await saveCustomerWhatsAppConsent({
@@ -216,7 +229,49 @@ export default async function handler(req: any, res: any) {
       }).catch(() => {});
     }
 
-    // Always maintain in warm container memory
+    // Persist PBKDF2-hashed account and non-secret profile index cleanly
+    upsertLocalCustomerAccount({
+      id: userId,
+      fullName: userProfile.name,
+      username: cleanUsername,
+      usernameLower: cleanUsername,
+      email: cleanEmail,
+      phone: cleanMobile,
+      location: String(location || '').trim() || 'Chirala',
+      deliveryAddress: String(address || '').trim() || 'Residence',
+      addresses: userProfile.addresses,
+      passwordHash,
+      whatsappNumber: validatedWhatsappE164 || undefined,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp,
+      whatsappOptInSource: validatedWhatsappE164 ? 'registration' : undefined,
+      preferredLanguage: 'te',
+      role: 'Customer',
+      isEmailVerified: true,
+      createdAt: userProfile.created_at,
+      updatedAt: userProfile.updated_at
+    });
+    upsertLocalCustomerProfileIndex({
+      id: userId,
+      fullName: userProfile.name,
+      username: cleanUsername,
+      usernameLower: cleanUsername,
+      email: cleanEmail,
+      mobile: cleanMobile,
+      location: String(location || '').trim() || 'Chirala',
+      deliveryAddress: String(address || '').trim() || 'Residence',
+      addresses: userProfile.addresses,
+      whatsappNumber: validatedWhatsappE164 || undefined,
+      whatsappOptIn: explicitOptIn,
+      whatsappOptInAt: consentTimestamp,
+      whatsappOptInSource: validatedWhatsappE164 ? 'registration' : undefined,
+      preferredLanguage: 'te',
+      role: 'Customer',
+      createdAt: userProfile.created_at,
+      updatedAt: userProfile.updated_at
+    });
+
+    // Maintain in warm container memory
     fallbackCustomerAccounts.set(cleanEmail, userProfile);
     fallbackUsernamesRegistry.set(cleanUsername, cleanEmail);
 

@@ -1,11 +1,11 @@
 import {
+  maskAdminPhoneDisplay,
   parseRequestBody,
   sendJsonResponse,
   verifySignedSessionJwt
 } from "../../auth-utils";
 
 export default async function handler(req: any, res: any) {
-  // Handle CORS preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return sendJsonResponse(res, 200, { ok: true });
   }
@@ -28,10 +28,12 @@ export default async function handler(req: any, res: any) {
       return sendJsonResponse(res, 200, { role: 'normal_user', isAuthorizedAdmin: false });
     }
 
+    const isAuthorizedAdmin = verified.role === 'admin' || verified.role === 'super_admin';
     return sendJsonResponse(res, 200, {
       role: verified.role,
-      phone: verified.phone,
-      isAuthorizedAdmin: verified.role === 'admin' || verified.role === 'super_admin'
+      phone: isAuthorizedAdmin ? maskAdminPhoneDisplay(verified.phone) : verified.phone,
+      maskedPhone: isAuthorizedAdmin ? maskAdminPhoneDisplay(verified.phone) : undefined,
+      isAuthorizedAdmin
     });
   } catch (err: any) {
     console.error("[Verify Role Error]:", err?.message || err);

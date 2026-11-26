@@ -15,6 +15,7 @@ import {
   Server, ShieldCheck, Copy, Check, ChevronDown, ChevronUp, 
   Terminal, X, KeyRound, Eye, EyeOff, ExternalLink, HelpCircle, Save
 } from 'lucide-react';
+import { getStoredAuthToken } from '../config/authConfig';
 
 interface SmtpLogEntry {
   timestamp: string;
@@ -94,13 +95,17 @@ export function AdminEmailTool() {
     let mounted = true;
     const fetchInitialStatus = async () => {
       try {
-        const res = await fetch('/api/verify-smtp?send=false');
-        const data: ApiResponse = await res.json().catch(() => null);
+        const token = getStoredAuthToken();
+        const res = await fetch('/api/verify-smtp?send=false', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        const data: ApiResponse & { details?: any } = await res.json().catch(() => null);
         if (mounted && data) {
-          if (data.transport) {
-            setTransportInfo(data.transport);
-            if (data.transport.host) setSmtpHost(data.transport.host);
-            if (data.transport.port) setSmtpPort(String(data.transport.port));
+          const resolvedTransport = data.transport || data.details?.transport;
+          if (resolvedTransport) {
+            setTransportInfo(resolvedTransport);
+            if (resolvedTransport.host) setSmtpHost(resolvedTransport.host);
+            if (resolvedTransport.port) setSmtpPort(String(resolvedTransport.port));
           }
           if (Array.isArray(data.logs)) {
             setLogs(data.logs);
@@ -144,22 +149,25 @@ export function AdminEmailTool() {
         payload.port = Number(smtpPort.trim());
       }
 
+      const token = getStoredAuthToken();
       const res = await fetch('/api/verify-smtp', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify(payload)
       });
 
-      const data: ApiResponse = await res.json().catch(() => ({
+      const data: ApiResponse & { details?: any } = await res.json().catch(() => ({
         success: false,
         status: 'server_error',
         error: `Server responded with status HTTP ${res.status}`
       }));
 
-      if (data.transport) {
-        setTransportInfo(data.transport);
+      const resolvedTransport = data.transport || data.details?.transport;
+      if (resolvedTransport) {
+        setTransportInfo(resolvedTransport);
       }
       if (Array.isArray(data.logs)) {
         setLogs(data.logs);
@@ -227,18 +235,21 @@ export function AdminEmailTool() {
         save: true
       };
 
+      const token = getStoredAuthToken();
       const res = await fetch('/api/verify-smtp', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify(payload)
       });
 
-      const data: ApiResponse = await res.json().catch(() => null);
+      const data: ApiResponse & { details?: any } = await res.json().catch(() => null);
 
-      if (data?.transport) {
-        setTransportInfo(data.transport);
+      const resolvedTransport = data?.transport || data?.details?.transport;
+      if (resolvedTransport) {
+        setTransportInfo(resolvedTransport);
       }
       if (Array.isArray(data?.logs)) {
         setLogs(data.logs);
