@@ -1221,12 +1221,39 @@ Thank you for dining with Nuvvo Gourmet!`;
           </button>
           <h2 className="text-xl font-black text-zinc-900 dark:text-zinc-50 tracking-tight ml-1">Your Account</h2>
         </div>
-        <button 
-          onClick={logoutUser}
-          className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-400 font-extrabold flex items-center gap-1.5 cursor-pointer shrink-0 transition-all"
-        >
-          <LogOut className="w-3.5 h-3.5" /> Log Out
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            id="account-dark-mode-toggle"
+            onClick={toggleDarkMode}
+            aria-pressed={darkMode}
+            aria-label={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 ${
+              darkMode
+                ? 'bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-amber-400'
+                : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-zinc-700'
+            }`}
+          >
+            {darkMode ? (
+              <>
+                <Sun className="w-3.5 h-3.5" />
+                <span>Light</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5" />
+                <span>Dark</span>
+              </>
+            )}
+          </button>
+          <button 
+            onClick={logoutUser}
+            className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-400 font-extrabold flex items-center gap-1.5 cursor-pointer shrink-0 transition-all"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Log Out
+          </button>
+        </div>
       </div>
 
       <div className="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-4">
@@ -2508,28 +2535,46 @@ Thank you for dining with Nuvvo Gourmet!`;
           </div>
 
           {/* Dark Mode Toggle inside settings option */}
-          <div className="pt-3 border-t border-slate-100 dark:border-zinc-800/60 flex items-center justify-between">
-            <div className="space-y-0.5">
-              <span className="text-[11px] font-extrabold text-zinc-800 dark:text-zinc-200 block uppercase tracking-wide">
-                Dark Mode Palette
-              </span>
-              <span className="text-[9.5px] text-zinc-400 dark:text-zinc-550 leading-snug block">
-                Toggle between bright crisp modes and dark night views.
-              </span>
+          <div className="pt-3 border-t border-slate-100 dark:border-zinc-800/60 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                darkMode ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-100 text-zinc-600'
+              }`}>
+                {darkMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+              </div>
+              <div className="space-y-0.5">
+                <span className="text-[11px] font-extrabold text-zinc-800 dark:text-zinc-200 block uppercase tracking-wide">
+                  Dark Mode Palette
+                </span>
+                <span className="text-[9.5px] text-zinc-400 dark:text-zinc-550 leading-snug block">
+                  Toggle between bright crisp modes and dark night views.
+                </span>
+              </div>
             </div>
             
             <button
               type="button"
+              id="settings-dark-mode-toggle"
               onClick={toggleDarkMode}
-              className={`p-1 rounded-full transition-colors duration-200 cursor-pointer ${
-                darkMode ? 'text-orange-500' : 'text-zinc-400'
+              aria-pressed={darkMode}
+              aria-label={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              className={`px-3 py-1.5 rounded-xl border text-[11px] font-extrabold flex items-center gap-1.5 transition-all duration-200 cursor-pointer active:scale-95 shrink-0 ${
+                darkMode
+                  ? 'bg-orange-500/15 border-orange-500/40 text-orange-400 hover:bg-orange-500/25'
+                  : 'bg-slate-100 border-slate-200 text-zinc-700 hover:bg-slate-200'
               }`}
               title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             >
               {darkMode ? (
-                <ToggleRight className="w-9 h-9 stroke-[1.5]" />
+                <>
+                  <ToggleRight className="w-5 h-5" />
+                  <span>Dark On</span>
+                </>
               ) : (
-                <ToggleLeft className="w-9 h-9 stroke-[1.5]" />
+                <>
+                  <ToggleLeft className="w-5 h-5" />
+                  <span>Light On</span>
+                </>
               )}
             </button>
           </div>

@@ -15,13 +15,27 @@
  */
 
 import nodemailer from "nodemailer";
-import { parseRequestBody, sendJsonResponse } from "../auth-utils";
+import { parseRequestBody, sendJsonResponse, resolveCallerIdentity } from "../auth-utils";
 import { loadSmtpConfig, saveSmtpConfig } from "../email-service";
 
 export default async function handler(req: any, res: any) {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return sendJsonResponse(res, 200, { ok: true });
+  }
+
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.authenticated) {
+    return sendJsonResponse(res, 401, {
+      success: false,
+      error: "Administrator authentication required."
+    });
+  }
+  if (!caller.isAdmin) {
+    return sendJsonResponse(res, 403, {
+      success: false,
+      error: "Forbidden: Only authorized Administrators may inspect or test SMTP settings."
+    });
   }
 
   // Memory buffer of all SMTP protocol log entries captured during this invocation

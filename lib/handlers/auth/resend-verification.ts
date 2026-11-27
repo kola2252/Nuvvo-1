@@ -98,7 +98,13 @@ export default async function handler(req: any, res: any) {
       });
 
       if (error) {
-        if (error.status === 429 || String(error.message || "").toLowerCase().includes("rate limit")) {
+        const errLower = String(error.message || "").toLowerCase();
+        if (
+          error.status === 429 ||
+          errLower.includes("rate limit") ||
+          errLower.includes("too many") ||
+          errLower.includes("error sending confirmation")
+        ) {
           return sendJsonResponse(res, 429, {
             success: false,
             error: "Too many verification email requests. Please wait a minute and check your spam folder."

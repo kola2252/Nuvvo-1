@@ -13,6 +13,8 @@ import {
   sendJsonResponse,
   findLocalCustomerById,
   findLocalCustomerAccountByEmail,
+  findLocalCustomerAccountById,
+  upsertLocalCustomerAccount,
   upsertLocalCustomerProfileIndex,
   resolveCallerIdentity
 } from "../../auth-utils";
@@ -121,7 +123,10 @@ export default async function handler(req: any, res: any) {
       }
 
       const localIdx = findLocalCustomerById(authUserId);
-      const source = dbProfile || localIdx || {};
+      const localAcc =
+        (authUser.email ? findLocalCustomerAccountByEmail(authUser.email) : null) ||
+        findLocalCustomerAccountById(authUserId);
+      const source = dbProfile || localIdx || localAcc || {};
 
       const resolvedAddresses = Array.isArray(source.addresses)
         ? source.addresses
@@ -131,7 +136,7 @@ export default async function handler(req: any, res: any) {
 
       const profile = {
         id: authUserId,
-        name: source.full_name || source.fullName || meta.full_name || authUser.email?.split("@")[0] || "Customer",
+        name: source.full_name || source.fullName || (source as any).name || meta.full_name || authUser.email?.split("@")[0] || "Customer",
         username: source.username || meta.username || undefined,
         email: authUser.email || source.email || "",
         phone: source.mobile || source.phone || meta.mobile || "",
@@ -171,17 +176,22 @@ export default async function handler(req: any, res: any) {
 
       // Fetch existing record to preserve immutable/unspecified fields
       let existingRow: any = null;
-      try {
-        const { data } = await userClient
-          .from("customer_profiles")
-          .select("*")
-          .eq("id", authUserId)
-          .maybeSingle();
-        if (data) existingRow = data;
-      } catch {}
+      if (userClient) {
+        try {
+          const { data } = await userClient
+            .from("customer_profiles")
+            .select("*")
+            .eq("id", authUserId)
+            .maybeSingle();
+          if (data) existingRow = data;
+        } catch {}
+      }
 
       const localIdx = findLocalCustomerById(authUserId);
-      const base = existingRow || localIdx || {};
+      const localAcc =
+        (authUser.email ? findLocalCustomerAccountByEmail(authUser.email) : null) ||
+        findLocalCustomerAccountById(authUserId);
+      const base = existingRow || localIdx || localAcc || {};
 
       const nextName = String(body?.name ?? body?.fullName ?? base.full_name ?? base.fullName ?? meta.full_name ?? "").trim();
       if (!nextName || nextName.length < 2) {
@@ -280,37 +290,41 @@ export default async function handler(req: any, res: any) {
       };
 
       let savedDb = false;
-      try {
-        const writer = isServiceRole && adminClient ? adminClient : userClient;
-        const { error: upsertErr } = await writer
-          .from("customer_profiles")
-          .upsert([updatePayload], { onConflict: "id" });
+      const writer = isServiceRole && adminClient ? adminClient : userClient;
+      if (writer) {
+        try {
+          const { error: upsertErr } = await writer
+            .from("customer_profiles")
+            .upsert([updatePayload], { onConflict: "id" });
 
-        if (!upsertErr) {
-          savedDb = true;
-        } else {
-          console.warn("[Customer Profile PUT notice]:", upsertErr.message);
+          if (!upsertErr) {
+            savedDb = true;
+          } else {
+            console.warn("[Customer Profile PUT notice]:", upsertErr.message);
+          }
+        } catch (err: any) {
+          console.warn("[Customer Profile PUT exception]:", err?.message);
         }
-      } catch (err: any) {
-        console.warn("[Customer Profile PUT exception]:", err?.message);
       }
 
       // Sync Supabase user metadata (never stores passwords) so profile stays consistent
-      try {
-        await userClient.auth.updateUser({
-          data: {
-            full_name: nextName,
-            mobile: nextMobile,
-            location: nextLocation,
-            delivery_address: nextDeliveryAddress,
-            addresses: nextAddresses,
-            whatsapp_number: nextWhatsappNumber,
-            whatsapp_consent: nextWhatsappConsent,
-            preferred_language: nextLanguage,
-            role: "Customer"
-          }
-        });
-      } catch {}
+      if (userClient) {
+        try {
+          await userClient.auth.updateUser({
+            data: {
+              full_name: nextName,
+              mobile: nextMobile,
+              location: nextLocation,
+              delivery_address: nextDeliveryAddress,
+              addresses: nextAddresses,
+              whatsapp_number: nextWhatsappNumber,
+              whatsapp_consent: nextWhatsappConsent,
+              preferred_language: nextLanguage,
+              role: "Customer"
+            }
+          });
+        } catch {}
+      }
 
       upsertLocalCustomerProfileIndex({
         id: authUserId,
@@ -330,6 +344,24 @@ export default async function handler(req: any, res: any) {
         avatar: nextAvatar || undefined,
         role: "Customer"
       });
+
+      if (localAcc) {
+        upsertLocalCustomerAccount({
+          ...localAcc,
+          fullName: nextName,
+          phone: nextMobile,
+          location: nextLocation,
+          deliveryAddress: nextDeliveryAddress,
+          addresses: nextAddresses,
+          whatsappNumber: nextWhatsappNumber || undefined,
+          whatsappOptIn: nextWhatsappConsent,
+          whatsappOptInAt: nextWhatsappOptInAt || undefined,
+          whatsappOptInSource: nextWhatsappSource || undefined,
+          preferredLanguage: nextLanguage,
+          role: "Customer",
+          updatedAt: nowIso
+        });
+      }
 
       if (nextWhatsappNumber) {
         await saveCustomerWhatsAppConsent({

@@ -86,6 +86,7 @@ function LiveRouteTracker({
   realTimeCoords,
   countdownText,
   distanceKm,
+  onRouteMetrics,
   onOpenChat,
 }: {
   restaurantCoords: { lat: number; lng: number };
@@ -100,6 +101,7 @@ function LiveRouteTracker({
   realTimeCoords?: { lat: number; lng: number };
   countdownText?: string;
   distanceKm?: number;
+  onRouteMetrics?: (metrics: { durationMillis?: number; distanceMeters?: number }) => void;
   onOpenChat?: () => void;
 }) {
   const map = useMap();
@@ -155,6 +157,17 @@ function LiveRouteTracker({
           if (route.viewport) {
             map.fitBounds(route.viewport, { top: 40, bottom: 40, left: 40, right: 40 });
           }
+
+          if (onRouteMetrics) {
+            const anyRoute = route as any;
+            const durationMillis = typeof anyRoute.durationMillis === 'number'
+              ? anyRoute.durationMillis
+              : undefined;
+            const distanceMeters = typeof anyRoute.distanceMeters === 'number'
+              ? anyRoute.distanceMeters
+              : undefined;
+            onRouteMetrics({ durationMillis, distanceMeters });
+          }
         }
       })
       .catch((err) => {
@@ -164,7 +177,7 @@ function LiveRouteTracker({
     return () => {
       polylinesRef.current.forEach(p => p.setMap(null));
     };
-  }, [routesLib, map, restaurantCoords, destinationCoords]);
+  }, [routesLib, map, restaurantCoords, destinationCoords, onRouteMetrics]);
 
   // Interpolate partner location along computed route path with live telemetry jitter
   useEffect(() => {
@@ -416,6 +429,7 @@ export default function TrackingScreen() {
   const [simulatedDistance, setSimulatedDistance] = useState(2.8); // in km
   const [etaRemaining, setEtaRemaining] = useState(24); // in minutes
   const [timeLeftMs, setTimeLeftMs] = useState<number>(0);
+  const [routeDurationMillis, setRouteDurationMillis] = useState<number | null>(null);
 
   // Live route position & ETA state (clean without fake WebSocket frame logs)
   const [isPolling] = useState(true);
@@ -763,43 +777,78 @@ export default function TrackingScreen() {
     return parseFloat((totalRouteDistanceKm * remainingFraction).toFixed(2));
   }, [activeTrackingOrder?.status, deliveryRouteProgress, jitterCoords, destinationCoords, totalRouteDistanceKm]);
 
-  // Function to calculate estimated arrival seconds based on distance, speed, and order stage
-  const calculateEtaSeconds = (distanceKm: number, speedKmH: number, status?: string): number => {
-    if (status === 'delivered' || distanceKm <= 0.05) return 0;
-    if (status === 'cancelled') return 0;
+  // Remaining travel duration (in seconds) combining live Google Routes API duration (if available) with GPS distance & speed
+  const estimatedTravelSeconds = useMemo(() => {
+    if (activeTrackingOrder?.status === 'delivered' || activeTrackingOrder?.status === 'cancelled') {
+      return 0;
+    }
+    const safeSpeed = Math.max(20, Math.min(50, currentSpeed || 36));
+    const distanceBasedSeconds = Math.round((currentDistanceKm / safeSpeed) * 3600);
 
-    const safeSpeed = Math.max(20, Math.min(50, speedKmH || 36));
-    const transitSeconds = Math.round((distanceKm / safeSpeed) * 3600);
-    const doorstepHandoffBufferSeconds = 75; // ~1.25 minutes
-
-    let stageBufferSeconds = 0;
-    if (status === 'accepted') {
-      stageBufferSeconds = 720; // 12 minutes kitchen prep
-    } else if (status === 'preparing') {
-      stageBufferSeconds = 360; // 6 minutes remaining cooking
+    if (routeDurationMillis && routeDurationMillis > 0) {
+      const remainingFraction = Math.max(0.05, 1 - (deliveryRouteProgress / 100));
+      const fullRouteTravelSeconds = Math.round(routeDurationMillis / 1000);
+      const scaledRouteSeconds =
+        activeTrackingOrder?.status === 'picked' || activeTrackingOrder?.status === 'on_the_way'
+          ? Math.round(fullRouteTravelSeconds * remainingFraction)
+          : fullRouteTravelSeconds;
+      return Math.max(45, scaledRouteSeconds);
     }
 
-    return Math.max(30, transitSeconds + doorstepHandoffBufferSeconds + stageBufferSeconds);
+    return Math.max(45, distanceBasedSeconds);
+  }, [activeTrackingOrder?.status, currentDistanceKm, currentSpeed, routeDurationMillis, deliveryRouteProgress]);
+
+  const estimatedTravelMinutes = Math.max(0, Math.ceil(estimatedTravelSeconds / 60));
+
+  // Function to calculate total estimated arrival seconds based on current order status & estimated travel duration
+  const calculateEtaSeconds = (travelSeconds: number, distanceKm: number, status?: string): number => {
+    if (status === 'delivered' || status === 'cancelled') return 0;
+    if ((status === 'picked' || status === 'on_the_way') && distanceKm <= 0.05) return 0;
+
+    let statusPrepSeconds = 0;
+    let handoffBufferSeconds = 60;
+
+    switch (status) {
+      case 'accepted':
+        statusPrepSeconds = 720; // ~12 min kitchen confirmation & preparation
+        break;
+      case 'preparing':
+        statusPrepSeconds = 360; // ~6 min active kitchen preparation
+        break;
+      case 'picked':
+        statusPrepSeconds = 90; // Rider pickup & dispatch seal
+        handoffBufferSeconds = 60;
+        break;
+      case 'on_the_way':
+        statusPrepSeconds = 0;
+        handoffBufferSeconds = distanceKm <= 0.25 ? 30 : 60;
+        break;
+      default:
+        statusPrepSeconds = 600;
+        break;
+    }
+
+    return Math.max(30, travelSeconds + statusPrepSeconds + handoffBufferSeconds);
   };
 
   // Dynamic live ticking countdown state (in seconds)
   const [countdownSeconds, setCountdownSeconds] = useState<number>(() => {
-    return calculateEtaSeconds(2.8, 38, activeTrackingOrder?.status);
+    return calculateEtaSeconds(300, 2.8, activeTrackingOrder?.status);
   });
 
-  // Synchronize target seconds based on distance whenever distance, speed, or status changes
+  // Synchronize target seconds based on order status and estimated travel duration
   useEffect(() => {
     if (!activeTrackingOrder) return;
-    if (activeTrackingOrder.status === 'delivered') {
+    if (activeTrackingOrder.status === 'delivered' || activeTrackingOrder.status === 'cancelled') {
       setCountdownSeconds(0);
       setEtaRemaining(0);
       setSimulatedDistance(0);
       return;
     }
 
-    const targetSeconds = calculateEtaSeconds(currentDistanceKm, currentSpeed, activeTrackingOrder.status);
+    const targetSeconds = calculateEtaSeconds(estimatedTravelSeconds, currentDistanceKm, activeTrackingOrder.status);
     
-    // Smoothly resynchronize countdown if it drifted significantly from distance (> 12 seconds) or initial 0
+    // Smoothly resynchronize countdown if status shifted or drift exceeds threshold (> 12 seconds)
     setCountdownSeconds(prev => {
       if (Math.abs(prev - targetSeconds) > 12 || prev === 0) {
         return targetSeconds;
@@ -809,7 +858,7 @@ export default function TrackingScreen() {
 
     setSimulatedDistance(currentDistanceKm);
     setEtaRemaining(Math.max(1, Math.ceil(targetSeconds / 60)));
-  }, [currentDistanceKm, currentSpeed, activeTrackingOrder?.status]);
+  }, [estimatedTravelSeconds, currentDistanceKm, activeTrackingOrder?.status]);
 
   // Live second-by-second countdown ticker
   useEffect(() => {
@@ -825,6 +874,65 @@ export default function TrackingScreen() {
     }, 1000);
 
     return () => clearInterval(ticker);
+  }, [activeTrackingOrder?.status]);
+
+  // Track order status transitions (e.g. 'accepted' -> 'preparing') for visual Framer Motion feedback
+  const previousOrderStatusRef = useRef<OrderStatus | undefined>(activeTrackingOrder?.status);
+  const [statusTransitionFeedback, setStatusTransitionFeedback] = useState<{
+    from: OrderStatus;
+    to: OrderStatus;
+    icon: string;
+    title: string;
+    subtitle: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const nextStatus = activeTrackingOrder?.status;
+    const prevStatus = previousOrderStatusRef.current;
+    previousOrderStatusRef.current = nextStatus;
+
+    if (!nextStatus || !prevStatus || nextStatus === prevStatus) return;
+
+    const feedbackByTransition: Partial<Record<OrderStatus, { icon: string; title: string; subtitle: string }>> = {
+      preparing: {
+        icon: '🍳',
+        title: prevStatus === 'accepted' ? 'Order Confirmed → Now Preparing' : 'Kitchen Preparing Your Order',
+        subtitle: 'Chefs have fired up your order and are cooking it fresh!',
+      },
+      picked: {
+        icon: '📦',
+        title: 'Picked Up From Kitchen',
+        subtitle: 'Sealed hot package is ready with your delivery partner.',
+      },
+      on_the_way: {
+        icon: '🛵',
+        title: 'Out For Live Delivery',
+        subtitle: 'Your delivery partner is heading to your doorstep!',
+      },
+      delivered: {
+        icon: '🎉',
+        title: 'Order Delivered!',
+        subtitle: 'Enjoy your fresh warm meal from Nuvvo.',
+      },
+    };
+
+    const meta = feedbackByTransition[nextStatus];
+    if (!meta) {
+      setStatusTransitionFeedback(null);
+      return;
+    }
+
+    setStatusTransitionFeedback({
+      from: prevStatus,
+      to: nextStatus,
+      ...meta,
+    });
+
+    const hideTimer = setTimeout(() => {
+      setStatusTransitionFeedback(null);
+    }, 3600);
+
+    return () => clearTimeout(hideTimer);
   }, [activeTrackingOrder?.status]);
 
   const countdownMinutes = Math.floor(countdownSeconds / 60);
@@ -1424,45 +1532,67 @@ export default function TrackingScreen() {
             </div>
           </div>
 
-          {/* Main Countdown Digits & Estimated Time */}
+          {/* Main Countdown Digits & Estimated Arrival Display */}
           <div className="flex items-center justify-between relative z-10 gap-4 flex-wrap">
             <div className="space-y-1">
               <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider block">
-                Estimated Delivery In
+                Estimated Arrival Countdown
               </span>
-              <div className="flex items-baseline gap-2">
-                <span className="text-4xl sm:text-5xl font-black font-mono tracking-tight text-white drop-shadow-md">
-                  {activeTrackingOrder.status === 'delivered' ? '00:00' : formattedCountdown}
-                </span>
+              <div className="flex items-baseline gap-2.5">
+                <AnimatePresence mode="wait">
+                  <motion.span
+                    key={`countdown-stage-${activeTrackingOrder.status}`}
+                    initial={{ opacity: 0.5, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="text-4xl sm:text-5xl font-black font-mono tabular-nums tracking-tight text-white drop-shadow-md"
+                  >
+                    {activeTrackingOrder.status === 'delivered' ? '00:00' : formattedCountdown}
+                  </motion.span>
+                </AnimatePresence>
                 <span className="text-xs font-bold text-orange-400 uppercase font-mono">
-                  {activeTrackingOrder.status === 'delivered' ? 'Completed' : 'Mins : Secs'}
+                  {activeTrackingOrder.status === 'delivered' ? 'Arrived' : 'Mins : Secs'}
                 </span>
               </div>
-              <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 pt-0.5">
-                <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                <span>
-                  Expected by <strong className="text-zinc-200 font-mono">{arrivalClockTime}</strong>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-400 pt-0.5">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-orange-400" />
+                  <span>
+                    Estimated Arrival:{' '}
+                    <strong className="text-white font-mono">
+                      {activeTrackingOrder.status === 'delivered' ? 'Delivered' : arrivalClockTime}
+                    </strong>
+                  </span>
                 </span>
-              </p>
+                {activeTrackingOrder.status !== 'delivered' && (
+                  <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                    • Est. Travel: ~{estimatedTravelMinutes} min (~{etaRemaining}m total)
+                  </span>
+                )}
+              </div>
             </div>
 
-            {/* Dynamic Status Pill */}
+            {/* Dynamic Status & Travel Breakdown Pill */}
             <div className="text-right flex flex-col items-end gap-1.5">
               <span className={`px-3 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm ${
                 activeTrackingOrder.status === 'delivered'
                   ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                  : currentDistanceKm <= 0.3
+                  : currentDistanceKm <= 0.3 && (activeTrackingOrder.status === 'picked' || activeTrackingOrder.status === 'on_the_way')
                   ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-bounce'
                   : 'bg-orange-500/15 text-orange-300 border border-orange-500/30'
               }`}>
                 {activeTrackingOrder.status === 'delivered'
                   ? '🎉 Order Delivered'
+                  : activeTrackingOrder.status === 'accepted'
+                  ? '📝 Queue & Prep + Travel'
+                  : activeTrackingOrder.status === 'preparing'
+                  ? '🍳 Cooking + Travel'
                   : currentDistanceKm <= 0.3
                   ? '🔔 Stand by at Door'
                   : `⚡ ${currentSpeed} km/h Transit`}
               </span>
               <span className="text-[9px] text-zinc-400 font-mono">
-                Updates dynamically with rider movement
+                Updates dynamically with status & travel duration
               </span>
             </div>
           </div>
@@ -1506,32 +1636,97 @@ export default function TrackingScreen() {
         </div>
 
         {/* STEP-BY-STEP PROGRESS TIMELINE OVERVIEW (HORIZONTAL BAR) */}
-        <div id="order-timeline-hero-card" className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-lg relative overflow-hidden space-y-4">
-          <div className="flex items-center justify-between">
+        <motion.div
+          layout
+          id="order-timeline-hero-card"
+          className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-3xl p-5 shadow-lg relative overflow-hidden space-y-4"
+        >
+          <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <span className="p-2 rounded-2xl bg-orange-500/10 text-orange-600 dark:text-orange-400">
-                <Clock className="w-4 h-4" />
-              </span>
-              <div>
+              <motion.span
+                key={`hero-icon-${activeTrackingOrder.status}`}
+                initial={{ scale: 0.75, rotate: -12, opacity: 0 }}
+                animate={{ scale: 1, rotate: 0, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 360, damping: 22 }}
+                className="p-2 rounded-2xl bg-orange-500/10 text-orange-600 dark:text-orange-400"
+              >
+                {activeTrackingOrder.status === 'preparing' ? (
+                  <ChefHat className="w-4 h-4" />
+                ) : (
+                  <Clock className="w-4 h-4" />
+                )}
+              </motion.span>
+              <div className="overflow-hidden">
                 <span className="text-[10px] font-black uppercase tracking-wider text-orange-500 font-mono block">
                   ORDER JOURNEY
                 </span>
-                <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight">
-                  {stages[currentStageIndex]?.label || 'Order Tracking'}
-                </h3>
+                <AnimatePresence mode="wait">
+                  <motion.h3
+                    key={activeTrackingOrder.status}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight"
+                  >
+                    {stages[currentStageIndex]?.label || 'Order Tracking'}
+                  </motion.h3>
+                </AnimatePresence>
               </div>
             </div>
 
             <div className="text-right">
-              <span className={`text-[9.5px] font-black uppercase px-2.5 py-1 rounded-full font-mono inline-flex items-center gap-1 ${
-                activeTrackingOrder.status === 'delivered'
-                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
-                  : 'bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-500/30 animate-pulse'
-              }`}>
-                {activeTrackingOrder.status === 'delivered' ? '🎉 Arrived' : `⏱️ ${formattedCountdown} • ${currentDistanceKm} km`}
-              </span>
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={`eta-badge-${activeTrackingOrder.status === 'delivered' ? 'done' : activeTrackingOrder.status}`}
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.92 }}
+                  transition={{ duration: 0.25 }}
+                  className={`text-[9.5px] font-black uppercase px-2.5 py-1 rounded-full font-mono inline-flex items-center gap-1 ${
+                    activeTrackingOrder.status === 'delivered'
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
+                      : 'bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-500/30'
+                  }`}
+                >
+                  {activeTrackingOrder.status === 'delivered' ? '🎉 Arrived' : `⏱️ ${formattedCountdown} • ${currentDistanceKm} km`}
+                </motion.span>
+              </AnimatePresence>
             </div>
           </div>
+
+          {/* Animated Live Status Transition Callout (e.g. Accepted -> Preparing) */}
+          <AnimatePresence>
+            {statusTransitionFeedback && (
+              <motion.div
+                key={`transition-banner-${statusTransitionFeedback.to}`}
+                initial={{ opacity: 0, y: -10, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                className="flex items-center gap-3 p-3 rounded-2xl bg-gradient-to-r from-orange-500/15 to-amber-500/10 border border-orange-500/30 shadow-xs"
+              >
+                <motion.div
+                  animate={{
+                    scale: [1, 1.15, 1],
+                    rotate: statusTransitionFeedback.to === 'preparing' ? [0, -8, 8, 0] : [0, 0],
+                  }}
+                  transition={{ duration: 1.1, repeat: 2, ease: 'easeInOut' }}
+                  className="w-9 h-9 rounded-xl bg-orange-500 text-white flex items-center justify-center text-base shrink-0 shadow-sm"
+                >
+                  {statusTransitionFeedback.icon}
+                </motion.div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-black text-orange-700 dark:text-orange-300 truncate">
+                    {statusTransitionFeedback.title}
+                  </p>
+                  <p className="text-[10px] font-medium text-zinc-600 dark:text-zinc-300 truncate mt-0.5">
+                    {statusTransitionFeedback.subtitle}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Horizontal Progress Bar connecting 4 stages */}
           <div className="pt-2 pb-1">
@@ -1539,10 +1734,12 @@ export default function TrackingScreen() {
               {/* Background track line */}
               <div className="absolute top-4 left-6 right-6 h-1 bg-slate-150 dark:bg-zinc-800 rounded-full -translate-y-1/2 z-0" />
               
-              {/* Active fill bar */}
-              <div 
-                className="absolute top-4 left-6 h-1 bg-gradient-to-r from-orange-500 to-amber-500 rounded-full -translate-y-1/2 transition-all duration-700 ease-out z-0" 
-                style={{ width: `calc((100% - 48px) * ${currentStageIndex / 3})` }}
+              {/* Animated Active fill bar */}
+              <motion.div 
+                className="absolute top-4 left-6 h-1 bg-gradient-to-r from-orange-500 to-amber-500 rounded-full -translate-y-1/2 z-0" 
+                initial={false}
+                animate={{ width: `calc((100% - 48px) * ${Math.max(0, currentStageIndex) / 3})` }}
+                transition={{ duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
               />
 
               {/* 4 Stage Nodes */}
@@ -1559,18 +1756,63 @@ export default function TrackingScreen() {
                       className="group flex flex-col items-center cursor-pointer transition-transform active:scale-95 focus:outline-none"
                       title={`Stage: ${stage.label} (Click to simulate status)`}
                     >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all shadow-sm ${
-                        isDone
-                          ? 'bg-emerald-500 text-white shadow-emerald-500/20'
-                          : isCurrent
-                          ? 'bg-orange-500 text-white ring-4 ring-orange-500/25 shadow-orange-500/30 animate-bounce'
-                          : 'bg-white dark:bg-zinc-800 text-zinc-400 border-2 border-slate-200 dark:border-zinc-700'
-                      }`}>
-                        {isDone ? (
-                          <Check className="w-4 h-4 stroke-[3]" />
-                        ) : (
-                          <span>{stage.icon}</span>
+                      <div className="relative flex items-center justify-center">
+                        {isCurrent && (
+                          <motion.span
+                            aria-hidden="true"
+                            animate={{ scale: [1, 1.55], opacity: [0.55, 0] }}
+                            transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }}
+                            className="pointer-events-none absolute inset-0 rounded-full bg-orange-500"
+                          />
                         )}
+                        <motion.div
+                          initial={false}
+                          animate={{
+                            scale: isCurrent ? 1.08 : 1,
+                          }}
+                          transition={{ type: 'spring', stiffness: 360, damping: 20 }}
+                          className={`relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-colors shadow-sm ${
+                            isDone
+                              ? 'bg-emerald-500 text-white shadow-emerald-500/20'
+                              : isCurrent
+                              ? 'bg-orange-500 text-white ring-4 ring-orange-500/25 shadow-orange-500/30'
+                              : 'bg-white dark:bg-zinc-800 text-zinc-400 border-2 border-slate-200 dark:border-zinc-700'
+                          }`}
+                        >
+                          <AnimatePresence mode="wait">
+                            {isDone ? (
+                              <motion.span
+                                key="done"
+                                initial={{ scale: 0.5, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0.5, opacity: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="flex items-center justify-center"
+                              >
+                                <Check className="w-4 h-4 stroke-[3]" />
+                              </motion.span>
+                            ) : (
+                              <motion.span
+                                key={`icon-${isCurrent ? 'active' : 'idle'}`}
+                                initial={{ scale: 0.75, opacity: 0 }}
+                                animate={
+                                  isCurrent && stage.id === 'preparing'
+                                    ? { scale: 1, opacity: 1, rotate: [0, -8, 8, 0] }
+                                    : isCurrent
+                                    ? { scale: [1, 1.12, 1], opacity: 1 }
+                                    : { scale: 1, opacity: 1 }
+                                }
+                                transition={
+                                  isCurrent
+                                    ? { duration: 1.8, repeat: Infinity, ease: 'easeInOut' }
+                                    : { duration: 0.2 }
+                                }
+                              >
+                                {stage.icon}
+                              </motion.span>
+                            )}
+                          </AnimatePresence>
+                        </motion.div>
                       </div>
 
                       <span className={`text-[10px] font-black mt-2 text-center transition-colors ${
@@ -1592,7 +1834,7 @@ export default function TrackingScreen() {
               </div>
             </div>
           </div>
-        </div>
+        </motion.div>
 
         {/* DELIVERY BOY DETAILS & LIVE LOCATION CARD (VISIBLE PROMINENTLY UPON DELIVERY START) */}
         <div 
@@ -1609,12 +1851,21 @@ export default function TrackingScreen() {
                 <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isDeliveryStarted ? 'bg-emerald-400' : 'bg-orange-400'} opacity-75`}></span>
                 <span className={`relative inline-flex rounded-full h-3 w-3 ${isDeliveryStarted ? 'bg-emerald-500' : 'bg-orange-500'}`}></span>
               </span>
-              <div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 font-mono block">
-                  {hasAssignedRider 
-                    ? (isDeliveryStarted ? '🛵 DELIVERY STARTED • IN TRANSIT' : '👨‍🍳 KITCHEN PREPARING • RIDER ASSIGNED')
-                    : '👨‍🍳 KITCHEN PREPARING • AWAITING RIDER DISPATCH'}
-                </span>
+              <div className="overflow-hidden">
+                <AnimatePresence mode="wait">
+                  <motion.span
+                    key={`${activeTrackingOrder.status}-${hasAssignedRider ? 'rider' : 'norider'}`}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.25 }}
+                    className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 font-mono block"
+                  >
+                    {hasAssignedRider 
+                      ? (isDeliveryStarted ? '🛵 DELIVERY STARTED • IN TRANSIT' : '👨‍🍳 KITCHEN PREPARING • RIDER ASSIGNED')
+                      : '👨‍🍳 KITCHEN PREPARING • AWAITING RIDER DISPATCH'}
+                  </motion.span>
+                </AnimatePresence>
                 <h3 className="text-xs font-black text-zinc-900 dark:text-zinc-50 leading-tight">
                   {hasAssignedRider ? 'Delivery Partner Executive' : 'Fleet Routing Desk'}
                 </h3>
@@ -1842,6 +2093,11 @@ export default function TrackingScreen() {
                     realTimeCoords={jitterCoords}
                     countdownText={activeTrackingOrder.status === 'delivered' ? 'Arrived' : formattedCountdown}
                     distanceKm={currentDistanceKm}
+                    onRouteMetrics={({ durationMillis }) => {
+                      if (typeof durationMillis === 'number' && durationMillis > 0) {
+                        setRouteDurationMillis(durationMillis);
+                      }
+                    }}
                     onOpenChat={() => openDriverChat()}
                   />
                 </Map>
@@ -2002,11 +2258,13 @@ export default function TrackingScreen() {
           <div className="relative pl-6 space-y-6 pt-1">
             {/* Vertical connector line */}
             <div className="absolute left-2.5 top-3.5 bottom-3.5 w-0.5 bg-slate-150 dark:bg-zinc-800" />
-            <div 
-              className="absolute left-2.5 top-3.5 w-0.5 bg-gradient-to-b from-emerald-500 via-orange-500 to-amber-500 transition-all duration-700"
-              style={{
+            <motion.div 
+              className="absolute left-2.5 top-3.5 w-0.5 bg-gradient-to-b from-emerald-500 via-orange-500 to-amber-500"
+              initial={false}
+              animate={{
                 height: `${Math.min(100, Math.max(0, (currentStageIndex / 3) * 100))}%`
               }}
+              transition={{ duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
             />
             
             {stages.map((stage) => {
@@ -2014,32 +2272,84 @@ export default function TrackingScreen() {
               const isActive = stage.isActive;
               
               return (
-                <div key={stage.id} className="relative flex items-start gap-3.5 group">
-                  {/* Timeline Node */}
-                  <div className={`absolute -left-5 top-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] z-10 transition-all ${
-                    isCompleted 
-                      ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-500/25' 
-                      : isActive 
-                        ? 'bg-orange-500 border-white dark:border-zinc-900 text-white shadow-md shadow-orange-500/30 ring-4 ring-orange-500/20 animate-pulse' 
-                        : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-zinc-400'
-                  }`}>
-                    {isCompleted ? (
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    ) : (
-                      <span className="font-mono font-bold text-[9px]">{stage.stepNumber}</span>
+                <motion.div
+                  key={stage.id}
+                  layout
+                  className="relative flex items-start gap-3.5 group"
+                >
+                  {/* Animated Timeline Node */}
+                  <motion.div
+                    initial={false}
+                    animate={{
+                      scale: isActive ? 1.12 : 1,
+                    }}
+                    transition={{ type: 'spring', stiffness: 360, damping: 20 }}
+                    className={`absolute -left-5 top-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] z-10 transition-colors ${
+                      isCompleted 
+                        ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-500/25' 
+                        : isActive 
+                          ? 'bg-orange-500 border-white dark:border-zinc-900 text-white shadow-md shadow-orange-500/30 ring-4 ring-orange-500/20' 
+                          : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.span
+                        aria-hidden="true"
+                        animate={{ scale: [1, 1.6], opacity: [0.5, 0] }}
+                        transition={{ duration: 1.5, repeat: Infinity, ease: 'easeOut' }}
+                        className="pointer-events-none absolute inset-0 rounded-full bg-orange-500"
+                      />
                     )}
-                  </div>
+                    <AnimatePresence mode="wait">
+                      {isCompleted ? (
+                        <motion.span
+                          key="check"
+                          initial={{ scale: 0.4, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          exit={{ scale: 0.4, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="relative flex items-center justify-center"
+                        >
+                          <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        </motion.span>
+                      ) : (
+                        <motion.span
+                          key="num"
+                          initial={{ scale: 0.8, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className="relative font-mono font-bold text-[9px]"
+                        >
+                          {stage.stepNumber}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
 
-                  {/* Stage Icon Box */}
-                  <div className={`w-9 h-9 rounded-2xl flex items-center justify-center text-base shrink-0 transition-colors ${
-                    isActive
-                      ? 'bg-orange-500/10 border border-orange-500/30 shadow-xs'
-                      : isCompleted
-                      ? 'bg-emerald-500/10 border border-emerald-500/20'
-                      : 'bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800 opacity-60'
-                  }`}>
+                  {/* Animated Stage Icon Box */}
+                  <motion.div
+                    initial={false}
+                    animate={
+                      isActive && stage.id === 'preparing'
+                        ? { scale: [1, 1.08, 1], rotate: [0, -5, 5, 0] }
+                        : isActive
+                        ? { scale: [1, 1.06, 1] }
+                        : { scale: 1, rotate: 0 }
+                    }
+                    transition={
+                      isActive
+                        ? { duration: 2, repeat: Infinity, ease: 'easeInOut' }
+                        : { duration: 0.25 }
+                    }
+                    className={`w-9 h-9 rounded-2xl flex items-center justify-center text-base shrink-0 transition-colors ${
+                      isActive
+                        ? 'bg-orange-500/10 border border-orange-500/30 shadow-xs'
+                        : isCompleted
+                        ? 'bg-emerald-500/10 border border-emerald-500/20'
+                        : 'bg-slate-50 dark:bg-zinc-850 border border-slate-100 dark:border-zinc-800 opacity-60'
+                    }`}
+                  >
                     {stage.icon}
-                  </div>
+                  </motion.div>
 
                   {/* Stage Text & Details */}
                   <div className="flex-1 min-w-0">
@@ -2059,15 +2369,24 @@ export default function TrackingScreen() {
                           {stage.time}
                         </span>
                         
-                        <span className={`text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full ${
-                          isCompleted
-                            ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
-                            : isActive
-                            ? 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 animate-pulse'
-                            : 'bg-slate-100 dark:bg-zinc-800 text-zinc-400'
-                        }`}>
-                          {isCompleted ? 'Done' : isActive ? 'In Progress' : 'Pending'}
-                        </span>
+                        <AnimatePresence mode="wait">
+                          <motion.span
+                            key={isCompleted ? 'done' : isActive ? 'active' : 'pending'}
+                            initial={{ opacity: 0, scale: 0.85 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.85 }}
+                            transition={{ duration: 0.2 }}
+                            className={`text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                              isCompleted
+                                ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                                : isActive
+                                ? 'bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300'
+                                : 'bg-slate-100 dark:bg-zinc-800 text-zinc-400'
+                            }`}
+                          >
+                            {isCompleted ? 'Done' : isActive ? 'In Progress' : 'Pending'}
+                          </motion.span>
+                        </AnimatePresence>
                       </div>
                     </div>
 
@@ -2075,45 +2394,52 @@ export default function TrackingScreen() {
                       {stage.desc}
                     </p>
 
-                    {/* Active highlighted detail box */}
-                    {isActive && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="mt-2.5 p-3 rounded-2xl bg-orange-500/[0.07] border border-orange-500/20 text-[10.5px] text-zinc-700 dark:text-zinc-300 leading-relaxed space-y-1.5 shadow-xs"
-                      >
-                        <p className="font-semibold text-zinc-800 dark:text-zinc-200">
-                          {stage.detailedDesc}
-                        </p>
-                        
-                        {stage.id === 'out_for_delivery' && (
-                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] font-mono text-orange-600 dark:text-orange-400 font-bold">
-                            <span>🛵 Live Rider: {riderName}</span>
-                            <span>{currentSpeed} km/h • GPS Beacon</span>
+                    {/* Active highlighted detail box with smooth unfold/collapse */}
+                    <AnimatePresence initial={false}>
+                      {isActive && (
+                        <motion.div 
+                          key={`detail-${stage.id}`}
+                          initial={{ opacity: 0, height: 0, y: 6 }}
+                          animate={{ opacity: 1, height: 'auto', y: 0 }}
+                          exit={{ opacity: 0, height: 0, y: -4 }}
+                          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-2.5 p-3 rounded-2xl bg-orange-500/[0.07] border border-orange-500/20 text-[10.5px] text-zinc-700 dark:text-zinc-300 leading-relaxed space-y-1.5 shadow-xs">
+                            <p className="font-semibold text-zinc-800 dark:text-zinc-200">
+                              {stage.detailedDesc}
+                            </p>
+                            
+                            {stage.id === 'out_for_delivery' && (
+                              <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] font-mono text-orange-600 dark:text-orange-400 font-bold">
+                                <span>🛵 Live Rider: {riderName}</span>
+                                <span>{currentSpeed} km/h • GPS Beacon</span>
+                              </div>
+                            )}
+                            {stage.id === 'preparing' && (
+                              <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-medium">
+                                <span>👨‍🍳 Freshly Prepared by Kitchen</span>
+                                <span>Hygiene Certified</span>
+                              </div>
+                            )}
+                            {stage.id === 'placed' && (
+                              <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-mono">
+                                <span>Kitchen: {restaurantName}</span>
+                                <span>Receipt #{activeTrackingOrder.id.slice(-6).toUpperCase()}</span>
+                              </div>
+                            )}
+                            {stage.id === 'delivered' && (
+                              <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-emerald-600 dark:text-emerald-400 font-bold">
+                                <span>✅ Delivered Safely</span>
+                                <span>Enjoy your meal!</span>
+                              </div>
+                            )}
                           </div>
-                        )}
-                        {stage.id === 'preparing' && (
-                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-medium">
-                            <span>👨‍🍳 Freshly Prepared by Kitchen</span>
-                            <span>Hygiene Certified</span>
-                          </div>
-                        )}
-                        {stage.id === 'placed' && (
-                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-orange-600 dark:text-orange-400 font-mono">
-                            <span>Kitchen: {restaurantName}</span>
-                            <span>Receipt #{activeTrackingOrder.id.slice(-6).toUpperCase()}</span>
-                          </div>
-                        )}
-                        {stage.id === 'delivered' && (
-                          <div className="flex items-center justify-between pt-1 border-t border-orange-500/15 text-[9.5px] text-emerald-600 dark:text-emerald-400 font-bold">
-                            <span>✅ Delivered Safely</span>
-                            <span>Enjoy your meal!</span>
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
-                </div>
+                </motion.div>
               );
             })}
           </div>
@@ -2138,14 +2464,21 @@ export default function TrackingScreen() {
                     key={stage.id}
                     type="button"
                     onClick={() => changeOrderStatus(activeTrackingOrder.id, stage.statusKey)}
-                    className={`py-2 px-1.5 rounded-xl text-[9px] font-black uppercase transition-all cursor-pointer flex flex-col items-center gap-1 text-center active:scale-95 ${
+                    className={`relative overflow-hidden py-2 px-1.5 rounded-xl text-[9px] font-black uppercase transition-colors cursor-pointer flex flex-col items-center gap-1 text-center active:scale-95 ${
                       isSelected
-                        ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/20'
+                        ? 'text-white shadow-sm shadow-orange-500/20'
                         : 'bg-slate-50 dark:bg-zinc-800/80 hover:bg-slate-100 dark:hover:bg-zinc-800 text-zinc-650 dark:text-zinc-350 border border-slate-200/80 dark:border-zinc-700/80'
                     }`}
                   >
-                    <span className="text-sm">{stage.icon}</span>
-                    <span className="truncate w-full leading-tight">{stage.shortLabel}</span>
+                    {isSelected && (
+                      <motion.span
+                        layoutId="tracking-stage-switcher-pill"
+                        transition={{ type: 'spring', stiffness: 380, damping: 28 }}
+                        className="absolute inset-0 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl z-0"
+                      />
+                    )}
+                    <span className="relative z-10 text-sm">{stage.icon}</span>
+                    <span className="relative z-10 truncate w-full leading-tight">{stage.shortLabel}</span>
                   </button>
                 );
               })}

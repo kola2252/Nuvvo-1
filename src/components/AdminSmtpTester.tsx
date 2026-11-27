@@ -14,6 +14,7 @@ import {
   Terminal, ShieldCheck, Key, Server, Copy, Check, ChevronDown, 
   ChevronUp, Eye, EyeOff, Info, ArrowUpRight
 } from 'lucide-react';
+import { getStoredAuthToken } from '../config/authConfig';
 
 interface SmtpLogEntry {
   timestamp: string;
@@ -90,7 +91,10 @@ export default function AdminSmtpTester() {
     let isMounted = true;
     const checkInitialStatus = async () => {
       try {
-        const res = await fetch('/api/verify-email?send=false');
+        const token = getStoredAuthToken();
+        const res = await fetch('/api/verify-email?send=false', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
         if (!res.ok && res.status !== 502) return;
         const data = await res.json().catch(() => null);
         if (isMounted && data) {
@@ -126,10 +130,12 @@ export default function AdminSmtpTester() {
     if (overrideFrom.trim()) payload.from = overrideFrom.trim();
 
     try {
+      const token = getStoredAuthToken();
       const res = await fetch('/api/verify-email', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify(payload)
       });

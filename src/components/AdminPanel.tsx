@@ -98,6 +98,9 @@ export default function AdminPanel() {
   // Application Logs Removal Notice
   const [logNotice, setLogNotice] = useState<string | null>(null);
 
+  // Catalog CRUD Feedback Notice (errors or confirmations)
+  const [catalogFeedback, setCatalogFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
   // Store Operations Config state
   const [opsCustomActive, setOpsCustomActive] = useState<boolean>(Boolean(storeOperationsConfig?.isCustomConfigActive));
   const [opsPauseOrders, setOpsPauseOrders] = useState<boolean>(Boolean(storeOperationsConfig?.pauseNewOrders));
@@ -439,7 +442,11 @@ export default function AdminPanel() {
 
   const handleAddFood = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFoodName.trim()) return;
+    setCatalogFeedback(null);
+    if (!newFoodName.trim()) {
+      setCatalogFeedback({ text: 'Please enter a valid dish name.', type: 'error' });
+      return;
+    }
 
     let targetRestaurantId = selectedRestaurantId;
 
@@ -463,7 +470,7 @@ export default function AdminPanel() {
       }
     } else if (selectedRestaurantId === 'new') {
       if (!newRestaurantName.trim()) {
-        alert('Please provide a valid Restaurant Name.');
+        setCatalogFeedback({ text: 'Please provide a valid Restaurant Name.', type: 'error' });
         return;
       }
       // Register new restaurant request
@@ -501,10 +508,15 @@ export default function AdminPanel() {
         isAvailable: true
       });
 
-      if (!savedFood) {
+      if (!savedFood?.success) {
+        setCatalogFeedback({
+          text: savedFood?.error || 'Could not save dish to menu. Verify your admin session and try again.',
+          type: 'error'
+        });
         return;
       }
 
+      setCatalogFeedback({ text: `Dish "${newFoodName.trim()}" added to live menu.`, type: 'success' });
       setNewFoodName('');
       setNewFoodDesc('');
       setDirectRestaurantNameInput('');
@@ -1374,7 +1386,7 @@ export default function AdminPanel() {
               </div>
 
               <div className="flex items-center justify-between gap-2 pt-1">
-                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                <span className={`text-[11px] font-bold ${opsSaveMessage?.startsWith('Failed') ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
                   {opsSaveMessage || ''}
                 </span>
                 <button
@@ -1386,7 +1398,7 @@ export default function AdminPanel() {
                       itemType: 'Store Operations',
                       description: `Custom Active: ${opsCustomActive ? 'Yes' : 'No (Baseline ₹39 / >₹400 free / 5% GST)'} • Pause: ${opsPauseOrders ? 'Yes' : 'No'}`,
                       onConfirm: async () => {
-                        await updateStoreOperationsConfig({
+                        const savedOk = await updateStoreOperationsConfig({
                           isCustomConfigActive: opsCustomActive,
                           pauseNewOrders: opsPauseOrders,
                           pauseReason: opsPauseReason.trim(),
@@ -1398,8 +1410,12 @@ export default function AdminPanel() {
                           openingHoursLabel: opsOpeningHours.trim() || '07:00 AM - 11:00 PM',
                           serviceableAreas: areas
                         });
-                        setOpsSaveMessage('Store operations synced to backend.');
-                        setTimeout(() => setOpsSaveMessage(null), 4000);
+                        setOpsSaveMessage(
+                          savedOk
+                            ? 'Store operations synced to backend.'
+                            : 'Failed to sync store operations to backend. Verify your admin session.'
+                        );
+                        setTimeout(() => setOpsSaveMessage(null), 5000);
                       }
                     });
                   }}
@@ -2092,6 +2108,28 @@ export default function AdminPanel() {
             </div>
           ) : (
             <div className="space-y-4">
+            {(catalogFeedback || foodError) && (
+              <div
+                role="alert"
+                className={`p-3 rounded-2xl border text-xs font-bold flex items-center justify-between gap-2 ${
+                  catalogFeedback?.type === 'success' && !foodError
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                }`}
+              >
+                <span>{catalogFeedback?.text || foodError}</span>
+                {catalogFeedback && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogFeedback(null)}
+                    className="p-1 hover:opacity-75 cursor-pointer"
+                    aria-label="Dismiss notice"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
             
             {/* ADD FOOD FORM */}
             <SuperAdminGuard showBadge={true}>
@@ -2481,7 +2519,12 @@ export default function AdminPanel() {
                         itemType: 'Menu Synchronization (వంటకాల సమన్వయం)',
                         description: 'Populate Supabase public.food_items database with curated baseline menu dishes?',
                         onConfirm: async () => {
-                          await seedDishesToSupabase();
+                          const res = await seedDishesToSupabase();
+                          if (!res?.success) {
+                            setCatalogFeedback({ text: res?.error || 'Failed to seed catalog.', type: 'error' });
+                          } else {
+                            setCatalogFeedback({ text: res?.message || `Synchronized ${res?.count || 28} dishes.`, type: 'success' });
+                          }
                         }
                       });
                     }}
@@ -2519,7 +2562,12 @@ export default function AdminPanel() {
                         itemType: 'Menu Synchronization (వంటకాల ప్రారంభ సమన్వయం)',
                         description: 'Populate Supabase public.food_items with initial curated menu dishes?',
                         onConfirm: async () => {
-                          await seedDishesToSupabase();
+                          const res = await seedDishesToSupabase();
+                          if (!res?.success) {
+                            setCatalogFeedback({ text: res?.error || 'Failed to seed catalog.', type: 'error' });
+                          } else {
+                            setCatalogFeedback({ text: res?.message || `Synchronized ${res?.count || 28} dishes.`, type: 'success' });
+                          }
                         }
                       });
                     }}
@@ -2722,7 +2770,12 @@ export default function AdminPanel() {
                                   itemType: 'Dish Removal (వంటకం శాశ్వత తొలగింపు)',
                                   description: `Are you sure you want to permanently delete "${item.name}" (ID: ${item.id}) from Supabase food_items and active menu?`,
                                   onConfirm: async () => {
-                                    await deleteFoodItem(item.id);
+                                    const res = await deleteFoodItem(item.id);
+                                    if (!res?.success) {
+                                      setCatalogFeedback({ text: res?.error || 'Failed to delete dish.', type: 'error' });
+                                      return;
+                                    }
+                                    setCatalogFeedback({ text: `Dish "${item.name}" removed from catalog.`, type: 'success' });
                                     setActiveReplaceId(null);
                                   }
                                 });
@@ -2756,7 +2809,7 @@ export default function AdminPanel() {
                                     itemType: 'Dish Details (వంటకం వివరాలు సవరణ)',
                                     description: `Price: ₹${updatedPrice} • Live Status: ${replaceAvailability ? 'Available' : 'Unavailable'}`,
                                     onConfirm: async () => {
-                                      await updateFoodItem(item.id, { 
+                                      const res = await updateFoodItem(item.id, { 
                                         name: updatedName,
                                         price: updatedPrice,
                                         image: replaceImgUrl || item.image,
@@ -2765,6 +2818,11 @@ export default function AdminPanel() {
                                         isAvailable: replaceAvailability,
                                         restaurantId: replaceRestaurantId || undefined
                                       });
+                                      if (!res?.success) {
+                                        setCatalogFeedback({ text: res?.error || 'Failed to update dish.', type: 'error' });
+                                        return;
+                                      }
+                                      setCatalogFeedback({ text: `Dish "${updatedName}" updated.`, type: 'success' });
                                       setActiveReplaceId(null);
                                       setReplaceImgUrl('');
                                       setReplaceRestaurantId('');

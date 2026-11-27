@@ -14,7 +14,10 @@ import {
   verifyPassword,
   verifySignedSessionJwt,
   fallbackCustomerAccounts,
-  fallbackUsernamesRegistry
+  fallbackUsernamesRegistry,
+  findLocalCustomerAccountByEmail,
+  findLocalCustomerAccountById,
+  deleteLocalCustomerRecords
 } from "../../auth-utils";
 import { getAdminSupabaseServerClient, getPublicSupabaseServerClient } from "../../../src/utils/supabase/server";
 
@@ -141,6 +144,11 @@ export default async function handler(req: any, res: any) {
 
       if (authEmail) fallbackCustomerAccounts.delete(authEmail);
       if (profileUsername) fallbackUsernamesRegistry.delete(profileUsername);
+      deleteLocalCustomerRecords({
+        id: supabaseAuthUser.id,
+        email: authEmail,
+        username: profileUsername || supabaseAuthUser.user_metadata?.username
+      });
       void profilePhone;
 
       return sendJsonResponse(res, 200, {
@@ -150,32 +158,45 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const sessionEmail = normalizeEmail(verified.payload!.email || '');
-    if (!sessionEmail) {
-      return sendJsonResponse(res, 400, {
+    if (verified.role === 'admin' || verified.role === 'super_admin') {
+      return sendJsonResponse(res, 403, {
         success: false,
-        error: "Unable to identify customer email associated with this session."
+        error: "Administrator accounts cannot be deleted through customer self-service deletion."
       });
     }
 
-    // Retrieve customer account
-    let accountRecord: any = null;
-    try {
-      const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
-        const { data } = await adminClient
-          .from('app_settings')
-          .select('value')
-          .eq('key', `account_${sessionEmail}`)
-          .maybeSingle();
+    const sessionSub = String(verified.payload!.sub || '');
+    const sessionEmail = normalizeEmail(verified.payload!.email || '');
+    if (!sessionEmail && !sessionSub) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: "Unable to identify customer account associated with this session."
+      });
+    }
 
-        if (data && data.value) {
-          accountRecord = data.value;
+    // Retrieve customer account (local PBKDF2 store first, then Supabase legacy app_settings, then memory)
+    let accountRecord: any =
+      (sessionEmail ? findLocalCustomerAccountByEmail(sessionEmail) : null) ||
+      (sessionSub ? findLocalCustomerAccountById(sessionSub) : null);
+
+    if (!accountRecord && sessionEmail) {
+      try {
+        const { client: adminClient } = getAdminSupabaseServerClient();
+        if (adminClient) {
+          const { data } = await adminClient
+            .from('app_settings')
+            .select('value')
+            .eq('key', `account_${sessionEmail}`)
+            .maybeSingle();
+
+          if (data && data.value) {
+            accountRecord = data.value;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
-    if (!accountRecord) {
+    if (!accountRecord && sessionEmail) {
       accountRecord = fallbackCustomerAccounts.get(sessionEmail) || null;
     }
 
@@ -186,9 +207,10 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    const storedHash = accountRecord.passwordHash || accountRecord.password_hash;
     // Verify current password
-    if (accountRecord.password_hash) {
-      const passwordMatch = verifyPassword(String(password), accountRecord.password_hash);
+    if (storedHash) {
+      const passwordMatch = verifyPassword(String(password), storedHash);
       if (!passwordMatch) {
         return sendJsonResponse(res, 403, {
           success: false,
@@ -197,16 +219,17 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    const targetEmail = normalizeEmail(sessionEmail || accountRecord.email || '');
     const registeredUsername = accountRecord.username ? String(accountRecord.username).toLowerCase() : '';
 
-    // 1. Delete account record from Supabase app_settings
+    // 1. Delete account record from Supabase app_settings if configured
     try {
       const { client: adminClient } = getAdminSupabaseServerClient();
-      if (adminClient) {
+      if (adminClient && targetEmail) {
         await adminClient
           .from('app_settings')
           .delete()
-          .eq('key', `account_${sessionEmail}`);
+          .eq('key', `account_${targetEmail}`);
 
         // Remove from customer_usernames registry
         if (registeredUsername) {
@@ -230,27 +253,31 @@ export default async function handler(req: any, res: any) {
         }
 
         // Anonymize orders belonging to this user
-        await adminClient
-          .from('orders')
-          .update({
-            customer_name: 'Former Customer (Deleted)',
-            customer_phone: '0000000000',
-            instructions: 'Account deleted by customer'
-          })
-          .eq('customer_phone', accountRecord.phone || '');
+        if (accountRecord.phone) {
+          await adminClient
+            .from('orders')
+            .update({
+              customer_name: 'Former Customer (Deleted)',
+              customer_phone: '0000000000',
+              instructions: 'Account deleted by customer'
+            })
+            .eq('customer_phone', accountRecord.phone);
+        }
       }
     } catch (err: any) {
       console.warn("[Account Deletion Database Notice]:", err?.message);
     }
 
-    // 2. Clear fallback in-memory records
-    fallbackCustomerAccounts.delete(sessionEmail);
-    if (registeredUsername) {
-      fallbackUsernamesRegistry.delete(registeredUsername);
-    }
+    // 2. Clear local persistent JSON stores & fallback in-memory records
+    deleteLocalCustomerRecords({
+      id: accountRecord.id || sessionSub,
+      email: targetEmail,
+      username: registeredUsername
+    });
 
     return sendJsonResponse(res, 200, {
       success: true,
+      requiresSignOut: true,
       message: "Your customer account and profile data have been permanently deleted."
     });
   } catch (err: any) {

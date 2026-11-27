@@ -184,16 +184,21 @@ export default function App() {
     }
   }, [user, currentPage, isAdmin, isSuperAdmin, isPasswordRecoveryMode]);
 
-  // Show Splash welcome animation screen at startup
-  if (showSplash) {
-    return <Splash />;
-  }
-
   // Determine if we should show standard persistent bottom nav bar
   const showBottomNav = true;
 
   return (
-    <div className="relative font-sans min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-300 flex flex-col">
+    <AnimatePresence mode="wait">
+      {showSplash ? (
+        <Splash key="nuvvo-splash" />
+      ) : (
+        <motion.div
+          key="nuvvo-app-shell"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          className="relative font-sans min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-300 flex flex-col"
+        >
       
       {/* Google Maps Platform quota defense top banner */}
       {gmpQuotaExceeded && (
@@ -321,6 +326,8 @@ export default function App() {
       <AdminSaveWarningModal />
       <AdminSaveAlertBanner />
       
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

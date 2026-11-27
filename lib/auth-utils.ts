@@ -406,6 +406,78 @@ export function findLocalCustomerById(id: string): StoredCustomerProfileIndex | 
   return fileRecords[id] || null;
 }
 
+export function findLocalCustomerAccountById(id: string): StoredLocalCustomerAccount | null {
+  if (!id) return null;
+  const fileRecords = loadCustomerAccountsFile();
+  for (const rec of Object.values(fileRecords)) {
+    if (rec && rec.id === id && rec.passwordHash) {
+      return rec;
+    }
+  }
+  const memById = fallbackCustomerAccounts.get(`id:${id}`);
+  if (memById && (memById.passwordHash || memById.password_hash)) {
+    return {
+      ...memById,
+      passwordHash: memById.passwordHash || memById.password_hash
+    };
+  }
+  return null;
+}
+
+export function deleteLocalCustomerRecords(opts: { id?: string; email?: string; username?: string }): void {
+  const cleanEmail = opts.email ? normalizeEmail(opts.email) : '';
+  const cleanUsernameLower = opts.username ? String(opts.username).trim().toLowerCase() : '';
+  const cleanId = opts.id ? String(opts.id).trim() : '';
+
+  try {
+    const accounts = loadCustomerAccountsFile();
+    let accountsChanged = false;
+    if (cleanEmail && accounts[cleanEmail]) {
+      delete accounts[cleanEmail];
+      accountsChanged = true;
+    }
+    for (const [k, rec] of Object.entries(accounts)) {
+      if (
+        (cleanId && rec?.id === cleanId) ||
+        (cleanEmail && normalizeEmail(rec?.email || '') === cleanEmail) ||
+        (cleanUsernameLower && (rec?.usernameLower || String(rec?.username || '').toLowerCase()) === cleanUsernameLower)
+      ) {
+        delete accounts[k];
+        accountsChanged = true;
+      }
+    }
+    if (accountsChanged) {
+      saveCustomerAccountsFile(accounts);
+    }
+  } catch {}
+
+  try {
+    const indexRecords = loadCustomerIndexFile();
+    let indexChanged = false;
+    if (cleanId && indexRecords[cleanId]) {
+      delete indexRecords[cleanId];
+      indexChanged = true;
+    }
+    for (const [k, rec] of Object.entries(indexRecords)) {
+      if (
+        (cleanId && rec?.id === cleanId) ||
+        (cleanEmail && normalizeEmail(rec?.email || '') === cleanEmail) ||
+        (cleanUsernameLower && (rec?.usernameLower || String(rec?.username || '').toLowerCase()) === cleanUsernameLower)
+      ) {
+        delete indexRecords[k];
+        indexChanged = true;
+      }
+    }
+    if (indexChanged) {
+      saveCustomerIndexFile(indexRecords);
+    }
+  } catch {}
+
+  if (cleanEmail) fallbackCustomerAccounts.delete(cleanEmail);
+  if (cleanId) fallbackCustomerAccounts.delete(`id:${cleanId}`);
+  if (cleanUsernameLower) fallbackUsernamesRegistry.delete(cleanUsernameLower);
+}
+
 export const CANONICAL_PRODUCTION_URL = 'https://nuvvo-1-nu.vercel.app';
 
 const OUTDATED_OR_INVALID_HOSTNAMES = new Set([

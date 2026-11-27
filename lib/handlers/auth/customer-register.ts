@@ -347,9 +347,13 @@ export default async function handler(req: any, res: any) {
 
       const isEmailMailerOrRateError =
         signUpError.status === 429 ||
+        (typeof signUpError.status === "number" && signUpError.status >= 500) ||
         lowerMsg.includes("rate limit") ||
+        lowerMsg.includes("over_email_send_rate_limit") ||
         lowerMsg.includes("too many") ||
-        lowerMsg.includes("error sending confirmation email");
+        lowerMsg.includes("error sending confirmation") ||
+        lowerMsg.includes("smtp") ||
+        lowerMsg.includes("database error saving new user");
 
       if (isEmailMailerOrRateError) {
         // Clean up any partial unconfirmed Supabase auth user before fallback

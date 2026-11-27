@@ -455,7 +455,11 @@ const AppContext = createContext<AppContextProps | undefined>(undefined);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Theme & Page states
   const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('nuvvo_theme') === 'dark';
+    try {
+      return localStorage.getItem('nuvvo_theme') === 'dark';
+    } catch {
+      return false;
+    }
   });
   const [currentThemeId, setCurrentThemeId] = useState<string>(() => {
     return localStorage.getItem('nuvvo_current_theme_id') || 'classic-orange';
@@ -671,24 +675,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const adminTok =
         (typeof window !== 'undefined' && (window.localStorage.getItem('nuvvo_auth_token') || window.sessionStorage.getItem('nuvvo_auth_token'))) ||
         (await getActiveAuthToken());
-      if (adminTok) {
-        const res = await fetch('/api/admin/store-operations', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${adminTok}`
-          },
-          body: JSON.stringify(merged)
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json?.config) setStoreOperationsConfig(json.config);
-        }
+      if (!adminTok) {
+        return false;
       }
+      const res = await fetch('/api/admin/store-operations', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminTok}`
+        },
+        body: JSON.stringify(merged)
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.success === false) {
+        console.warn('[StoreOps] Server rejected store operations update:', json?.error || res.status);
+        return false;
+      }
+      if (json?.config) setStoreOperationsConfig(json.config);
+      return true;
     } catch (err) {
       console.warn('[StoreOps] Failed persisting store operations to backend:', err);
+      return false;
     }
-    return true;
   };
 
   // Customer Support Tickets state
@@ -2677,7 +2685,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const token = getStoredAuthToken();
+      const token = getStoredAuthToken() || (await getActiveAuthToken()) || '';
 
       const fallbackId = `dish_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
       const newDishItem: FoodItem = {
@@ -2713,29 +2721,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Direct Supabase insert notice:', dbErr?.message);
       }
 
-      // 2. Server API persistence
-      try {
-        await fetch('/api/admin/dishes', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(newDishItem)
-        });
-      } catch (apiErr) {
-        console.warn('Server API dish post notice:', apiErr);
+      // 2. Server API persistence (authoritative check)
+      const apiRes = await fetch('/api/admin/dishes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(newDishItem)
+      });
+      const apiJson = await apiRes.json().catch(() => null);
+      if (!apiRes.ok || apiJson?.success === false) {
+        const errMsg = apiJson?.error || `Failed to save dish to server (HTTP ${apiRes.status}).`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
 
+      const savedDish = apiJson?.item ? { ...newDishItem, ...apiJson.item } : newDishItem;
+
       // 3. Update state and broadcast instant realtime event across all customer screens
-      setFoodCatalogList(prev => [newDishItem, ...prev.filter(d => String(d.id) !== String(newDishItem.id))]);
-      broadcastFoodMutation('INSERT', { item: newDishItem });
-      addAuditLog('Menu Updated', `Admin/SuperAdmin added dish "${newDishItem.name}" (₹${newDishItem.price}) to Supabase.`);
+      setFoodCatalogList(prev => [savedDish, ...prev.filter(d => String(d.id) !== String(savedDish.id))]);
+      broadcastFoodMutation('INSERT', { item: savedDish });
+      addAuditLog('Menu Updated', `Admin/SuperAdmin added dish "${savedDish.name}" (₹${savedDish.price}).`);
       setFoodError(null);
-      return { success: true, data: newDishItem };
+      return { success: true, data: savedDish };
     } catch (err: any) {
       console.error('Exception during addFoodItem:', err);
-      return { success: false, error: err?.message || 'Failed to add dish' };
+      const errMsg = err?.message || 'Failed to add dish';
+      setFoodError(errMsg);
+      return { success: false, error: errMsg };
     }
   };
 
@@ -2749,7 +2763,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const token = getStoredAuthToken();
+      const token = getStoredAuthToken() || (await getActiveAuthToken()) || '';
 
       // 1. Direct Supabase database update
       try {
@@ -2779,18 +2793,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Direct Supabase update notice:', dbErr?.message);
       }
 
-      // 2. Server API update
-      try {
-        await fetch(`/api/admin/dishes/${id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(updatedFields)
-        });
-      } catch (apiErr) {
-        console.warn('Server API dish update notice:', apiErr);
+      // 2. Server API update (authoritative check)
+      const apiRes = await fetch(`/api/admin/dishes/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(updatedFields)
+      });
+      const apiJson = await apiRes.json().catch(() => null);
+      if (!apiRes.ok || apiJson?.success === false) {
+        const errMsg = apiJson?.error || `Failed to update dish (HTTP ${apiRes.status}).`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
       }
 
       // 3. Update local state and broadcast instant realtime update to all customer devices
@@ -2802,12 +2818,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }));
 
       broadcastFoodMutation('UPDATE', { id, updatedFields });
-      addAuditLog('Menu Updated', `Admin/SuperAdmin updated dish ID ${id} in Supabase.`);
+      addAuditLog('Menu Updated', `Admin/SuperAdmin updated dish ID ${id}.`);
       setFoodError(null);
       return { success: true };
     } catch (err: any) {
-      console.error('Exception during updateFoodItem in Supabase:', err);
-      return { success: false, error: err?.message || 'Failed to update dish' };
+      console.error('Exception during updateFoodItem:', err);
+      const errMsg = err?.message || 'Failed to update dish';
+      setFoodError(errMsg);
+      return { success: false, error: errMsg };
     }
   };
 
@@ -2822,18 +2840,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const token = getStoredAuthToken() || localStorage.getItem('nuvvo_admin_session_token') || localStorage.getItem('session_token') || '';
+      const token = getStoredAuthToken() || (await getActiveAuthToken()) || localStorage.getItem('nuvvo_admin_session_token') || localStorage.getItem('session_token') || '';
 
-      // 1. Immediately persist deleted ID in localStorage so it never re-appears
-      try {
-        const storedDeleted = safeParse<string[]>('nuvvo_deleted_dish_ids', []);
-        if (!storedDeleted.includes(String(id))) {
-          storedDeleted.push(String(id));
-          localStorage.setItem('nuvvo_deleted_dish_ids', JSON.stringify(storedDeleted));
-        }
-      } catch {}
-
-      // 2. Direct Supabase deletion
+      // 1. Direct Supabase deletion
       try {
         await supabase
           .from('food_items')
@@ -2843,30 +2852,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Direct Supabase delete notice:', dbErr?.message);
       }
 
-      // 3. Server API deletion (calls privileged serverless endpoint)
-      try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json'
-        };
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
+      // 2. Server API deletion (authoritative check)
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
 
-        const res = await fetch(`/api/admin/dishes/${id}`, {
+      let res = await fetch(`/api/admin/dishes/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers
+      });
+
+      if (res.status === 404) {
+        res = await fetch(`/api/dishes/${encodeURIComponent(id)}`, {
           method: 'DELETE',
           headers
         });
-
-        if (!res.ok) {
-          // Fallback to standard dishes endpoint
-          await fetch(`/api/dishes/${id}`, {
-            method: 'DELETE',
-            headers
-          });
-        }
-      } catch (apiErr) {
-        console.warn('Server API delete dish notice:', apiErr);
       }
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.success === false) {
+        const errMsg = json?.error || `Failed to delete dish (HTTP ${res.status}).`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
+      }
+
+      // 3. Persist deleted ID in localStorage only after verified deletion
+      try {
+        const storedDeleted = safeParse<string[]>('nuvvo_deleted_dish_ids', []);
+        if (!storedDeleted.includes(String(id))) {
+          storedDeleted.push(String(id));
+          localStorage.setItem('nuvvo_deleted_dish_ids', JSON.stringify(storedDeleted));
+        }
+      } catch {}
 
       // 4. Update state and broadcast removal across all customer screens
       setFoodCatalogList(prev => {
@@ -2877,37 +2897,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return filtered;
       });
       broadcastFoodMutation('DELETE', { id });
-      addAuditLog('Menu Updated', `Admin/SuperAdmin permanently deleted dish ID ${id} from Supabase.`);
+      addAuditLog('Menu Updated', `Admin/SuperAdmin permanently deleted dish ID ${id}.`);
       setFoodError(null);
       return { success: true };
     } catch (err: any) {
-      console.error('Exception during deleteFoodItem in Supabase:', err);
-      return { success: false, error: err?.message || 'Failed to delete dish' };
+      console.error('Exception during deleteFoodItem:', err);
+      const errMsg = err?.message || 'Failed to delete dish';
+      setFoodError(errMsg);
+      return { success: false, error: errMsg };
     }
   };
 
   // Seed default preloaded dishes to Supabase public.food_items
   const seedDishesToSupabase = async (): Promise<{ success: boolean; count?: number; message?: string; error?: string }> => {
-    const token = getStoredAuthToken();
+    const token = getStoredAuthToken() || (await getActiveAuthToken()) || '';
 
     setFoodLoading(true);
     try {
       const res = await fetch('/api/admin/dishes/seed', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         }
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.success === false) {
+        const errMsg = json?.error || `Failed to seed dishes (HTTP ${res.status}).`;
+        setFoodError(errMsg);
+        return { success: false, error: errMsg };
+      }
       await fetchSupabaseCatalog();
-      addAuditLog('Menu Seeded', `Successfully synchronized ${json.count || 28} dishes with Supabase.`);
+      addAuditLog('Menu Seeded', `Successfully synchronized ${json?.count || 28} dishes with catalog.`);
       setFoodError(null);
-      return { success: true, count: json.count || 28, message: json.message || 'Seeded successfully' };
+      return { success: true, count: json?.count || 28, message: json?.message || 'Seeded successfully' };
     } catch (err: any) {
-      await fetchSupabaseCatalog();
-      setFoodError(null);
-      return { success: true, count: 28, message: 'Seeded successfully' };
+      const errMsg = err?.message || 'Network error while seeding dishes.';
+      setFoodError(errMsg);
+      return { success: false, error: errMsg };
     } finally {
       setFoodLoading(false);
     }
@@ -3324,12 +3351,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Save changes to localStorage regularly
   useEffect(() => {
-    localStorage.setItem('nuvvo_theme', darkMode ? 'dark' : 'light');
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    try {
+      localStorage.setItem('nuvvo_theme', darkMode ? 'dark' : 'light');
+    } catch {}
+    document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
   useEffect(() => {
@@ -3433,7 +3458,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [pointsHistory, user?.id]);
 
   // Toggle Dark Mode
-  const toggleDarkMode = () => setDarkMode(!darkMode);
+  const toggleDarkMode = () => {
+    setDarkMode(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('nuvvo_theme', next ? 'dark' : 'light');
+      } catch {}
+      document.documentElement.classList.toggle('dark', next);
+      return next;
+    });
+  };
 
   // General Logging
   const addAuditLog = (action: string, details: string) => {
@@ -4776,6 +4810,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           refresh_token: data.session.refresh_token
         }).catch(() => {});
       }
+      if (data.token) {
+        try {
+          if (getAuthPersistencePreference()) {
+            localStorage.setItem('nuvvo_auth_token', data.token);
+            sessionStorage.removeItem('nuvvo_auth_token');
+          } else {
+            sessionStorage.setItem('nuvvo_auth_token', data.token);
+            localStorage.removeItem('nuvvo_auth_token');
+          }
+        } catch {}
+      }
 
       addAuditLog('Password Changed', `Customer updated account password securely.`);
       return { success: true, message: data.message || 'Password updated successfully.' };
@@ -5137,37 +5182,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return updatedUser;
     });
 
-    // Persist permanently to Supabase customer_profiles if signed in with Supabase Auth
+    // Persist permanently to backend/Supabase customer_profiles for active customer sessions (Supabase or nuvvo_jwt_*)
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token && (!user?.role || user.role === 'Customer')) {
+      const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      const customerToken = session?.access_token || (await getActiveAuthToken()) || getStoredAuthToken();
+      if (customerToken && (!user?.role || user.role === 'Customer')) {
         const resp = await fetch('/api/auth/customer-profile', {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
+            'Authorization': `Bearer ${customerToken}`
           },
           body: JSON.stringify({
             name: name.trim(),
-            phone: phone ? normalizePhoneNumber(phone) : user?.phone,
-            location: extraProfile?.location ?? user?.location,
+            phone: phone ? normalizePhoneNumber(phone) : (nextSnapshot?.phone ?? user?.phone),
+            location: extraProfile?.location ?? nextSnapshot?.location ?? user?.location,
             deliveryAddress: extraProfile?.deliveryAddress,
             addresses: addresses ?? nextSnapshot?.addresses ?? user?.addresses,
-            preferredLanguage: preferredLanguage || user?.preferredLanguage || language,
-            avatar: avatar !== undefined ? avatar : user?.avatar,
-            whatsappNumber: whatsappPrefs?.whatsappNumber,
-            whatsappOptIn: whatsappPrefs?.whatsappOptIn,
-            whatsappOptInAt: whatsappPrefs?.whatsappOptInAt,
-            whatsappOptInSource: whatsappPrefs?.whatsappOptInSource
+            preferredLanguage: preferredLanguage || nextSnapshot?.preferredLanguage || user?.preferredLanguage || language,
+            avatar: avatar !== undefined ? avatar : (nextSnapshot?.avatar ?? user?.avatar),
+            whatsappNumber: whatsappPrefs?.whatsappNumber ?? nextSnapshot?.whatsappNumber,
+            whatsappOptIn: whatsappPrefs?.whatsappOptIn ?? nextSnapshot?.whatsappOptIn,
+            whatsappOptInAt: whatsappPrefs?.whatsappOptInAt ?? nextSnapshot?.whatsappOptInAt,
+            whatsappOptInSource: whatsappPrefs?.whatsappOptInSource ?? nextSnapshot?.whatsappOptInSource
           })
         });
         const resData = await resp.json().catch(() => null);
         if (!resp.ok || !resData?.success) {
-          return { success: false, error: resData?.error || 'Failed to save profile changes to Supabase.' };
+          return { success: false, error: resData?.error || 'Failed to save profile changes to server.' };
         }
       }
     } catch (err: any) {
       console.warn('[Update Profile Persistence Notice]:', err?.message);
+      return { success: false, error: err?.message || 'Network error while saving profile changes.' };
     }
 
     addAuditLog('Profile Updated', `User profile updated (Name: ${name}, Email: ${email})`);

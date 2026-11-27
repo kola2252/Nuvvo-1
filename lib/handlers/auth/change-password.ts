@@ -12,11 +12,19 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
   checkCustomerAuthRateLimit,
   clearCustomerAuthRateLimit,
+  createSignedSessionJwt,
   extractBearerToken,
+  findLocalCustomerAccountByEmail,
+  findLocalCustomerAccountById,
   getClientIp,
+  hashPassword,
+  normalizeEmail,
   parseRequestBody,
   recordCustomerAuthFailure,
-  sendJsonResponse
+  sendJsonResponse,
+  upsertLocalCustomerAccount,
+  verifyPassword,
+  verifySignedSessionJwt
 } from "../../auth-utils";
 import {
   getPublicSupabaseServerClient,
@@ -44,6 +52,108 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    const body = await parseRequestBody(req);
+    const currentPassword = String(body?.currentPassword || "");
+    const newPassword = String(body?.newPassword || "");
+    const confirmPassword = String(body?.confirmPassword || "");
+
+    const validatePasswords = () => {
+      if (!currentPassword) {
+        return "Current password is required.";
+      }
+      if (!newPassword || newPassword.length < 6) {
+        return "New password must be at least 6 characters long.";
+      }
+      if (confirmPassword !== newPassword) {
+        return "New password and confirmation do not match.";
+      }
+      if (currentPassword === newPassword) {
+        return "New password must be different from your current password.";
+      }
+      return null;
+    };
+
+    const clientIp = getClientIp(req);
+
+    // Handle signed Nuvvo Customer JWT sessions (fallback PBKDF2 customer accounts)
+    if (token.startsWith("nuvvo_jwt_")) {
+      const verified = verifySignedSessionJwt(token);
+      if (!verified.valid || !verified.payload) {
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: "Your session has expired or is invalid. Please sign in again."
+        });
+      }
+      if (verified.role === "admin" || verified.role === "super_admin") {
+        return sendJsonResponse(res, 403, {
+          success: false,
+          error: "Use Admin Settings to update your administrator Master Code."
+        });
+      }
+
+      const subjectId = String(verified.payload.sub || "");
+      const payloadEmail = normalizeEmail(verified.payload.email || "");
+      const rateKey = `${subjectId || payloadEmail}:${clientIp}`;
+
+      const rateCheck = checkCustomerAuthRateLimit("change_password", rateKey, {
+        maxAttempts: 5,
+        windowMs: 15 * 60 * 1000,
+        blockMs: 15 * 60 * 1000
+      });
+      if (!rateCheck.allowed) {
+        return sendJsonResponse(res, 429, {
+          success: false,
+          error: rateCheck.error || "Too many password change attempts. Please try again later.",
+          retryAfterSeconds: rateCheck.retryAfterSeconds
+        });
+      }
+
+      const validationErr = validatePasswords();
+      if (validationErr) {
+        return sendJsonResponse(res, 400, { success: false, error: validationErr });
+      }
+
+      const localAcc =
+        (payloadEmail ? findLocalCustomerAccountByEmail(payloadEmail) : null) ||
+        findLocalCustomerAccountById(subjectId);
+
+      if (!localAcc || !localAcc.passwordHash) {
+        return sendJsonResponse(res, 404, {
+          success: false,
+          error: "Customer account not found. Please sign in again."
+        });
+      }
+
+      if (!verifyPassword(currentPassword, localAcc.passwordHash)) {
+        const failRes = recordCustomerAuthFailure("change_password", rateKey, { maxAttempts: 5 });
+        return sendJsonResponse(res, 401, {
+          success: false,
+          error: failRes.blocked
+            ? "Too many incorrect password attempts. Please wait 15 minutes before trying again."
+            : "Current password is incorrect."
+        });
+      }
+
+      upsertLocalCustomerAccount({
+        ...localAcc,
+        passwordHash: hashPassword(newPassword),
+        updatedAt: new Date().toISOString()
+      });
+
+      clearCustomerAuthRateLimit("change_password", rateKey);
+      const freshToken = createSignedSessionJwt(localAcc.id, "normal_user", {
+        email: localAcc.email,
+        phone: localAcc.phone,
+        username: localAcc.username
+      });
+
+      return sendJsonResponse(res, 200, {
+        success: true,
+        token: freshToken,
+        message: "Password updated successfully."
+      });
+    }
+
     const publicSupabase = getPublicSupabaseServerClient();
     const { data: userData, error: userErr } = await publicSupabase.auth.getUser(token);
     if (userErr || !userData?.user?.id || !userData?.user?.email) {
@@ -55,7 +165,6 @@ export default async function handler(req: any, res: any) {
 
     const authUser = userData.user;
     const userEmail = String(authUser.email).trim().toLowerCase();
-    const clientIp = getClientIp(req);
     const rateKey = `${authUser.id}:${clientIp}`;
 
     const rateCheck = checkCustomerAuthRateLimit("change_password", rateKey, {
@@ -71,33 +180,11 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const body = await parseRequestBody(req);
-    const currentPassword = String(body?.currentPassword || "");
-    const newPassword = String(body?.newPassword || "");
-    const confirmPassword = String(body?.confirmPassword || "");
-
-    if (!currentPassword) {
+    const validationErr = validatePasswords();
+    if (validationErr) {
       return sendJsonResponse(res, 400, {
         success: false,
-        error: "Current password is required."
-      });
-    }
-    if (!newPassword || newPassword.length < 6) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "New password must be at least 6 characters long."
-      });
-    }
-    if (confirmPassword !== newPassword) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "New password and confirmation do not match."
-      });
-    }
-    if (currentPassword === newPassword) {
-      return sendJsonResponse(res, 400, {
-        success: false,
-        error: "New password must be different from your current password."
+        error: validationErr
       });
     }
 

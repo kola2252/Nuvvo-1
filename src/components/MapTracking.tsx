@@ -6,7 +6,8 @@
  * Displays an interactive map centered on the user's selected delivery address and highlights the nearby restaurant.
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { motion, useMotionValue, animate } from 'motion/react';
 import { useApp } from '../context/AppContext';
 import { 
   APIProvider, 
@@ -68,17 +69,189 @@ function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
 }
 
 /**
+ * Smoothly animated Delivery Rider marker driven by Framer Motion (`useMotionValue` + `animate`)
+ * so geographic coordinate updates glide smoothly between positions instead of snapping abruptly.
+ */
+function AnimatedRiderMarker({
+  targetPosition,
+  riderName,
+  vehicleLabel,
+  isMoving,
+  isSelected,
+  onClick,
+  onPositionFrame,
+}: {
+  targetPosition: { lat: number; lng: number };
+  riderName: string;
+  vehicleLabel?: string;
+  isMoving: boolean;
+  isSelected: boolean;
+  onClick: () => void;
+  onPositionFrame?: (pos: { lat: number; lng: number }) => void;
+}) {
+  const latMotion = useMotionValue(targetPosition.lat);
+  const lngMotion = useMotionValue(targetPosition.lng);
+  const [animatedPos, setAnimatedPos] = useState<{ lat: number; lng: number }>(targetPosition);
+  const [leanDegrees, setLeanDegrees] = useState<number>(0);
+  const [isGliding, setIsGliding] = useState<boolean>(false);
+
+  const prevTargetRef = useRef<{ lat: number; lng: number }>(targetPosition);
+  const rafRef = useRef<number | null>(null);
+  const onPositionFrameRef = useRef(onPositionFrame);
+  onPositionFrameRef.current = onPositionFrame;
+
+  // Coalesce motion value frame changes into a single React state update per animation frame
+  useEffect(() => {
+    const syncFrame = () => {
+      if (rafRef.current !== null) return;
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const nextPos = {
+          lat: latMotion.get(),
+          lng: lngMotion.get(),
+        };
+        setAnimatedPos(nextPos);
+        onPositionFrameRef.current?.(nextPos);
+      });
+    };
+
+    const unsubLat = latMotion.on('change', syncFrame);
+    const unsubLng = lngMotion.on('change', syncFrame);
+
+    return () => {
+      unsubLat();
+      unsubLng();
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [latMotion, lngMotion]);
+
+  // Animate latitude and longitude smoothly whenever targetPosition updates
+  useEffect(() => {
+    const prev = prevTargetRef.current;
+    const dLat = targetPosition.lat - prev.lat;
+    const dLng = targetPosition.lng - prev.lng;
+    const hasMoved = Math.abs(dLat) > 1e-7 || Math.abs(dLng) > 1e-7;
+
+    prevTargetRef.current = targetPosition;
+
+    if (!hasMoved) {
+      return;
+    }
+
+    // Subtle directional lean based on horizontal displacement
+    const tilt = dLng >= 0 ? 7 : -7;
+    setLeanDegrees(tilt);
+    setIsGliding(true);
+
+    const latControls = animate(latMotion, targetPosition.lat, {
+      duration: 1.35,
+      ease: [0.22, 1, 0.36, 1],
+    });
+    const lngControls = animate(lngMotion, targetPosition.lng, {
+      duration: 1.35,
+      ease: [0.22, 1, 0.36, 1],
+      onComplete: () => {
+        setIsGliding(false);
+        setLeanDegrees(0);
+      },
+    });
+
+    return () => {
+      latControls.stop();
+      lngControls.stop();
+    };
+  }, [targetPosition.lat, targetPosition.lng, latMotion, lngMotion]);
+
+  const activeMotion = isMoving || isGliding;
+
+  return (
+    <AdvancedMarker
+      position={animatedPos}
+      title={`Rider: ${riderName}`}
+      zIndex={40}
+      onClick={onClick}
+    >
+      <motion.div
+        initial={{ scale: 0.65, opacity: 0, y: 8 }}
+        animate={{ scale: isSelected ? 1.12 : 1, opacity: 1, y: 0 }}
+        transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+        className="relative flex flex-col items-center group cursor-pointer"
+      >
+        {/* Radar Pulse Ring */}
+        <motion.span
+          animate={{
+            scale: activeMotion ? [1, 1.75, 1] : [1, 1.35, 1],
+            opacity: activeMotion ? [0.55, 0, 0.55] : [0.28, 0.05, 0.28],
+          }}
+          transition={{
+            duration: activeMotion ? 1.5 : 2.6,
+            repeat: Infinity,
+            ease: 'easeInOut',
+          }}
+          className="absolute -top-1.5 w-11 h-11 rounded-full bg-orange-500/35 pointer-events-none"
+        />
+
+        {/* Animated Scooter / Rider Badge */}
+        <motion.div
+          animate={{
+            y: activeMotion ? [0, -3, 0] : 0,
+            rotate: isGliding ? leanDegrees : 0,
+          }}
+          transition={{
+            y: {
+              duration: 0.85,
+              repeat: activeMotion ? Infinity : 0,
+              ease: 'easeInOut',
+            },
+            rotate: {
+              type: 'spring',
+              stiffness: 240,
+              damping: 18,
+            },
+          }}
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.94 }}
+          className="relative w-11 h-11 rounded-2xl bg-gradient-to-tr from-orange-600 via-orange-500 to-amber-500 text-white border-2 border-white shadow-xl flex items-center justify-center"
+        >
+          <Bike className="w-5 h-5 text-white drop-shadow-xs" />
+          <span
+            className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white ${
+              activeMotion ? 'bg-emerald-400' : 'bg-amber-300'
+            }`}
+          />
+        </motion.div>
+
+        {/* Compact Rider Pill Tag */}
+        <motion.span
+          layout
+          className="mt-1 px-2.5 py-0.5 bg-zinc-900/95 text-white text-[10px] font-black rounded-lg shadow-md tracking-wide whitespace-nowrap flex items-center gap-1 border border-white/15 backdrop-blur-xs"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${activeMotion ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+          <span>{riderName}</span>
+          {vehicleLabel ? <span className="text-orange-300 font-semibold">• {vehicleLabel}</span> : null}
+        </motion.span>
+      </motion.div>
+    </AdvancedMarker>
+  );
+}
+
+/**
  * Camera Controller component using Google Maps hooks to handle smooth panning and bounds fitting
  */
 function MapCameraController({
   deliveryCoords,
   restaurantCoords,
+  riderCoords,
   focusMode,
   onResetFocus
 }: {
   deliveryCoords: { lat: number; lng: number };
   restaurantCoords: { lat: number; lng: number };
-  focusMode: 'delivery' | 'restaurant' | 'fit' | null;
+  riderCoords: { lat: number; lng: number };
+  focusMode: 'delivery' | 'restaurant' | 'rider' | 'fit' | null;
   onResetFocus: () => void;
 }) {
   const map = useMap();
@@ -94,14 +267,19 @@ function MapCameraController({
       map.panTo(restaurantCoords);
       map.setZoom(16);
       onResetFocus();
+    } else if (focusMode === 'rider') {
+      map.panTo(riderCoords);
+      map.setZoom(16);
+      onResetFocus();
     } else if (focusMode === 'fit') {
       const bounds = new google.maps.LatLngBounds();
       bounds.extend(deliveryCoords);
       bounds.extend(restaurantCoords);
+      bounds.extend(riderCoords);
       map.fitBounds(bounds, { top: 70, bottom: 90, left: 50, right: 50 });
       onResetFocus();
     }
-  }, [map, focusMode, deliveryCoords, restaurantCoords, onResetFocus]);
+  }, [map, focusMode, deliveryCoords, restaurantCoords, riderCoords, onResetFocus]);
 
   return null;
 }
@@ -113,6 +291,8 @@ export default function MapTracking() {
     restaurants, 
     orders, 
     activeTrackingOrder,
+    deliveryRouteProgress,
+    deliveryPartners,
     setCurrentPage, 
     goBack,
     clickToWhatsAppSupport 
@@ -205,9 +385,58 @@ export default function MapTracking() {
     };
   }, [restaurantCoords, deliveryCoords]);
 
+  // Resolve assigned rider info & target rider GPS coordinates
+  const assignedRider = useMemo(() => {
+    if (activeOrder?.deliveryPartner) return activeOrder.deliveryPartner;
+    if (activeOrder?.deliveryPartnerId) {
+      const found = deliveryPartners?.find(p => p.id === activeOrder.deliveryPartnerId);
+      if (found) return found;
+    }
+    return deliveryPartners?.find(p => p.isApproved && p.isAvailable) || deliveryPartners?.[0] || null;
+  }, [activeOrder, deliveryPartners]);
+
+  const riderDisplayName = activeOrder?.deliveryPartnerName || assignedRider?.name || 'Nuvvo Rider';
+  const riderVehicle = activeOrder?.deliveryPartnerVehicle || assignedRider?.vehicleType || 'Bike';
+
+  const riderProgress = useMemo(() => {
+    if (!activeOrder) return Math.max(0, Math.min(100, deliveryRouteProgress || 0));
+    if (activeOrder.status === 'delivered') return 100;
+    if (activeOrder.status === 'on_the_way' || activeOrder.status === 'picked') {
+      return Math.max(8, Math.min(100, deliveryRouteProgress || 35));
+    }
+    return Math.max(0, Math.min(100, deliveryRouteProgress || 0));
+  }, [activeOrder, deliveryRouteProgress]);
+
+  const riderCoords = useMemo(() => {
+    if (activeOrder?.deliveryPartnerLocation?.lat && activeOrder?.deliveryPartnerLocation?.lng) {
+      return {
+        lat: activeOrder.deliveryPartnerLocation.lat,
+        lng: activeOrder.deliveryPartnerLocation.lng,
+      };
+    }
+    if (activeOrder && assignedRider?.currentLocation?.lat && assignedRider?.currentLocation?.lng) {
+      return {
+        lat: assignedRider.currentLocation.lat,
+        lng: assignedRider.currentLocation.lng,
+      };
+    }
+    const t = riderProgress / 100;
+    return {
+      lat: restaurantCoords.lat + (deliveryCoords.lat - restaurantCoords.lat) * t,
+      lng: restaurantCoords.lng + (deliveryCoords.lng - restaurantCoords.lng) * t,
+    };
+  }, [activeOrder, assignedRider, riderProgress, restaurantCoords, deliveryCoords]);
+
+  const isRiderMoving = Boolean(
+    activeOrder &&
+    (activeOrder.status === 'on_the_way' || activeOrder.status === 'picked' || (riderProgress > 0 && riderProgress < 100))
+  );
+
+  const [liveRiderPos, setLiveRiderPos] = useState<{ lat: number; lng: number }>(riderCoords);
+
   // Interactive UI States
-  const [activeInfoWindow, setActiveInfoWindow] = useState<'delivery' | 'restaurant' | string | null>('restaurant');
-  const [cameraFocus, setCameraFocus] = useState<'delivery' | 'restaurant' | 'fit' | null>('fit');
+  const [activeInfoWindow, setActiveInfoWindow] = useState<'delivery' | 'restaurant' | 'rider' | string | null>('restaurant');
+  const [cameraFocus, setCameraFocus] = useState<'delivery' | 'restaurant' | 'rider' | 'fit' | null>('fit');
   const [mapTypeId, setMapTypeId] = useState<string>('roadmap');
   const [showNearbyList, setShowNearbyList] = useState(false);
 
@@ -276,6 +505,7 @@ export default function MapTracking() {
               <MapCameraController
                 deliveryCoords={deliveryCoords}
                 restaurantCoords={restaurantCoords}
+                riderCoords={liveRiderPos}
                 focusMode={cameraFocus}
                 onResetFocus={handleResetFocus}
               />
@@ -395,6 +625,55 @@ export default function MapTracking() {
                 </InfoWindow>
               )}
 
+              {/* 2B. ANIMATED DELIVERY RIDER MARKER */}
+              <AnimatedRiderMarker
+                targetPosition={riderCoords}
+                riderName={riderDisplayName}
+                vehicleLabel={riderVehicle}
+                isMoving={isRiderMoving}
+                isSelected={activeInfoWindow === 'rider'}
+                onClick={() => setActiveInfoWindow(prev => prev === 'rider' ? null : 'rider')}
+                onPositionFrame={setLiveRiderPos}
+              />
+
+              {/* Delivery Rider InfoWindow */}
+              {activeInfoWindow === 'rider' && (
+                <InfoWindow
+                  position={liveRiderPos}
+                  onCloseClick={() => setActiveInfoWindow(null)}
+                >
+                  <div className="p-2 text-zinc-900 text-xs min-w-[200px] max-w-[240px]">
+                    <div className="flex items-center justify-between gap-2 border-b pb-1 mb-1.5">
+                      <div className="flex items-center gap-1.5 text-orange-600 font-black uppercase text-[11px]">
+                        <Bike className="w-4 h-4" />
+                        <span className="truncate">{riderDisplayName}</span>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+                        isRiderMoving ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {activeOrder?.status === 'delivered' ? 'Arrived' : isRiderMoving ? 'En Route' : 'At Kitchen'}
+                      </span>
+                    </div>
+                    <div className="space-y-1 text-[10.5px] font-mono text-zinc-600">
+                      <div className="flex justify-between">
+                        <span>Vehicle:</span>
+                        <strong className="text-zinc-900">{riderVehicle}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Route Progress:</span>
+                        <strong className="text-orange-600">{Math.round(riderProgress)}%</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Remaining Distance:</span>
+                        <strong className="text-emerald-700">
+                          {calculateDistanceKm(liveRiderPos.lat, liveRiderPos.lng, deliveryCoords.lat, deliveryCoords.lng)} km
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                </InfoWindow>
+              )}
+
               {/* 3. ADDITIONAL NEARBY RESTAURANTS (MAPPED IN AREA) */}
               {restaurantListWithCoords
                 .filter(r => r.id !== highlightedRestaurantId)
@@ -429,6 +708,7 @@ export default function MapTracking() {
               {activeInfoWindow && 
                 activeInfoWindow !== 'delivery' && 
                 activeInfoWindow !== 'restaurant' && 
+                activeInfoWindow !== 'rider' &&
                 (() => {
                   const clickedRest = restaurantListWithCoords.find(r => r.id === activeInfoWindow);
                   if (!clickedRest) return null;
@@ -477,6 +757,18 @@ export default function MapTracking() {
         <div className="absolute right-3 top-20 z-20 flex flex-col gap-2">
           <button
             type="button"
+            onClick={() => {
+              setCameraFocus('rider');
+              setActiveInfoWindow('rider');
+            }}
+            title="Center on Delivery Rider"
+            className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-md border border-slate-200 dark:border-zinc-800 text-orange-600 dark:text-orange-400 flex items-center justify-center hover:bg-orange-50 dark:hover:bg-zinc-800 transition active:scale-95 cursor-pointer"
+          >
+            <Bike className="w-5 h-5" />
+          </button>
+
+          <button
+            type="button"
             onClick={() => setCameraFocus('delivery')}
             title="Center on Delivery Address"
             className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-md border border-slate-200 dark:border-zinc-800 text-orange-600 dark:text-orange-500 flex items-center justify-center hover:bg-orange-50 dark:hover:bg-zinc-800 transition active:scale-95 cursor-pointer"
@@ -496,7 +788,7 @@ export default function MapTracking() {
           <button
             type="button"
             onClick={() => setCameraFocus('fit')}
-            title="Fit Both Locations"
+            title="Fit All Locations"
             className="w-10 h-10 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-md border border-slate-200 dark:border-zinc-800 text-blue-600 dark:text-blue-500 flex items-center justify-center hover:bg-blue-50 dark:hover:bg-zinc-800 transition active:scale-95 cursor-pointer"
           >
             <Crosshair className="w-5 h-5" />

@@ -79,6 +79,13 @@
             }).catch(function() {});
           }
         } catch (swErr) {}
+        try {
+          if (window.localStorage.getItem('nuvvo_theme') === 'dark') {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (themeErr) {}
       })();
     </script>
   </head>
