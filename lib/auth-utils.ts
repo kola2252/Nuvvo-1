@@ -197,6 +197,7 @@ export interface StoredCustomerProfileIndex {
   whatsappOptInSource?: string;
   preferredLanguage?: string;
   avatar?: string;
+  isEmailVerified?: boolean;
   role: 'Customer';
   createdAt: string;
   updatedAt: string;
@@ -245,6 +246,7 @@ export function upsertLocalCustomerProfileIndex(profile: Partial<StoredCustomerP
     whatsappOptInSource: profile.whatsappOptInSource !== undefined ? profile.whatsappOptInSource : existingById.whatsappOptInSource,
     preferredLanguage: profile.preferredLanguage || existingById.preferredLanguage || 'te',
     avatar: profile.avatar !== undefined ? profile.avatar : existingById.avatar,
+    isEmailVerified: profile.isEmailVerified !== undefined ? Boolean(profile.isEmailVerified) : existingById.isEmailVerified,
     role: 'Customer', // Strictly immutable customer role
     createdAt: existingById.createdAt || profile.createdAt || nowIso,
     updatedAt: nowIso
@@ -705,6 +707,7 @@ export function sendJsonResponse(res: any, status: number, data: any) {
  */
 export function normalizePhone(phone: any): string {
   const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 14 && digits.startsWith('0091')) return digits.slice(4);
   if (digits.length === 13 && digits.startsWith('091')) return digits.slice(3);
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
@@ -915,22 +918,64 @@ export function hashPassword(password: string): string {
 /**
  * Verifies a password against a stored PBKDF2 hash.
  */
+function stripOuterQuotes(value: string): string {
+  const trimmed = String(value || '').trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function isSupportedPbkdf2Prefix(value: string): boolean {
+  return (
+    value.startsWith('pbkdf2$') ||
+    value.startsWith('pbkdf2-sha512$') ||
+    value.startsWith('pbkdf2_sha512$') ||
+    value.startsWith('pbkdf2-sha256$') ||
+    value.startsWith('pbkdf2_sha256$')
+  );
+}
+
 export function verifyPassword(password: string, storedHash: string): boolean {
   try {
-    if (!storedHash || !storedHash.startsWith('pbkdf2$')) return false;
-    const parts = storedHash.split('$');
+    const cleanStored = stripOuterQuotes(storedHash);
+    if (!cleanStored || !isSupportedPbkdf2Prefix(cleanStored)) return false;
+    const parts = cleanStored.split('$');
     if (parts.length !== 4) return false;
 
+    const prefix = parts[0].toLowerCase();
     const iterations = parseInt(parts[1], 10);
     const salt = parts[2];
-    const originalHash = parts[3];
+    const originalHash = parts[3].trim().toLowerCase();
 
-    const computedHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
+    if (!Number.isFinite(iterations) || iterations <= 0 || !salt || !originalHash) {
+      return false;
+    }
+
+    const isValidHex = /^[0-9a-f]+$/.test(originalHash) && originalHash.length % 2 === 0;
+    const keylen = isValidHex ? Math.min(128, Math.max(16, originalHash.length / 2)) : 64;
     const originalBuf = Buffer.from(originalHash);
-    const computedBuf = Buffer.from(computedHash);
 
-    if (originalBuf.length !== computedBuf.length) return false;
-    return crypto.timingSafeEqual(originalBuf, computedBuf);
+    const candidateDigests: Array<'sha512' | 'sha256'> = prefix.includes('sha256')
+      ? ['sha256']
+      : prefix.includes('sha512')
+        ? ['sha512']
+        : keylen === 32
+          ? ['sha512', 'sha256']
+          : ['sha512'];
+
+    for (const digest of candidateDigests) {
+      const computedHash = crypto.pbkdf2Sync(password, salt, iterations, keylen, digest).toString('hex');
+      const computedBuf = Buffer.from(computedHash);
+      if (originalBuf.length === computedBuf.length && crypto.timingSafeEqual(originalBuf, computedBuf)) {
+        return true;
+      }
+    }
+
+    return false;
   } catch {
     return false;
   }
@@ -966,13 +1011,27 @@ const pinAttemptStore = new Map<string, PinAttemptRecord>();
 
 const ADMIN_CREDENTIAL_FILE = path.join(process.cwd(), '.server_admin_credentials.json');
 const BASELINE_SERVER_MASTER_CODE = '2135';
+const RUNTIME_ADMIN_CACHE_TTL_MS = 15 * 1000;
 let runtimeAdminPinHash: string | null = null;
+let runtimeAdminPinLoadedAt = 0;
 
 function extractPbkdf2Hash(raw: any): string | null {
   if (!raw) return null;
-  if (typeof raw === 'string' && raw.startsWith('pbkdf2$')) return raw;
-  if (typeof raw === 'object' && typeof raw.hash === 'string' && raw.hash.startsWith('pbkdf2$')) {
-    return raw.hash;
+  if (typeof raw === 'string') {
+    const clean = stripOuterQuotes(raw);
+    if (isSupportedPbkdf2Prefix(clean)) return clean;
+    if (clean.startsWith('{') || clean.startsWith('"')) {
+      try {
+        return extractPbkdf2Hash(JSON.parse(clean));
+      } catch {}
+    }
+    return null;
+  }
+  if (typeof raw === 'object') {
+    for (const candidate of [raw.hash, raw.masterCodeHash, raw.pinHash, raw.value, raw.pbkdf2]) {
+      const extracted = extractPbkdf2Hash(candidate);
+      if (extracted) return extracted;
+    }
   }
   return null;
 }
@@ -981,70 +1040,99 @@ function readLocalAdminCredentialHash(): string | null {
   try {
     if (process.env.VERCEL || !fs.existsSync(ADMIN_CREDENTIAL_FILE)) return null;
     const parsed = JSON.parse(fs.readFileSync(ADMIN_CREDENTIAL_FILE, 'utf8'));
-    return extractPbkdf2Hash(parsed?.masterCodeHash || parsed?.hash);
+    return extractPbkdf2Hash(parsed?.masterCodeHash || parsed?.hash || parsed);
   } catch {
     return null;
   }
 }
 
-function writeLocalAdminCredentialHash(newHash: string): void {
+function writeLocalAdminCredentialHash(newHash: string): boolean {
   try {
-    if (process.env.VERCEL) return;
+    if (process.env.VERCEL) return false;
     fs.writeFileSync(
       ADMIN_CREDENTIAL_FILE,
       JSON.stringify({ masterCodeHash: newHash, updatedAt: new Date().toISOString() }, null, 2),
       'utf8'
     );
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getEnvMasterCodeHash(): { hash: string; source: 'env_hash' | 'env_plain' } | null {
-  const envHash = (process.env.ADMIN_MASTER_CODE_HASH || process.env.ADMIN_PIN_HASH || '').trim();
-  if (envHash.startsWith('pbkdf2$')) {
-    return { hash: envHash, source: 'env_hash' };
+  const rawEnvHash = stripOuterQuotes(process.env.ADMIN_MASTER_CODE_HASH || process.env.ADMIN_PIN_HASH || '');
+  const extractedEnvHash = extractPbkdf2Hash(rawEnvHash);
+  if (extractedEnvHash) {
+    return { hash: extractedEnvHash, source: 'env_hash' };
   }
-  const envPlain = (
+
+  const rawEnvPlain = stripOuterQuotes(
     process.env.ADMIN_MASTER_CODE ||
     process.env.ADMIN_PIN ||
     process.env.ADMIN_SECURITY_PIN ||
     ''
-  ).trim();
-  if (envPlain.length >= 4) {
-    return { hash: hashPassword(envPlain), source: 'env_plain' };
+  );
+  const embeddedHash = extractPbkdf2Hash(rawEnvPlain);
+  if (embeddedHash) {
+    return { hash: embeddedHash, source: 'env_hash' };
+  }
+  if (rawEnvPlain.length >= 4) {
+    return { hash: hashPassword(rawEnvPlain), source: 'env_plain' };
   }
   return null;
 }
 
-export async function resolveAdminCredentialRecord(): Promise<{
+export async function resolveAdminCredentialRecord(options?: { bypassMemoryCache?: boolean }): Promise<{
   configured: boolean;
   hash: string | null;
-  source: 'memory' | 'supabase' | 'local_store' | 'env_hash' | 'env_plain' | 'none';
+  source: 'memory' | 'supabase' | 'local_store' | 'env_hash' | 'env_plain' | 'baseline' | 'none';
 }> {
-  if (runtimeAdminPinHash && runtimeAdminPinHash.startsWith('pbkdf2$')) {
+  const now = Date.now();
+  if (
+    !options?.bypassMemoryCache &&
+    runtimeAdminPinHash &&
+    isSupportedPbkdf2Prefix(runtimeAdminPinHash) &&
+    now - runtimeAdminPinLoadedAt < RUNTIME_ADMIN_CACHE_TTL_MS
+  ) {
     return { configured: true, hash: runtimeAdminPinHash, source: 'memory' };
   }
 
-  // 1. Check Supabase persistent PBKDF2 record (preserves existing Master Code across restarts)
+  let dbReadFailed = false;
+
+  // 1. Check Supabase persistent PBKDF2 record (preserves existing Master Code across restarts and deployments)
   try {
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
     if (adminClient) {
       if (isServiceRole) {
-        const { data: credRow } = await adminClient
+        const { data: credRow, error: credErr } = await adminClient
           .from('admin_credentials')
           .select('hash')
           .eq('id', 'master_code')
           .maybeSingle();
+
+        if (credErr && credErr.code !== 'PGRST116' && credErr.code !== 'PGRST205' && credErr.code !== '42P01') {
+          dbReadFailed = true;
+          console.warn('[Admin Auth Notice] Supabase admin_credentials read error:', credErr.message);
+        }
+
         const foundCred = extractPbkdf2Hash(credRow?.hash);
         if (foundCred) {
           runtimeAdminPinHash = foundCred;
+          runtimeAdminPinLoadedAt = Date.now();
           return { configured: true, hash: foundCred, source: 'supabase' };
         }
       }
 
-      const { data: settingRows } = await adminClient
+      const { data: settingRows, error: settingsErr } = await adminClient
         .from('app_settings')
         .select('key, value')
         .in('key', ['admin_master_code_hash', 'admin_security_pin_hash']);
+
+      if (settingsErr && settingsErr.code !== 'PGRST116' && settingsErr.code !== 'PGRST205' && settingsErr.code !== '42P01') {
+        dbReadFailed = true;
+        console.warn('[Admin Auth Notice] Supabase app_settings read error:', settingsErr.message);
+      }
 
       if (Array.isArray(settingRows) && settingRows.length > 0) {
         const masterRow = settingRows.find((r: any) => r.key === 'admin_master_code_hash');
@@ -1052,16 +1140,21 @@ export async function resolveAdminCredentialRecord(): Promise<{
         const foundHash = extractPbkdf2Hash(masterRow?.value) || extractPbkdf2Hash(legacyRow?.value);
         if (foundHash) {
           runtimeAdminPinHash = foundHash;
+          runtimeAdminPinLoadedAt = Date.now();
           return { configured: true, hash: foundHash, source: 'supabase' };
         }
       }
     }
-  } catch {}
+  } catch (err: any) {
+    dbReadFailed = true;
+    console.warn('[Admin Auth Notice] Exception querying Supabase credential record:', err?.message || err);
+  }
 
   // 2. Check local non-Vercel hashed credential file
   const localHash = readLocalAdminCredentialHash();
   if (localHash) {
     runtimeAdminPinHash = localHash;
+    runtimeAdminPinLoadedAt = Date.now();
     return { configured: true, hash: localHash, source: 'local_store' };
   }
 
@@ -1069,72 +1162,92 @@ export async function resolveAdminCredentialRecord(): Promise<{
   const envCred = getEnvMasterCodeHash();
   if (envCred) {
     runtimeAdminPinHash = envCred.hash;
+    runtimeAdminPinLoadedAt = Date.now();
     return { configured: true, hash: envCred.hash, source: envCred.source };
   }
 
-  // 4. Initialize server-side PBKDF2 hash from existing designated administrator baseline Master Code
-  // (Stored strictly as a salted PBKDF2-SHA512 hash on the server; overridden persistently whenever Admin updates Master Code)
-  const initializedHash = hashPassword(BASELINE_SERVER_MASTER_CODE);
-  await saveAdminMasterCodeHash(initializedHash);
-  return { configured: true, hash: initializedHash, source: 'local_store' };
+  // 4. Fallback to in-memory PBKDF2 hash from designated administrator baseline Master Code
+  // Never overwrites Supabase/DB automatically when no DB record was found or if DB read failed.
+  const baselineHash = hashPassword(BASELINE_SERVER_MASTER_CODE);
+  runtimeAdminPinHash = baselineHash;
+  runtimeAdminPinLoadedAt = Date.now();
+  if (!dbReadFailed && !process.env.VERCEL && !fs.existsSync(ADMIN_CREDENTIAL_FILE)) {
+    writeLocalAdminCredentialHash(baselineHash);
+  }
+  return { configured: true, hash: baselineHash, source: 'baseline' };
 }
 
 export async function saveAdminMasterCodeHash(newHash: string): Promise<boolean> {
-  if (!newHash || typeof newHash !== 'string' || !newHash.startsWith('pbkdf2$')) {
+  const validHash = extractPbkdf2Hash(newHash);
+  if (!validHash) {
     return false;
   }
 
-  runtimeAdminPinHash = newHash;
-  writeLocalAdminCredentialHash(newHash);
+  runtimeAdminPinHash = validHash;
+  runtimeAdminPinLoadedAt = Date.now();
+  const localSaved = writeLocalAdminCredentialHash(validHash);
+  let dbSaved = false;
 
   try {
     const { client: adminClient, isServiceRole } = getAdminSupabaseServerClient();
     if (adminClient && isServiceRole) {
       try {
-        await adminClient
+        const { error: credUpsertErr } = await adminClient
           .from('admin_credentials')
           .upsert([{
             id: 'master_code',
-            hash: newHash,
+            hash: validHash,
             updated_at: new Date().toISOString()
           }], { onConflict: 'id' });
+        if (!credUpsertErr) {
+          dbSaved = true;
+        }
       } catch {}
 
       try {
-        await adminClient
+        const { error: settingsUpsertErr } = await adminClient
           .from('app_settings')
           .upsert([
             {
               key: 'admin_master_code_hash',
-              value: newHash,
+              value: validHash,
               description: 'PBKDF2-SHA512 hashed administrator Master Code',
               updated_at: new Date().toISOString()
             },
             {
               key: 'admin_security_pin_hash',
-              value: newHash,
+              value: validHash,
               description: 'PBKDF2-SHA512 hashed administrator security credential',
               updated_at: new Date().toISOString()
             }
           ], { onConflict: 'key' });
+        if (!settingsUpsertErr) {
+          dbSaved = true;
+        }
       } catch {}
     }
   } catch {}
 
-  return true;
+  if (process.env.VERCEL) {
+    return dbSaved;
+  }
+
+  return localSaved || dbSaved;
 }
 
 export function setAdminPinHash(newHash: string): boolean {
-  if (newHash && typeof newHash === 'string' && newHash.startsWith('pbkdf2$')) {
-    runtimeAdminPinHash = newHash;
-    writeLocalAdminCredentialHash(newHash);
+  const validHash = extractPbkdf2Hash(newHash);
+  if (validHash) {
+    runtimeAdminPinHash = validHash;
+    runtimeAdminPinLoadedAt = Date.now();
+    writeLocalAdminCredentialHash(validHash);
     return true;
   }
   return false;
 }
 
 export function getAdminPinHash(): string {
-  if (runtimeAdminPinHash && runtimeAdminPinHash.startsWith('pbkdf2$')) {
+  if (runtimeAdminPinHash && isSupportedPbkdf2Prefix(runtimeAdminPinHash)) {
     return runtimeAdminPinHash;
   }
   const localHash = readLocalAdminCredentialHash();
@@ -1142,6 +1255,7 @@ export function getAdminPinHash(): string {
   const envCred = getEnvMasterCodeHash();
   if (envCred) {
     runtimeAdminPinHash = envCred.hash;
+    runtimeAdminPinLoadedAt = Date.now();
     return envCred.hash;
   }
   return '';
@@ -1191,16 +1305,6 @@ export async function verifyAdminMasterCode(
     };
   }
 
-  const cred = await resolveAdminCredentialRecord();
-  if (!cred.configured || !cred.hash) {
-    return {
-      verified: false,
-      locked: false,
-      configured: false,
-      message: "Master Code credential record is unavailable on the server."
-    };
-  }
-
   const cleanCode = String(masterCode || '').trim();
   if (!cleanCode) {
     return {
@@ -1211,7 +1315,24 @@ export async function verifyAdminMasterCode(
     };
   }
 
-  const isMatch = verifyPassword(cleanCode, cred.hash);
+  let cred = await resolveAdminCredentialRecord();
+  if (!cred.configured || !cred.hash) {
+    return {
+      verified: false,
+      locked: false,
+      configured: false,
+      message: "Master Code credential record is unavailable on the server."
+    };
+  }
+
+  let isMatch = verifyPassword(cleanCode, cred.hash);
+  if (!isMatch && cred.source === 'memory') {
+    const freshCred = await resolveAdminCredentialRecord({ bypassMemoryCache: true });
+    if (freshCred.configured && freshCred.hash) {
+      isMatch = verifyPassword(cleanCode, freshCred.hash);
+    }
+  }
+
   if (isMatch) {
     pinAttemptStore.delete(cleanPhone);
     return { verified: true, locked: false, configured: true };

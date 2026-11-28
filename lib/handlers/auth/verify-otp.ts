@@ -18,7 +18,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     const body = await parseRequestBody(req);
-    const { phone, otp, challengeToken } = body || {};
+    const { phone, otp, challengeToken, requestedRole } = body || {};
 
     if (!phone) {
       return sendJsonResponse(res, 400, { success: false, error: "Phone number is required." });
@@ -37,7 +37,16 @@ export default async function handler(req: any, res: any) {
     let isVerified = false;
     let isExpired = false;
 
-    if (isAuthorizedAdminAccountPhone(cleanPhone)) {
+    if (typeof challengeToken === 'string' && challengeToken.startsWith('otp_')) {
+      const challengeCheck = verifyOtpChallenge(challengeToken, cleanPhone, inputCode);
+      if (challengeCheck.expired) {
+        isExpired = true;
+      } else if (challengeCheck.verified) {
+        isVerified = true;
+      }
+    }
+
+    if (!isVerified && !isExpired && requestedRole === 'Admin' && isAuthorizedAdminAccountPhone(cleanPhone) && !challengeToken) {
       const pinResult = await verifyAdminMasterCode(cleanPhone, inputCode);
       if (pinResult.locked) {
         return sendJsonResponse(res, 429, {
@@ -47,15 +56,6 @@ export default async function handler(req: any, res: any) {
         });
       }
       if (pinResult.verified) {
-        isVerified = true;
-      }
-    }
-
-    if (!isVerified && typeof challengeToken === 'string' && challengeToken.startsWith('otp_')) {
-      const challengeCheck = verifyOtpChallenge(challengeToken, cleanPhone, inputCode);
-      if (challengeCheck.expired) {
-        isExpired = true;
-      } else if (challengeCheck.verified) {
         isVerified = true;
       }
     }

@@ -287,6 +287,7 @@ export default async function handler(req: any, res: any) {
         whatsappOptInSource: dbProfile.whatsapp_opt_in_source || undefined,
         preferredLanguage: dbProfile.preferred_language || "te",
         avatar: dbProfile.avatar || undefined,
+        isEmailVerified: emailVerified,
         role: "Customer"
       });
 

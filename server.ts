@@ -1522,8 +1522,8 @@ Current User Query: ${message}`;
       let isVerified = false;
       let isExpired = false;
 
-      // For authorized admin account, verify against PBKDF2 hashed Master Code with rate limiting
-      if (isAuthorizedAdminAccountPhone(cleanPhone)) {
+      // Check Master Code ONLY for explicit Admin Master Code verification without an OTP challenge token
+      if (requestedRole === 'Admin' && !challengeToken && isAuthorizedAdminAccountPhone(cleanPhone)) {
         const pinCheck = await verifyAdminMasterCode(cleanPhone, inputCode);
         if (pinCheck.locked) {
           return res.status(429).json({

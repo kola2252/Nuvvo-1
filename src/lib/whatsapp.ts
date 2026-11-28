@@ -17,7 +17,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { getAdminSupabaseServerClient } from '../utils/supabase/server.ts';
+import { getAdminSupabaseServerClient } from '../utils/supabase/server';
 
 export const FIXED_ADMIN_WHATSAPP_RAW = '9063692135';
 export const FIXED_ADMIN_WHATSAPP_E164 = '+919063692135';

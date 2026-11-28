@@ -342,6 +342,7 @@ export default async function handler(req: any, res: any) {
         whatsappOptInSource: nextWhatsappSource || undefined,
         preferredLanguage: nextLanguage,
         avatar: nextAvatar || undefined,
+        isEmailVerified: Boolean(authUser.email_confirmed_at),
         role: "Customer"
       });
 

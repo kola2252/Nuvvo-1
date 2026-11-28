@@ -202,7 +202,7 @@ export default function Auth() {
       return;
     }
 
-    const cleanMobile = regMobile.replace(/\D/g, '');
+    const cleanMobile = normalizeAdminPhoneDigits(regMobile);
     if (cleanMobile.length !== 10) {
       setErrorMsg('Please enter a valid 10-digit Mobile Number.');
       return;
@@ -235,7 +235,7 @@ export default function Auth() {
       setErrorMsg('Email address cannot be used as a WhatsApp number. Enter a valid 10-digit WhatsApp mobile number.');
       return;
     }
-    const cleanWaDigits = rawWhatsapp.replace(/\D/g, '');
+    const cleanWaDigits = normalizeAdminPhoneDigits(rawWhatsapp);
     if (rawWhatsapp && cleanWaDigits.length < 10) {
       setErrorMsg('Please enter a valid 10-digit WhatsApp mobile number.');
       return;
@@ -476,7 +476,7 @@ export default function Auth() {
         </div>
 
         {/* Global Language Selector Bar */}
-        <div className="flex items-center justify-between px-5 py-2.5 bg-slate-50 dark:bg-zinc-850/80 border-b border-slate-100 dark:border-zinc-800">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-5 py-2.5 bg-slate-50 dark:bg-zinc-850/80 border-b border-slate-100 dark:border-zinc-800">
           <div className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300">
             <Globe className="w-3.5 h-3.5 text-orange-500" />
             <span className="text-[10px] font-black uppercase tracking-wider font-mono">Language / భాష:</span>
@@ -913,10 +913,10 @@ export default function Auth() {
                     <label className="block text-[10px] font-black text-zinc-600 dark:text-zinc-300 uppercase tracking-wider">
                       WhatsApp Mobile Number (Optional)
                     </label>
-                    {regMobile.replace(/\D/g, '').length === 10 && (
+                    {normalizeAdminPhoneDigits(regMobile).length === 10 && (
                       <button
                         type="button"
-                        onClick={() => setRegWhatsappNumber(regMobile.replace(/\D/g, ''))}
+                        onClick={() => setRegWhatsappNumber(normalizeAdminPhoneDigits(regMobile))}
                         className="text-[10px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer whitespace-nowrap"
                       >
                         Use mobile number

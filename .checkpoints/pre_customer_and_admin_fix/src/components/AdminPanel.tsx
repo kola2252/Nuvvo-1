@@ -1,0 +1,4741 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useMemo, useEffect } from 'react';
+import { useApp } from '../context/AppContext';
+import { motion } from 'motion/react';
+import { 
+  TrendingUp, ShoppingBag, Users, Building, Plus, Tag, Trash, Edit, 
+  Settings, Save, PieChart, BarChart2, DollarSign, Bike, Check, Flame, Upload, ShieldAlert,
+  Briefcase, MapPin, Download, Send, Globe, Award, Ban, Phone, MessageSquare, FileText, X,
+  Image as ImageIcon, Camera, RefreshCw, Trash2, AlertTriangle, Sparkles, Percent,
+  QrCode, Copy, CheckCircle2, ShieldCheck, Shield, IndianRupee, ExternalLink, Smartphone, Star,
+  RotateCcw, KeyRound
+} from 'lucide-react';
+import QRCode from 'qrcode';
+import { VegIndicator, FranchiseApplication, Banner } from '../types';
+import SuperAdminGuard from './SuperAdminGuard';
+import AdminCatalogManager from './AdminCatalogManager';
+import AdminDashboardSummaryWidget from './AdminDashboardSummaryWidget';
+import { isAdminRole, getStoredAuthToken } from '../config/authConfig';
+import { downloadOrdersWordDocument } from '../utils/exportOrdersWord';
+import { fetchWithCache } from '../utils/apiCache';
+import AdminEmailTool from './AdminEmailTool';
+import AdminWhatsAppSettings from './AdminWhatsAppSettings';
+import OrderStatusFilter, { OrderLifecycleFilter, matchesOrderStatusFilter, getOrderLifecycleBadge } from './OrderStatusFilter';
+
+export default function AdminPanel() {
+  const { 
+    orders, foodCatalog, couponsList, addNewCoupon: addCoupon, deleteCoupon: removeCoupon, 
+    clearAllCoupons, resetDefaultCoupons, clearStats, seedSampleOrders,
+    banners, addBanner, updateBanner, deleteBanner, clearAllBanners, resetDefaultBanners, enableBanner,
+    addFoodItem, updateFoodItem, deleteFoodItem, foodLoading, foodError, supabaseConnected, seedDishesToSupabase, refetchFoodCatalog,
+    franchiseApplications, deliveryPartner, deliveryPartners, user, updateFranchiseStatus,
+    restaurants, registerNewRestaurantRequest, approveRestaurant, isAdmin, isSuperAdmin, setCurrentPage,
+    updateOrderPaymentStatus, storePaymentSettings, updateStorePaymentSettings,
+    logs, clearLogs,
+    requestAdminSaveConfirmation,
+    storeOperationsConfig, updateStoreOperationsConfig,
+    toggleCouponActive,
+    supportTickets, fetchSupportTickets, updateSupportTicket
+  } = useApp();
+
+  const [activeTab, setActiveTab] = useState<'settings' | 'whatsapp' | 'analytics' | 'catalog' | 'payments' | 'coupons' | 'franchise'>(() => {
+    try {
+      const target = localStorage.getItem('nuvvo_admin_target_tab');
+      if (target === 'settings' || target === 'whatsapp' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
+        return target;
+      }
+    } catch {}
+    return 'settings';
+  });
+
+  useEffect(() => {
+    try {
+      const target = localStorage.getItem('nuvvo_admin_target_tab');
+      if (target === 'settings' || target === 'whatsapp' || target === 'analytics' || target === 'catalog' || target === 'payments' || target === 'coupons' || target === 'franchise') {
+        setActiveTab(target);
+        localStorage.removeItem('nuvvo_admin_target_tab');
+      }
+    } catch {}
+  }, [user?.id]);
+
+  const [paymentFormError, setPaymentFormError] = useState<string | null>(null);
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [orderStatusFilter, setOrderStatusFilter] = useState<OrderLifecycleFilter>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'initiated' | 'awaiting_confirmation' | 'confirmed' | 'failed'>('all');
+
+  // PhonePe UPI & Bank Account Configuration States
+  const [adminPhonePeUpiId, setAdminPhonePeUpiId] = useState(storePaymentSettings?.upiId || 'arjun.gorrepati@axl');
+  const [adminBankName, setAdminBankName] = useState(storePaymentSettings?.bankName || 'Karur Vysya Bank - 4761');
+  const [adminMerchantName, setAdminMerchantName] = useState(storePaymentSettings?.merchantName || 'Nuvvo Food & Hospitality');
+  const [adminPhonePePhone, setAdminPhonePePhone] = useState(storePaymentSettings?.phonePeNumber || '9876543210');
+  const [adminAccountHolder, setAdminAccountHolder] = useState(storePaymentSettings?.accountHolderName || 'Arjun Gorrepati (Nuvvo Foods)');
+  const [enableUpi, setEnableUpi] = useState<boolean>(storePaymentSettings?.enableUpi ?? true);
+  const [enableCod, setEnableCod] = useState<boolean>(storePaymentSettings?.enableCod ?? true);
+  const [customerInstructions, setCustomerInstructions] = useState<string>(storePaymentSettings?.customerInstructions || '');
+  const [staticQrImage, setStaticQrImage] = useState<string>(storePaymentSettings?.staticQrImage || '');
+  const [testAmount, setTestAmount] = useState('250');
+  const [testQrUrl, setTestQrUrl] = useState('');
+  const [isSavedSuccess, setIsSavedSuccess] = useState(false);
+  const [copiedAdminUpi, setCopiedAdminUpi] = useState(false);
+
+  // Banner Editing States
+  const [editingBanner, setEditingBanner] = useState<Banner | null>(null);
+  const [isAddingBanner, setIsAddingBanner] = useState(false);
+  const [bannerForm, setBannerForm] = useState<Partial<Banner>>({});
+  const [bannerNotice, setBannerNotice] = useState<string | null>(null);
+
+  // Franchise Actions Feedback States
+  const [franchiseProcessingId, setFranchiseProcessingId] = useState<string | null>(null);
+  const [franchiseNotice, setFranchiseNotice] = useState<{ id: string; msg: string; type: 'success' | 'error' } | null>(null);
+
+  // Settings Reset Notice
+  const [settingResetNotice, setSettingResetNotice] = useState<string | null>(null);
+
+  // Application Logs Removal Notice
+  const [logNotice, setLogNotice] = useState<string | null>(null);
+
+  // Catalog CRUD Feedback Notice (errors or confirmations)
+  const [catalogFeedback, setCatalogFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // Store Operations Config state
+  const [opsCustomActive, setOpsCustomActive] = useState<boolean>(Boolean(storeOperationsConfig?.isCustomConfigActive));
+  const [opsPauseOrders, setOpsPauseOrders] = useState<boolean>(Boolean(storeOperationsConfig?.pauseNewOrders));
+  const [opsPauseReason, setOpsPauseReason] = useState<string>(storeOperationsConfig?.pauseReason || '');
+  const [opsDeliveryFee, setOpsDeliveryFee] = useState<string>(String(storeOperationsConfig?.deliveryFee ?? 39));
+  const [opsFreeAbove, setOpsFreeAbove] = useState<string>(String(storeOperationsConfig?.freeDeliveryAbove ?? 400));
+  const [opsMinOrder, setOpsMinOrder] = useState<string>(String(storeOperationsConfig?.minOrderAmount ?? 0));
+  const [opsTaxPercent, setOpsTaxPercent] = useState<string>(String(storeOperationsConfig?.taxRatePercent ?? 5));
+  const [opsPackagingFee, setOpsPackagingFee] = useState<string>(String(storeOperationsConfig?.packagingFee ?? 0));
+  const [opsOpeningHours, setOpsOpeningHours] = useState<string>(storeOperationsConfig?.openingHoursLabel || '07:00 AM - 11:00 PM');
+  const [opsAreasText, setOpsAreasText] = useState<string>((storeOperationsConfig?.serviceableAreas || []).join(', '));
+  const [opsSaveMessage, setOpsSaveMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!storeOperationsConfig) return;
+    setOpsCustomActive(Boolean(storeOperationsConfig.isCustomConfigActive));
+    setOpsPauseOrders(Boolean(storeOperationsConfig.pauseNewOrders));
+    setOpsPauseReason(storeOperationsConfig.pauseReason || '');
+    setOpsDeliveryFee(String(storeOperationsConfig.deliveryFee ?? 39));
+    setOpsFreeAbove(String(storeOperationsConfig.freeDeliveryAbove ?? 400));
+    setOpsMinOrder(String(storeOperationsConfig.minOrderAmount ?? 0));
+    setOpsTaxPercent(String(storeOperationsConfig.taxRatePercent ?? 5));
+    setOpsPackagingFee(String(storeOperationsConfig.packagingFee ?? 0));
+    setOpsOpeningHours(storeOperationsConfig.openingHoursLabel || '07:00 AM - 11:00 PM');
+    setOpsAreasText((storeOperationsConfig.serviceableAreas || []).join(', '));
+  }, [storeOperationsConfig]);
+
+  // Customer Support Ticket Desk state
+  const [ticketReplies, setTicketReplies] = useState<Record<string, string>>({});
+  const [savingTicketId, setSavingTicketId] = useState<string | null>(null);
+  const [ticketDeskNotice, setTicketDeskNotice] = useState<string | null>(null);
+
+  const handleResetSingleSetting = (
+    label: string, 
+    defaultValueText: string, 
+    applyFn: () => void
+  ) => {
+    if (window.confirm(`Reset "${label}" to its default value (${defaultValueText})?\n\nNote: This restores only this individual setting and does not reset other settings or delete records.`)) {
+      applyFn();
+      setSettingResetNotice(`"${label}" was successfully reset to its default value (${defaultValueText}).`);
+      setTimeout(() => setSettingResetNotice(null), 4500);
+    }
+  };
+
+  const handleClearApplicationLogs = () => {
+    if (window.confirm("Are you sure you want to remove all application activity audit logs?\n\n• This clears temporary in-app audit history.\n• This does NOT delete any real customer orders, receipts, payments, or catalog dishes.")) {
+      clearLogs();
+      setLogNotice("Application activity audit logs have been successfully cleared.");
+      setTimeout(() => setLogNotice(null), 4500);
+    }
+  };
+
+  // WhatsApp Cloud API Diagnostic State & Automated Failed Notification Alert Counter
+  const [whatsappStatus, setWhatsappStatus] = useState<any>(null);
+  const [whatsappStatusLoading, setWhatsappStatusLoading] = useState<boolean>(false);
+  const [whatsappFailedFocusTick, setWhatsappFailedFocusTick] = useState<number>(0);
+
+  // PhonePe Gateway Diagnostic State
+  const [phonepeStatus, setPhonepeStatus] = useState<any>(null);
+  const [phonepeStatusLoading, setPhonepeStatusLoading] = useState<boolean>(false);
+
+  // Word Document (.doc) Export State
+  const [wordExportDate, setWordExportDate] = useState<string>(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+  const [wordExportSuccess, setWordExportSuccess] = useState<string | null>(null);
+
+  const fetchPhonePeStatus = async (force: boolean = false) => {
+    setPhonepeStatusLoading(true);
+    try {
+      const data = await fetchWithCache(
+        '/api/payment/phonepe/status',
+        undefined,
+        { staleTime: 30_000, force }
+      );
+      setPhonepeStatus(data);
+    } catch (err: any) {
+      setPhonepeStatus({ isConfigured: false, error: err?.message || 'Failed to fetch status' });
+    } finally {
+      setPhonepeStatusLoading(false);
+    }
+  };
+
+  const fetchWhatsappStatus = async (force: boolean = false) => {
+    setWhatsappStatusLoading(true);
+    try {
+      const token = getStoredAuthToken();
+      const data = await fetchWithCache(
+        '/api/admin/whatsapp/status',
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        },
+        { staleTime: 30_000, force }
+      );
+      setWhatsappStatus(data);
+    } catch (err: any) {
+      setWhatsappStatus({ isConfigured: false, error: err?.message || 'Failed to fetch status' });
+    } finally {
+      setWhatsappStatusLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'settings' || activeTab === 'payments' || activeTab === 'whatsapp') {
+      fetchWhatsappStatus(activeTab === 'whatsapp');
+      fetchPhonePeStatus();
+    }
+  }, [activeTab]);
+
+  // Automated 30s background polling so recently failed WhatsApp notifications surface immediately
+  useEffect(() => {
+    if (!isAdmin || !isAdminRole(user?.role)) return;
+    fetchWhatsappStatus(true);
+    const intervalId = setInterval(() => {
+      fetchWhatsappStatus(true);
+    }, 30_000);
+    return () => clearInterval(intervalId);
+  }, [isAdmin, user?.role]);
+
+  const recentFailedWhatsappCount = Number(
+    whatsappStatus?.summaryCounts?.recentFailed24h ??
+    whatsappStatus?.summaryCounts?.failed ??
+    0
+  );
+
+  const handleInterveneFailedWhatsapp = () => {
+    setActiveTab('whatsapp');
+    setWhatsappFailedFocusTick(t => t + 1);
+  };
+
+  useEffect(() => {
+    if (storePaymentSettings) {
+      if (storePaymentSettings.upiId) setAdminPhonePeUpiId(storePaymentSettings.upiId);
+      if (storePaymentSettings.bankName) setAdminBankName(storePaymentSettings.bankName);
+      if (storePaymentSettings.merchantName) setAdminMerchantName(storePaymentSettings.merchantName);
+      if (storePaymentSettings.phonePeNumber) setAdminPhonePePhone(storePaymentSettings.phonePeNumber);
+      if (storePaymentSettings.accountHolderName) setAdminAccountHolder(storePaymentSettings.accountHolderName);
+      if (storePaymentSettings.enableUpi !== undefined) setEnableUpi(storePaymentSettings.enableUpi);
+      if (storePaymentSettings.enableCod !== undefined) setEnableCod(storePaymentSettings.enableCod);
+      if (storePaymentSettings.customerInstructions !== undefined) setCustomerInstructions(storePaymentSettings.customerInstructions);
+      if (storePaymentSettings.staticQrImage !== undefined) setStaticQrImage(storePaymentSettings.staticQrImage);
+    }
+  }, [storePaymentSettings]);
+
+  useEffect(() => {
+    const cleanUpi = (adminPhonePeUpiId || 'arjun.gorrepati@axl').trim().toLowerCase();
+    const cleanMerchant = (adminMerchantName || 'Nuvvo Foods').replace(/[^a-zA-Z0-9 ]/g, '').trim().slice(0, 25);
+    const amt = (Math.max(1, Number(testAmount) || 250)).toFixed(2);
+    const testUri = `upi://pay?pa=${cleanUpi}&pn=${encodeURIComponent(cleanMerchant)}&am=${amt}&cu=INR&tn=${encodeURIComponent('Test Bill')}&tr=TEST${Date.now()}`;
+    
+    QRCode.toDataURL(testUri, {
+      width: 512,
+      margin: 2,
+      errorCorrectionLevel: 'H',
+      color: { dark: '#000000', light: '#ffffff' }
+    })
+      .then(url => setTestQrUrl(url))
+      .catch(err => console.error(err));
+  }, [adminPhonePeUpiId, adminMerchantName, testAmount]);
+
+  // Admin Master Code Change States
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+  const [pinChangeLoading, setPinChangeLoading] = useState(false);
+  const [pinChangeMsg, setPinChangeMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const handleUpdateAdminPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinChangeMsg(null);
+    const cleanCurrent = currentPinInput.trim();
+    const cleanNew = newPinInput.trim();
+    const cleanConfirm = confirmPinInput.trim();
+    if (!cleanCurrent || !cleanNew || !cleanConfirm) {
+      setPinChangeMsg({ text: 'All Master Code fields are required.', type: 'error' });
+      return;
+    }
+    if (cleanNew !== cleanConfirm) {
+      setPinChangeMsg({ text: 'New Master Code and Confirm Master Code do not match.', type: 'error' });
+      return;
+    }
+    if (cleanNew.length < 4 || cleanNew.length > 32) {
+      setPinChangeMsg({ text: 'New Master Code must be 4 to 32 characters in length.', type: 'error' });
+      return;
+    }
+
+    setPinChangeLoading(true);
+    try {
+      const token = getStoredAuthToken();
+      const resp = await fetch('/api/auth/admin-update-pin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          currentPin: cleanCurrent,
+          currentMasterCode: cleanCurrent,
+          newPin: cleanNew,
+          newMasterCode: cleanNew
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data?.success) {
+        setPinChangeMsg({ text: data?.error || 'Failed to update Master Code. Verify current Master Code.', type: 'error' });
+      } else {
+        setPinChangeMsg({ text: 'Master Code updated successfully! Stored strictly as a PBKDF2-SHA512 hash on the server.', type: 'success' });
+        setCurrentPinInput('');
+        setNewPinInput('');
+        setConfirmPinInput('');
+      }
+    } catch (err: any) {
+      setPinChangeMsg({ text: err?.message || 'Network error updating Master Code.', type: 'error' });
+    } finally {
+      setPinChangeLoading(false);
+    }
+  };
+
+  const handleSavePhonePeSettings = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPaymentFormError(null);
+    if (!adminPhonePeUpiId.trim()) {
+      setPaymentFormError('Please enter a valid PhonePe UPI ID (e.g. mobile@ybl or username@axl).');
+      return;
+    }
+
+    requestAdminSaveConfirmation({
+      title: `Store Payment & Checkout Settings`,
+      itemType: 'Payment Gateway (PhonePe UPI & COD)',
+      description: `UPI ID: ${adminPhonePeUpiId.trim().toLowerCase()} • UPI Enabled: ${enableUpi ? 'Yes' : 'No'} • COD Enabled: ${enableCod ? 'Yes' : 'No'}`,
+      onConfirm: () => {
+        updateStorePaymentSettings({
+          upiId: adminPhonePeUpiId.trim().toLowerCase(),
+          bankName: adminBankName.trim() || 'Karur Vysya Bank - 4761',
+          merchantName: adminMerchantName.trim() || 'Nuvvo Food & Hospitality',
+          phonePeNumber: adminPhonePePhone.trim() || '9876543210',
+          accountHolderName: adminAccountHolder.trim() || 'Arjun Gorrepati (Nuvvo Foods)',
+          enableUpi,
+          enableCod,
+          customerInstructions,
+          staticQrImage: staticQrImage.trim()
+        });
+        setIsSavedSuccess(true);
+        setTimeout(() => setIsSavedSuccess(false), 4000);
+      }
+    });
+  };
+
+  // COD & Settings State
+  const [isSavingCodSettings, setIsSavingCodSettings] = useState(false);
+  const [codSaveMessage, setCodSaveMessage] = useState<string | null>(null);
+
+  const handleToggleCod = async (newCodState: boolean) => {
+    setEnableCod(newCodState);
+    setIsSavingCodSettings(true);
+    try {
+      updateStorePaymentSettings({
+        enableCod: newCodState,
+        enableUpi,
+        customerInstructions
+      });
+      setCodSaveMessage(`Cash on Delivery ${newCodState ? 'Enabled' : 'Disabled'} and saved!`);
+      setTimeout(() => setCodSaveMessage(null), 4000);
+    } catch (err: any) {
+      setCodSaveMessage(`Failed to update setting: ${err?.message || err}`);
+      setTimeout(() => setCodSaveMessage(null), 5000);
+    } finally {
+      setIsSavingCodSettings(false);
+    }
+  };
+
+  // FRANCHISE MANAGEMENT STATES
+  const [onboardingInc, setOnboardingInc] = useState('1500');
+  const [courierInc, setCourierInc] = useState('500');
+  const [revShare, setRevShare] = useState('2.5');
+  const [bulkMsg, setBulkMsg] = useState('');
+  const [showReport, setShowReport] = useState(false);
+  const [showAgreement, setShowAgreement] = useState(false);
+  const [selectedAppIdForAgreement, setSelectedAppIdForAgreement] = useState<string | null>(null);
+  const [msgLogs, setMsgLogs] = useState<string[]>([]);
+  const [territoryUpdates, setTerritoryUpdates] = useState<Record<string, { city: string; district: string; state: string }>>({});
+
+  // FOOD ITEM FORM STATE
+  const [newFoodName, setNewFoodName] = useState('');
+  const [newFoodPrice, setNewFoodPrice] = useState('180');
+  const [newFoodCategory, setNewFoodCategory] = useState('North Indian');
+  const [newFoodDesc, setNewFoodDesc] = useState('');
+  const [newFoodVeg, setNewFoodVeg] = useState<VegIndicator>(VegIndicator.VEG);
+  const [newFoodImg, setNewFoodImg] = useState('https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=400&q=80');
+  const [imageSourceType, setImageSourceType] = useState<'preset' | 'upload' | 'url'>('preset');
+
+  // LOCAL RESTAURANT SELECTION / CREATION STATE
+  const [selectedRestaurantId, setSelectedRestaurantId] = useState('');
+  const [directRestaurantNameInput, setDirectRestaurantNameInput] = useState('');
+  const [isAddingNewRestaurant, setIsAddingNewRestaurant] = useState(false);
+  const [newRestaurantName, setNewRestaurantName] = useState('');
+  const [newRestaurantCuisines, setNewRestaurantCuisines] = useState('Local Special, Coastal Delights');
+  const [newRestaurantCostForTwo, setNewRestaurantCostForTwo] = useState('250');
+  const [newRestaurantPhone, setNewRestaurantPhone] = useState('');
+  const [newRestaurantType, setNewRestaurantType] = useState<'Family' | 'Biryani & Mandi' | 'Fast Food' | 'Meals & Tiffins' | 'Desserts & Bakery' | 'Juices & Cafe' | 'Seafood' | 'Hotel & Resort'>('Meals & Tiffins');
+
+  // For editing existing dishes
+  const [replaceRestaurantId, setReplaceRestaurantId] = useState('');
+
+  const PRESET_DISH_IMAGES = useMemo(() => [
+    { name: 'Biryani', url: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Paneer Butter Masala', url: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Ragi Dosa', url: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Chole Bhature', url: 'https://images.unsplash.com/photo-1626132647523-66f5bf380027?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Gourmet Burger', url: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Cheesy Pizza', url: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Noodles Chowmein', url: 'https://images.unsplash.com/photo-1585032226651-759b368d7246?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Classic Desserts', url: 'https://images.unsplash.com/photo-1587314168485-3236d6710814?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Premium Beverages', url: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=400&q=80' },
+    { name: 'Healthy Salad', url: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=400&q=80' }
+  ], []);
+
+  // IMAGE & DISH REPLACEMENT STATES
+  const [activeReplaceId, setActiveReplaceId] = useState<string | null>(null);
+  const [replaceImgUrl, setReplaceImgUrl] = useState<string>('');
+  const [replacePrice, setReplacePrice] = useState<string>('');
+  const [replaceAvailability, setReplaceAvailability] = useState<boolean>(true);
+  const [replaceDishName, setReplaceDishName] = useState<string>('');
+
+  // COUPON FORM STATE
+  const [newCouponCode, setNewCouponCode] = useState('');
+  const [newCouponType, setNewCouponType] = useState<'percentage' | 'flat'>('percentage');
+  const [newCouponVal, setNewCouponVal] = useState('15');
+  const [newCouponMinOrder, setNewCouponMinOrder] = useState('150');
+  const [newCouponExpiry, setNewCouponExpiry] = useState('2026-12-31');
+  const [newCouponMaxUses, setNewCouponMaxUses] = useState('');
+  const [newCouponDesc, setNewCouponDesc] = useState('');
+
+  const revenueSum = useMemo(() => {
+    return orders.reduce((sum, order) => sum + order.totalAmount, 0);
+  }, [orders]);
+
+  const handleAddFood = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCatalogFeedback(null);
+    if (!newFoodName.trim()) {
+      setCatalogFeedback({ text: 'Please enter a valid dish name.', type: 'error' });
+      return;
+    }
+
+    let targetRestaurantId = selectedRestaurantId;
+
+    if (directRestaurantNameInput.trim()) {
+      const lowerInput = directRestaurantNameInput.trim().toLowerCase();
+      const existing = restaurants.find(r => r.name.toLowerCase() === lowerInput);
+      if (existing) {
+        targetRestaurantId = existing.id;
+      } else {
+        const regResult = registerNewRestaurantRequest(
+          directRestaurantNameInput.trim(),
+          ['Local Special', 'Andhra Style'],
+          250,
+          '9999999999',
+          'Family'
+        );
+        if (regResult && regResult.id) {
+          approveRestaurant(regResult.id);
+          targetRestaurantId = regResult.id;
+        }
+      }
+    } else if (selectedRestaurantId === 'new') {
+      if (!newRestaurantName.trim()) {
+        setCatalogFeedback({ text: 'Please provide a valid Restaurant Name.', type: 'error' });
+        return;
+      }
+      // Register new restaurant request
+      const cuisinesArray = newRestaurantCuisines.split(',').map(c => c.trim()).filter(Boolean);
+      const regResult = registerNewRestaurantRequest(
+        newRestaurantName,
+        cuisinesArray.length > 0 ? cuisinesArray : ['Local Cuisine'],
+        parseInt(newRestaurantCostForTwo, 10) || 250,
+        newRestaurantPhone || '9999999999',
+        newRestaurantType
+      );
+      
+      if (regResult && regResult.id) {
+        // Approve it instantly so it is active
+        approveRestaurant(regResult.id);
+        targetRestaurantId = regResult.id;
+      }
+    }
+
+    const executeAddDish = async () => {
+      const savedFood = await addFoodItem({
+        name: newFoodName,
+        price: parseFloat(newFoodPrice),
+        category: newFoodCategory,
+        subcategory: 'Classic Signature',
+        description: '',
+        vegIndicator: newFoodVeg,
+        rating: 4.8,
+        prepTime: 25,
+        spiceLevel: 'Medium',
+        image: newFoodImg,
+        ingredients: ['Cottage Cheese', 'Indian Spices', 'Artisan Butter'],
+        restaurantId: targetRestaurantId || undefined,
+        is_available: true,
+        isAvailable: true
+      });
+
+      if (!savedFood?.success) {
+        setCatalogFeedback({
+          text: savedFood?.error || 'Could not save dish to menu. Verify your admin session and try again.',
+          type: 'error'
+        });
+        return;
+      }
+
+      setCatalogFeedback({ text: `Dish "${newFoodName.trim()}" added to live menu.`, type: 'success' });
+      setNewFoodName('');
+      setNewFoodDesc('');
+      setDirectRestaurantNameInput('');
+      setIsAddingNewRestaurant(false);
+      setSelectedRestaurantId('');
+      setNewRestaurantName('');
+      setNewRestaurantCuisines('Local Special, Coastal Delights');
+      setNewRestaurantCostForTwo('250');
+      setNewRestaurantPhone('');
+    };
+
+    requestAdminSaveConfirmation({
+      title: `Register New Dish: "${newFoodName}"`,
+      itemType: 'Dish Registration (నూతన వంటకం సేవ్)',
+      description: `Category: ${newFoodCategory} • Price: ₹${newFoodPrice} • Veg/Non-Veg: ${newFoodVeg}`,
+      onConfirm: executeAddDish
+    });
+  };
+
+  const handleAddCoupon = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCouponCode.trim()) return;
+    const minOrderVal = Math.max(0, parseFloat(newCouponMinOrder) || 0);
+    const maxUsesNum = newCouponMaxUses.trim() ? Math.max(1, parseInt(newCouponMaxUses, 10) || 0) : undefined;
+
+    requestAdminSaveConfirmation({
+      title: `Create Promo Coupon: "${newCouponCode.toUpperCase()}"`,
+      itemType: 'Promotional Discount (కూపన్ కోడ్ సేవ్)',
+      description: `Value: ${newCouponType === 'flat' ? `₹${newCouponVal}` : `${newCouponVal}%`} Off • Min Order: ₹${minOrderVal} • Expires: ${newCouponExpiry || 'No expiry'}`,
+      onConfirm: () => {
+        addCoupon({
+          code: newCouponCode.toUpperCase(),
+          discountType: newCouponType,
+          value: parseFloat(newCouponVal),
+          description: newCouponDesc,
+          minOrder: minOrderVal,
+          expiryDate: newCouponExpiry || undefined,
+          maxUses: maxUsesNum,
+          isActive: true,
+          usedCount: 0
+        });
+        setNewCouponCode('');
+        setNewCouponVal('15');
+        setNewCouponMinOrder('150');
+        setNewCouponMaxUses('');
+        setNewCouponDesc('');
+      }
+    });
+  };
+
+  const [diagnosticRunning, setDiagnosticRunning] = useState(false);
+
+  const runSupabaseDiagnostic = async () => {
+    setDiagnosticRunning(true);
+    console.log('[SUPABASE DIAGNOSTIC] Initiating server-side Supabase client verification...');
+    try {
+      const token = getStoredAuthToken();
+      const res = await fetch('/api/admin/diagnostics/supabase', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      setDiagnosticResult(data);
+      console.log('[SUPABASE DIAGNOSTIC STATUS]:', data);
+      if (data.success && data.databaseAccess) {
+        console.log('✅ Supabase server client successfully initialized using SERVICE_ROLE_KEY and accessing database.');
+      } else {
+        console.warn('⚠️ Supabase server client diagnostic warning/failure:', data.message || data.error);
+      }
+    } catch (err: any) {
+      setDiagnosticResult({ success: false, error: err?.message || String(err) });
+      console.error('[SUPABASE DIAGNOSTIC ERROR] Network/server exception:', err);
+    } finally {
+      setDiagnosticRunning(false);
+    }
+  };
+
+  // Strict Admin authorization check: role verified securely by server
+  if (!isAdmin || !isAdminRole(user?.role)) {
+    return (
+      <div id="admin-access-denied" className="min-h-screen bg-slate-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-6 text-center pb-24 duration-300">
+        <div className="w-20 h-20 bg-rose-100 dark:bg-rose-950/30 text-rose-600 rounded-full flex items-center justify-center mb-4 border border-rose-200 dark:border-rose-900/50 shadow-lg">
+          <ShieldAlert className="w-10 h-10" />
+        </div>
+        <h3 className="text-xl font-black text-rose-600 dark:text-rose-400 uppercase tracking-wider">
+          Admin Access Restricted
+        </h3>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-sm mt-2.5 leading-relaxed">
+          The Admin Portal is strictly reserved for authorized administrators. Customers cannot access this terminal.
+        </p>
+        <button
+          onClick={() => setCurrentPage('account')}
+          className="mt-6 px-6 py-2.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-black uppercase tracking-wider rounded-2xl shadow-md transition active:scale-95 cursor-pointer"
+        >
+          Return to Settings
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 pb-24 duration-300">
+      
+      {/* Upper header */}
+      <div className="sticky top-0 bg-white dark:bg-zinc-900 border-b p-4 z-10 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full bg-black p-0.5 border border-amber-500/30 shrink-0 flex items-center justify-center shadow-xs">
+            <img src="/nuvvo-logo.png" alt="Nuvvo Logo" className="w-full h-full rounded-full object-contain" referrerPolicy="no-referrer" />
+          </div>
+          <div>
+            <h2 className="text-xl font-black text-zinc-950 dark:text-zinc-50 tracking-tight flex items-center gap-1.5">
+              📊 Micro-Region Admin
+            </h2>
+            <p className="text-[10px] text-zinc-400 font-bold font-mono tracking-wide mt-0.5">METRIC CONTROL ENGINE</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Automated Failed WhatsApp Notification Alert Badge (24h window) */}
+          {recentFailedWhatsappCount > 0 && (
+            <button
+              type="button"
+              id="admin-whatsapp-failed-alert-badge"
+              onClick={handleInterveneFailedWhatsapp}
+              title="View recently failed WhatsApp notifications and retry delivery"
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {recentFailedWhatsappCount} Failed WhatsApp {recentFailedWhatsappCount === 1 ? 'Alert' : 'Alerts'} (24h)
+              </span>
+              <span className="underline font-extrabold">Intervene</span>
+            </button>
+          )}
+          {/* Hidden diagnostic button to verify server-side Supabase client using SERVICE_ROLE_KEY */}
+          <button
+            onClick={runSupabaseDiagnostic}
+            disabled={diagnosticRunning}
+            title="Run Server Supabase Client Diagnostics (Logs to console)"
+            aria-label="Run Server Supabase Client Diagnostics"
+            id="supabase-diagnostic-hidden-btn"
+            className="w-4 h-4 opacity-0 hover:opacity-100 focus:opacity-100 transition-opacity p-0 bg-transparent text-zinc-400 hover:text-orange-500 cursor-pointer"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-xs bg-orange-500/10 text-orange-600 px-3 py-1 rounded-full font-bold whitespace-nowrap">Terminal Live</span>
+        </div>
+      </div>
+
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4">
+        
+        {/* EASY DISH / HOTEL / RESTAURANT MANAGEMENT */}
+        <AdminCatalogManager />
+
+        {/* MULTI-ROLE PORTAL BRIDGES (TOP PLACE IN ADMIN CHAMBER) */}
+        <div id="admin-chamber-portal-bridges" className="bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-3xl p-4 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-black text-zinc-950 dark:text-zinc-50 tracking-tight uppercase flex items-center gap-1.5">
+              <Settings className="w-4 h-4 text-orange-500" /> Multi-Role Portal Bridges
+            </h4>
+            <span className="text-[9px] bg-orange-500/10 text-orange-600 dark:text-orange-400 font-black px-2 py-0.5 rounded-full font-mono uppercase">
+              Admin Chamber
+            </span>
+          </div>
+          <p className="text-[10px] text-zinc-400 leading-snug">
+            Instantly transition your UI view into different sections of the Nuvvo Ecosystem below:
+          </p>
+          
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+            <button 
+              type="button"
+              onClick={() => setCurrentPage('home')}
+              className="p-3 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:hover:bg-emerald-900/40 border border-emerald-200/70 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300 rounded-2xl font-black uppercase tracking-wider text-[9px] cursor-pointer transition active:scale-95 flex flex-col items-center gap-1 shadow-2xs"
+            >
+              <span className="text-base">🛍️</span>
+              <span>Customer</span>
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => setCurrentPage('partner')}
+              className="p-3 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/30 dark:hover:bg-indigo-900/40 border border-indigo-200/70 dark:border-indigo-800/40 text-indigo-700 dark:text-indigo-300 rounded-2xl font-black uppercase tracking-wider text-[9px] cursor-pointer transition active:scale-95 flex flex-col items-center gap-1 shadow-2xs"
+            >
+              <span className="text-base">🏍️</span>
+              <span>Partner</span>
+            </button>
+            
+            <button 
+              type="button"
+              onClick={() => setCurrentPage('franchise')}
+              className="p-3 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 dark:hover:bg-amber-900/40 border border-amber-200/70 dark:border-amber-800/40 text-amber-700 dark:text-amber-300 rounded-2xl font-black uppercase tracking-wider text-[9px] cursor-pointer transition active:scale-95 flex flex-col items-center gap-1 shadow-2xs"
+            >
+              <span className="text-base">🌴</span>
+              <span>Franchise</span>
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => setCurrentPage('super-admin')}
+              className="p-3 bg-rose-50 hover:bg-rose-100 dark:bg-red-950/30 dark:hover:bg-red-900/40 border border-rose-200/70 dark:border-red-800/40 text-rose-700 dark:text-red-300 rounded-2xl font-black uppercase tracking-wider text-[9px] cursor-pointer transition active:scale-95 flex flex-col items-center gap-1 shadow-2xs"
+            >
+              <span className="text-base">👑</span>
+              <span>Super Admin</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Core panel tabs */}
+        <div className="grid grid-cols-3 sm:grid-cols-7 bg-slate-100 dark:bg-zinc-900 p-1 rounded-2xl border text-center text-xs gap-1">
+          {[
+            { id: 'settings', label: 'Settings & Admin ⚙️' },
+            { id: 'whatsapp', label: 'WhatsApp 📲' },
+            { id: 'analytics', label: 'Stats 📊' },
+            { id: 'catalog', label: user?.role === 'Customer' ? 'Dishes 🔒' : 'Dishes 🍛' },
+            { id: 'payments', label: 'PhonePe 💳' },
+            { id: 'coupons', label: 'Promos 🏷️' },
+            { id: 'franchise', label: 'Franchise 🏢' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`py-2 px-1 rounded-xl font-bold transition cursor-pointer text-[11px] truncate inline-flex items-center justify-center gap-1 ${
+                activeTab === tab.id 
+                  ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 shadow-xs'
+                  : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+              }`}
+            >
+              <span className="truncate">{tab.label}</span>
+              {tab.id === 'whatsapp' && recentFailedWhatsappCount > 0 && (
+                <span
+                  aria-label={`${recentFailedWhatsappCount} failed WhatsApp notifications`}
+                  className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-black leading-none tabular-nums shrink-0"
+                >
+                  {recentFailedWhatsappCount}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* ADMIN SETTINGS & CONTROLS SECTION */}
+        {activeTab === 'settings' && (
+          <div className="space-y-4">
+            {/* Master Admin Identity Card */}
+            <div className="bg-gradient-to-r from-red-500/10 via-rose-500/10 to-amber-500/10 border-2 border-red-500/30 dark:border-red-500/20 rounded-3xl p-5 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-rose-600 text-white rounded-2xl flex items-center justify-center shadow-md">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-black text-zinc-900 dark:text-zinc-50">
+                        Nuvvo Master Admin Console
+                      </h3>
+                      <span className="bg-rose-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse">
+                        Super Admin
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                      Authorized Cell: <span className="font-mono font-bold text-rose-600 dark:text-rose-400">{user?.phone || 'Protected (Server-Verified)'}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="hidden sm:block text-right">
+                  <span className="text-[10px] font-mono text-zinc-400">Server Authorization: Active</span>
+                </div>
+              </div>
+
+              {/* Quick status cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Access Role</p>
+                  <p className="text-sm font-black text-rose-600 dark:text-rose-400 mt-0.5">Super Master</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Target Phone</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{user?.phone || 'Protected'}</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Orders In Hub</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{orders.length}</p>
+                </div>
+                <div className="bg-white/80 dark:bg-zinc-900/80 p-3 rounded-2xl border border-red-200/50 dark:border-red-900/30">
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Catalog Items</p>
+                  <p className="text-sm font-black text-zinc-800 dark:text-zinc-200 font-mono mt-0.5">{foodCatalog.length}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Supabase Revenue & Orders Dashboard Widget with D3 Bar Chart */}
+            <AdminDashboardSummaryWidget />
+
+            {/* Change Master Code Management */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-5 h-5 text-rose-600" />
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100">
+                      Change Master Code
+                    </h4>
+                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                      Update the administrative Master Code (4-32 characters). Requires current Master Code verification; stored as PBKDF2-SHA512 hash on the server.
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[9px] font-mono font-bold bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 px-2 py-0.5 rounded-full uppercase">
+                  PBKDF2 Secured
+                </span>
+              </div>
+
+              {pinChangeMsg && (
+                <div className={`p-3 rounded-2xl text-xs font-semibold flex items-center gap-2 ${
+                  pinChangeMsg.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 border border-emerald-200'
+                    : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200 border border-rose-200'
+                }`}>
+                  <span>{pinChangeMsg.type === 'success' ? '✅' : '⚠️'}</span>
+                  <span>{pinChangeMsg.text}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleUpdateAdminPin} className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Current Master Code
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={32}
+                      required
+                      placeholder="Current code"
+                      value={currentPinInput}
+                      onChange={e => setCurrentPinInput(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      New Master Code
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={32}
+                      required
+                      placeholder="4-32 chars"
+                      value={newPinInput}
+                      onChange={e => setNewPinInput(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black text-zinc-500 uppercase tracking-wider mb-1">
+                      Confirm Master Code
+                    </label>
+                    <input
+                      type="password"
+                      maxLength={32}
+                      required
+                      placeholder="Repeat code"
+                      value={confirmPinInput}
+                      onChange={e => setConfirmPinInput(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 text-center font-mono font-black text-lg p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    disabled={pinChangeLoading}
+                    className="px-5 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition active:scale-95 cursor-pointer flex items-center gap-2"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>{pinChangeLoading ? 'Updating...' : 'Change Master Code'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Server Supabase & Service Role Key Diagnostics */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-orange-500" />
+                    Supabase Database & Server Diagnostics
+                  </h4>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Verifies that the server-side Supabase client is initialized using the elevated SERVICE_ROLE_KEY.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={runSupabaseDiagnostic}
+                  disabled={diagnosticRunning}
+                  className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${diagnosticRunning ? 'animate-spin' : ''}`} />
+                  <span>{diagnosticRunning ? 'Verifying...' : 'Run Diagnostics'}</span>
+                </button>
+              </div>
+
+              {diagnosticResult && (
+                <div className={`p-4 rounded-2xl text-xs font-mono space-y-1.5 border ${
+                  diagnosticResult.databaseAccess
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800'
+                }`}>
+                  <div className="flex items-center gap-2 font-bold font-sans">
+                    {diagnosticResult.databaseAccess ? '✅ Connection Verified' : '⚠️ Diagnostic Alert'}
+                  </div>
+                  <div>• Service Role Configured: <span className="font-bold">{diagnosticResult.isServiceRoleConfigured ? 'YES' : 'NO'}</span></div>
+                  <div>• Database Read/Write Access: <span className="font-bold">{diagnosticResult.databaseAccess ? 'HEALTHY' : 'UNREACHABLE'}</span></div>
+                  {diagnosticResult.message && <div>• Details: {diagnosticResult.message}</div>}
+                  {diagnosticResult.error && <div>• Notice: {diagnosticResult.error}</div>}
+                </div>
+              )}
+            </div>
+
+            {/* Cloud Services & Integration Health (WhatsApp Cloud API & PhonePe) */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4 text-emerald-500" />
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100">
+                      Cloud Integrations (WhatsApp & PhonePe Gateway)
+                    </h4>
+                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                      Production server status for customer order notifications & payment processing
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      fetchWhatsappStatus();
+                      fetchPhonePeStatus();
+                    }}
+                    disabled={whatsappStatusLoading || phonepeStatusLoading}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 rounded-xl text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${whatsappStatusLoading || phonepeStatusLoading ? 'animate-spin' : ''}`} />
+                    <span>Refresh Status</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                {/* WhatsApp Cloud API Box */}
+                <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+                      <span>📲 Meta WhatsApp Cloud API</span>
+                    </span>
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md ${
+                      (whatsappStatus?.isConfigured || whatsappStatus?.configured)
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
+                    }`}>
+                      {(whatsappStatus?.isConfigured || whatsappStatus?.configured) ? 'Configured' : 'Credentials Pending'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    {(whatsappStatus?.isConfigured || whatsappStatus?.configured) 
+                      ? 'Official Meta Cloud API dispatch active for automatic Admin and consented Customer order alerts.'
+                      : 'Backend outbox and webhook tracking are active. Configure Meta Cloud API tokens and approved templates to enable live delivery.'}
+                  </p>
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[9.5px] font-mono text-zinc-400">
+                      Admin: <span className="font-bold text-zinc-700 dark:text-zinc-300">{whatsappStatus?.businessRecipientMasked || 'Protected on Server'}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('whatsapp')}
+                      className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer whitespace-nowrap"
+                    >
+                      Open WhatsApp Settings
+                    </button>
+                  </div>
+                </div>
+
+                {/* PhonePe PG Box */}
+                <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+                      <span>💳 PhonePe Payment Gateway</span>
+                    </span>
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                      phonepeStatus?.isConfigured
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'bg-purple-100 text-purple-800 dark:bg-purple-950/50 dark:text-purple-300'
+                    }`}>
+                      {phonepeStatus?.isConfigured ? '● Official PG Live' : `Dynamic UPI Active`}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    {phonepeStatus?.isConfigured
+                      ? `Operating in ${phonepeStatus.environment} environment. Webhook callbacks and server check verification enabled.`
+                      : 'Production UPI checkout active with NPCI dynamic QR generation and instant payment routing.'}
+                  </p>
+                  <div className="text-[9.5px] font-mono text-zinc-400">
+                    VPA: <span className="font-bold text-purple-600 dark:text-purple-400">{storePaymentSettings?.upiId || adminPhonePeUpiId}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Admin Email Tool (SMTP Connectivity Verification & Test Dispatcher) */}
+            <AdminEmailTool />
+
+            {/* Quick Navigation to Admin Modules */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                <Settings className="w-4 h-4 text-orange-500" />
+                Admin Operations & Settings Modules
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('catalog')}
+                  className="p-3.5 rounded-2xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <ShoppingBag className="w-5 h-5 text-amber-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Dishes & Catalog</div>
+                  <div className="text-[10px] text-zinc-500">Edit menu items & pricing</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('payments')}
+                  className="p-3.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <DollarSign className="w-5 h-5 text-indigo-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">PhonePe UPI Gateway</div>
+                  <div className="text-[10px] text-zinc-500">Bank accounts & UPI ID</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('coupons')}
+                  className="p-3.5 rounded-2xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <Tag className="w-5 h-5 text-rose-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Promo Coupons</div>
+                  <div className="text-[10px] text-zinc-500">Discounts & cashback</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('franchise')}
+                  className="p-3.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 text-left cursor-pointer transition active:scale-95"
+                >
+                  <Building className="w-5 h-5 text-emerald-600 mb-1" />
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Franchise & Kitchens</div>
+                  <div className="text-[10px] text-zinc-500">Review partner applications</div>
+                </button>
+              </div>
+            </div>
+
+
+            {/* Individual Setting Reset Notification Toast */}
+            {settingResetNotice && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl text-xs font-bold text-emerald-800 dark:text-emerald-300 flex items-center justify-between shadow-xs animate-fadeIn">
+                <span className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  {settingResetNotice}
+                </span>
+                <button type="button" onClick={() => setSettingResetNotice(null)} className="text-emerald-700 dark:text-emerald-400 text-xs">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Application Log Removal Notification Toast */}
+            {logNotice && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl text-xs font-bold text-blue-800 dark:text-blue-300 flex items-center justify-between shadow-xs animate-fadeIn">
+                <span className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                  {logNotice}
+                </span>
+                <button type="button" onClick={() => setLogNotice(null)} className="text-blue-700 dark:text-blue-400 text-xs">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* PAYMENT CONFIGURATION & CASH ON DELIVERY (COD) MANAGER IN SETTINGS */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+                    <IndianRupee className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>Payment Configuration & Cash on Delivery (COD)</span>
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">
+                      Manage checkout payment options • Persisted in Supabase <code className="font-mono text-orange-500">public.app_settings</code>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 font-mono font-bold px-2.5 py-1 rounded-full border border-emerald-200 dark:border-emerald-800">
+                    table: app_settings (key: payment_config)
+                  </span>
+                </div>
+              </div>
+
+              {/* COD Switcher Card with Individual Reset */}
+              <div className="p-4 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
+                        <span>💵 Cash on Delivery (COD) Checkout Flow</span>
+                      </span>
+                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        enableCod 
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+                          : 'bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300'
+                      }`}>
+                        {enableCod ? '✓ Enabled' : '✕ Disabled'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleResetSingleSetting('Cash on Delivery (COD)', 'Enabled (true)', () => handleToggleCod(true))}
+                        className="px-2 py-0.5 text-[9.5px] font-bold text-zinc-600 hover:text-orange-600 bg-white hover:bg-orange-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 rounded-md border border-slate-200 dark:border-zinc-700 transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                        title="Restore COD to default (Enabled)"
+                      >
+                        <RotateCcw className="w-3 h-3 text-orange-500" />
+                        <span>Reset Setting</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {enableCod 
+                        ? 'Customers can choose Cash on Delivery at checkout and pay the rider upon delivery.'
+                        : 'Cash on Delivery is hidden/disabled at checkout. Customers must pay online via UPI.'}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isSavingCodSettings}
+                    onClick={() => handleToggleCod(!enableCod)}
+                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none ${
+                      enableCod ? 'bg-emerald-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${
+                        enableCod ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Supplementary Quick Controls */}
+                <div className="pt-3 border-t border-slate-200/60 dark:border-zinc-700/60 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* UPI toggle with individual reset */}
+                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200/80 dark:border-zinc-700/80 flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">📱 PhonePe / UPI Payment</p>
+                        <button
+                          type="button"
+                          onClick={() => handleResetSingleSetting('UPI / PhonePe Payment', 'Enabled (true)', () => {
+                            setEnableUpi(true);
+                            updateStorePaymentSettings({ enableUpi: true, enableCod, customerInstructions });
+                          })}
+                          className="px-1.5 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-purple-600 bg-slate-50 dark:bg-zinc-800 rounded border border-slate-200 dark:border-zinc-700 transition flex items-center gap-0.5 cursor-pointer"
+                          title="Reset UPI Payment to default (Enabled)"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5 text-purple-500" /> Reset
+                        </button>
+                      </div>
+                      <p className="text-[9.5px] text-zinc-400">Dynamic & Static QR Checkout</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextUpi = !enableUpi;
+                        setEnableUpi(nextUpi);
+                        updateStorePaymentSettings({ enableUpi: nextUpi, enableCod, customerInstructions });
+                      }}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                        enableUpi ? 'bg-purple-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          enableUpi ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Quick link to detailed payments tab */}
+                  <div className="p-3 bg-white dark:bg-zinc-900 rounded-xl border border-slate-200/80 dark:border-zinc-700/80 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">Advanced Bank & QR Setup</p>
+                      <p className="text-[9.5px] text-zinc-400">Configure Bank Name, VPA, Tester</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('payments')}
+                      className="px-2.5 py-1 text-[10px] font-bold bg-orange-50 hover:bg-orange-100 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300 rounded-lg transition cursor-pointer"
+                    >
+                      Payments Tab →
+                    </button>
+                  </div>
+                </div>
+
+                {/* Customer Payment Instructions input with individual reset */}
+                <div className="space-y-1 pt-1">
+                  <div className="flex items-center justify-between flex-wrap gap-1">
+                    <label className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
+                      Customer-Facing Checkout Payment Instructions
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const defInst = 'Please complete payment using your preferred method. For UPI, scan QR code or send to our business UPI ID. For Cash on Delivery, please keep exact cash ready upon delivery.';
+                          handleResetSingleSetting('Checkout Instructions', 'Default text', () => {
+                            setCustomerInstructions(defInst);
+                            updateStorePaymentSettings({ customerInstructions: defInst, enableCod, enableUpi });
+                          });
+                        }}
+                        className="px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-orange-600 bg-white hover:bg-orange-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 rounded border border-slate-200 dark:border-zinc-700 transition flex items-center gap-1 cursor-pointer"
+                        title="Reset instructions to standard text"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5 text-orange-500" /> Reset Instructions
+                      </button>
+                      <span className="text-[9px] text-zinc-400">Visible on Customer Checkout</span>
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={customerInstructions}
+                    onChange={e => setCustomerInstructions(e.target.value)}
+                    placeholder="e.g. Please keep exact cash ready upon delivery. For UPI, scan QR code."
+                    className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+
+                {/* Save button and feedback */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2">
+                  <div className="text-[10px] font-mono text-zinc-400">
+                    {codSaveMessage ? (
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> {codSaveMessage}
+                      </span>
+                    ) : (
+                      <span>Last sync: {storePaymentSettings?.lastUpdated ? new Date(storePaymentSettings.lastUpdated).toLocaleTimeString() : 'Synced with Supabase'}</span>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isSavingCodSettings}
+                    onClick={() => handleToggleCod(enableCod)}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save to Supabase (app_settings)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* STORE OPERATIONS, DELIVERY FEES, MIN ORDER & SERVICEABLE AREAS */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                    <Settings className="w-4 h-4 text-orange-500" />
+                    <span>Store Operations, Fees &amp; Serviceable Areas</span>
+                  </h4>
+                  <p className="text-[10.5px] text-zinc-500 dark:text-zinc-400">
+                    Chirala baseline defaults (₹39 delivery, free &gt; ₹400, 5% GST, ₹0 packaging) stay intact unless Custom Overrides are enabled.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={opsCustomActive}
+                    onChange={e => setOpsCustomActive(e.target.checked)}
+                    className="w-4 h-4 accent-orange-600 rounded"
+                  />
+                  <span>Enable Custom Operations</span>
+                </label>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/80 dark:border-zinc-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black text-zinc-900 dark:text-zinc-100">Emergency Order Pause</p>
+                  <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                    Temporarily pause new customer checkouts (requires Custom Operations enabled).
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold text-rose-600 dark:text-rose-400 cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={opsPauseOrders}
+                    onChange={e => {
+                      setOpsPauseOrders(e.target.checked);
+                      if (e.target.checked) setOpsCustomActive(true);
+                    }}
+                    className="w-4 h-4 accent-rose-600 rounded"
+                  />
+                  <span>{opsPauseOrders ? 'Orders Paused' : 'Accepting Orders'}</span>
+                </label>
+              </div>
+
+              {opsPauseOrders && (
+                <input
+                  type="text"
+                  value={opsPauseReason}
+                  onChange={e => setOpsPauseReason(e.target.value)}
+                  placeholder="Pause notice shown to customers (e.g., Heavy rain in Chirala, resuming in 30 mins)"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-rose-200 dark:border-rose-800 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Delivery Fee (₹)</label>
+                  <input type="number" min="0" value={opsDeliveryFee} onChange={e => setOpsDeliveryFee(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Free Delivery Above (₹)</label>
+                  <input type="number" min="0" value={opsFreeAbove} onChange={e => setOpsFreeAbove(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Min Order Amount (₹)</label>
+                  <input type="number" min="0" value={opsMinOrder} onChange={e => setOpsMinOrder(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Tax / GST (%)</label>
+                  <input type="number" min="0" max="28" step="0.5" value={opsTaxPercent} onChange={e => setOpsTaxPercent(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Packaging Fee (₹)</label>
+                  <input type="number" min="0" value={opsPackagingFee} onChange={e => setOpsPackagingFee(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-mono font-bold" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-500 mb-1">Operating Hours</label>
+                  <input type="text" value={opsOpeningHours} onChange={e => setOpsOpeningHours(e.target.value)} className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 font-bold" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-zinc-500 mb-1">Serviceable Areas (comma-separated)</label>
+                <input
+                  type="text"
+                  value={opsAreasText}
+                  onChange={e => setOpsAreasText(e.target.value)}
+                  placeholder="Chirala Town, Perala, Kothapet, Ramapuram Beach, Vodarevu"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <span className={`text-[11px] font-bold ${opsSaveMessage?.startsWith('Failed') ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                  {opsSaveMessage || ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const areas = opsAreasText.split(',').map(s => s.trim()).filter(Boolean);
+                    requestAdminSaveConfirmation({
+                      title: 'Save Store Operations Configuration',
+                      itemType: 'Store Operations',
+                      description: `Custom Active: ${opsCustomActive ? 'Yes' : 'No (Baseline ₹39 / >₹400 free / 5% GST)'} • Pause: ${opsPauseOrders ? 'Yes' : 'No'}`,
+                      onConfirm: async () => {
+                        const savedOk = await updateStoreOperationsConfig({
+                          isCustomConfigActive: opsCustomActive,
+                          pauseNewOrders: opsPauseOrders,
+                          pauseReason: opsPauseReason.trim(),
+                          deliveryFee: Math.max(0, Number(opsDeliveryFee) || 0),
+                          freeDeliveryAbove: Math.max(0, Number(opsFreeAbove) || 0),
+                          minOrderAmount: Math.max(0, Number(opsMinOrder) || 0),
+                          taxRatePercent: Math.max(0, Number(opsTaxPercent) || 0),
+                          packagingFee: Math.max(0, Number(opsPackagingFee) || 0),
+                          openingHoursLabel: opsOpeningHours.trim() || '07:00 AM - 11:00 PM',
+                          serviceableAreas: areas
+                        });
+                        setOpsSaveMessage(
+                          savedOk
+                            ? 'Store operations synced to backend.'
+                            : 'Failed to sync store operations to backend. Verify your admin session.'
+                        );
+                        setTimeout(() => setOpsSaveMessage(null), 5000);
+                      }
+                    });
+                  }}
+                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Operations Config</span>
+                </button>
+              </div>
+            </div>
+
+            {/* CUSTOMER SUPPORT TICKETS DESK */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div>
+                  <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                    <MessageSquare className="w-4 h-4 text-orange-500" />
+                    <span>Customer Support Tickets Desk ({supportTickets.length})</span>
+                  </h4>
+                  <p className="text-[10px] text-zinc-400">Review customer issues, reply directly, and resolve tickets</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchSupportTickets()}
+                  className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-zinc-800 text-xs font-bold text-zinc-600 dark:text-zinc-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              {ticketDeskNotice && (
+                <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                  {ticketDeskNotice}
+                </div>
+              )}
+
+              {supportTickets.length === 0 ? (
+                <p className="text-xs text-zinc-500 py-4 text-center">No customer support tickets submitted yet.</p>
+              ) : (
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {supportTickets.map(ticket => (
+                    <div key={ticket.id} className="p-3.5 rounded-2xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/80 dark:border-zinc-700/80 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <span className="font-black text-zinc-900 dark:text-zinc-100">{ticket.subject}</span>
+                          <span className="text-[10px] text-zinc-500 block">
+                            {ticket.customerName} {ticket.customerPhone ? `• ${ticket.customerPhone}` : ''} {ticket.orderId ? `• Order #${ticket.orderId.slice(-6).toUpperCase()}` : ''}
+                          </span>
+                        </div>
+                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          ticket.status === 'resolved'
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                            : ticket.status === 'in_progress'
+                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                            : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'
+                        }`}>
+                          {ticket.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{ticket.description}</p>
+                      <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                        <input
+                          type="text"
+                          value={ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : (ticket.adminReply || '')}
+                          onChange={e => setTicketReplies(prev => ({ ...prev, [ticket.id]: e.target.value }))}
+                          placeholder="Write reply to customer..."
+                          className="flex-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-1.5 text-xs"
+                        />
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={savingTicketId === ticket.id}
+                            onClick={async () => {
+                              setSavingTicketId(ticket.id);
+                              const reply = ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : ticket.adminReply;
+                              const res = await updateSupportTicket(ticket.id, { status: 'in_progress', adminReply: reply });
+                              setSavingTicketId(null);
+                              if (res.success) {
+                                setTicketDeskNotice(`Updated ticket "${ticket.subject}".`);
+                                setTimeout(() => setTicketDeskNotice(null), 3000);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] cursor-pointer"
+                          >
+                            Reply
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingTicketId === ticket.id}
+                            onClick={async () => {
+                              setSavingTicketId(ticket.id);
+                              const reply = ticketReplies[ticket.id] !== undefined ? ticketReplies[ticket.id] : ticket.adminReply;
+                              const res = await updateSupportTicket(ticket.id, { status: 'resolved', adminReply: reply });
+                              setSavingTicketId(null);
+                              if (res.success) {
+                                setTicketDeskNotice(`Marked ticket "${ticket.subject}" as resolved.`);
+                                setTimeout(() => setTicketDeskNotice(null), 3000);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer"
+                          >
+                            Resolve
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* APPLICATION ACTIVITY AUDIT LOGS & REMOVE LOGS SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center font-bold">
+                    <ShieldAlert className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                      <span>Application Activity Audit Trail</span>
+                      <span className="text-[9.5px] font-mono bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 px-2 py-0.5 rounded-full">
+                        {logs.length} Operations Recorded
+                      </span>
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">
+                      In-app administrative actions, order lifecycle events, and security access audit trail
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClearApplicationLogs}
+                    className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95"
+                    title="Remove application audit logs without affecting orders, receipts, or customers"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove Logs</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Log items preview */}
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {logs.length === 0 ? (
+                  <p className="text-xs text-zinc-400 text-center py-4">No recent activity logs recorded.</p>
+                ) : (
+                  logs.slice(0, 15).map(lg => (
+                    <div key={lg.id} className="p-2 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-200/60 dark:border-zinc-700/60 flex items-start gap-2 text-[10.5px]">
+                      <span className="text-orange-500 font-bold shrink-0 mt-0.5">•</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold text-zinc-800 dark:text-zinc-200 truncate">{lg.action}</span>
+                          <span className="text-[9px] text-zinc-400 font-mono shrink-0">{new Date(lg.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">{lg.details}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* DAILY ORDERS MICROSOFT WORD (.DOC) EXPORT SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>Daily Orders Microsoft Word (.doc) Exporter</span>
+                      <span className="text-[9px] bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-bold px-2 py-0.5 rounded-full uppercase">
+                        Daily Audit
+                      </span>
+                    </h4>
+                    <p className="text-[10.5px] text-zinc-400">
+                      Export full daily invoices, customer location with GPS coordinates, itemized bills, and delivery boy ratings
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={wordExportDate}
+                    onChange={(e) => setWordExportDate(e.target.value)}
+                    className="text-xs bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-1.5 font-mono text-zinc-800 dark:text-zinc-200 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = downloadOrdersWordDocument(orders, deliveryPartners || [], {
+                        selectedDate: wordExportDate,
+                        title: `Nuvvo Daily Orders & Dispatch Archive (${wordExportDate})`
+                      });
+                      setWordExportSuccess(`Exported ${res.ordersCount} orders to ${res.filename}`);
+                      setTimeout(() => setWordExportSuccess(null), 5000);
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Word (.doc)</span>
+                  </button>
+                </div>
+              </div>
+
+              {wordExportSuccess && (
+                <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl text-xs font-bold text-blue-700 dark:text-blue-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                  <span>{wordExportSuccess}</span>
+                </div>
+              )}
+
+              {/* Quick stats for selected export date */}
+              {(() => {
+                const dateOrders = wordExportDate === 'all' 
+                  ? orders 
+                  : orders.filter(o => o.date && new Date(o.date).toISOString().split('T')[0] === wordExportDate);
+                const dayRevenue = dateOrders.reduce((sum, o) => sum + (o.finalAmount || o.subtotal || 0), 0);
+                const delivered = dateOrders.filter(o => o.status === 'delivered').length;
+                const ratedOrders = dateOrders.filter(o => typeof o.deliveryPartnerRating === 'number');
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Orders on Date</div>
+                      <div className="text-base font-black text-zinc-900 dark:text-zinc-100 font-mono mt-0.5">
+                        {dateOrders.length}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Day Revenue</div>
+                      <div className="text-base font-black text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+                        ₹{dayRevenue.toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Delivered Orders</div>
+                      <div className="text-base font-black text-blue-600 dark:text-blue-400 font-mono mt-0.5">
+                        {delivered}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80">
+                      <div className="text-[10px] text-zinc-400 font-bold uppercase">Rider Ratings Logged</div>
+                      <div className="text-base font-black text-amber-500 font-mono mt-0.5">
+                        {ratedOrders.length}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* DELIVERY BOYS RATING & FLEET PERFORMANCE SECTION */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
+                    <Bike className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      <span>Delivery Boys Rating & Fleet Performance Tracker</span>
+                      <span className="text-[9px] bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 font-bold px-2 py-0.5 rounded-full uppercase">
+                        Live Ratings
+                      </span>
+                    </h4>
+                    <p className="text-[10.5px] text-zinc-400">
+                      Customer ratings, compliment tags, and delivery performance metrics
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-zinc-500">
+                    Total Fleet: <span className="font-mono text-zinc-900 dark:text-zinc-100">{deliveryPartners?.length || 0} Riders</span>
+                  </span>
+                </div>
+              </div>
+
+              {(!deliveryPartners || deliveryPartners.length === 0) ? (
+                <div className="p-8 text-center bg-slate-50 dark:bg-zinc-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-700">
+                  <Bike className="w-8 h-8 text-zinc-300 dark:text-zinc-600 mx-auto mb-2" />
+                  <p className="text-xs font-bold text-zinc-700 dark:text-zinc-300">No Delivery Partners Registered Yet</p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">Delivery boys can register via the rider portal or be onboarded by admin.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {deliveryPartners.map((rider) => {
+                    const riderOrders = orders.filter(o => o.deliveryPartner?.id === rider.id || o.deliveryPartner?.phone === rider.phone);
+                    const ratedRiderOrders = riderOrders.filter(o => typeof o.deliveryPartnerRating === 'number');
+                    const avgRating = ratedRiderOrders.length > 0
+                      ? Number((ratedRiderOrders.reduce((acc, o) => acc + (o.deliveryPartnerRating || 0), 0) / ratedRiderOrders.length).toFixed(1))
+                      : (rider.rating || 5.0);
+
+                    const tags = Array.from(new Set([
+                      ...(rider.recentCompliments || []),
+                      ...ratedRiderOrders.flatMap(o => o.deliveryPartnerRatingTags || [])
+                    ])).slice(0, 5);
+
+                    return (
+                      <div
+                        key={rider.id}
+                        className="p-4 bg-slate-50 dark:bg-zinc-800/70 rounded-2xl border border-slate-200/90 dark:border-zinc-700/80 space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-base">
+                              {rider.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h5 className="text-xs font-black text-zinc-900 dark:text-zinc-100">{rider.name}</h5>
+                                <span className={`text-[8.5px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                                  rider.status === 'Available'
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                    : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300'
+                                }`}>
+                                  {rider.status || 'Active'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                                +91 {rider.phone} • Bike: {rider.bikeNumber || 'Nuvvo Fleet'}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="flex items-center gap-1 justify-end">
+                              <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+                              <span className="text-sm font-black text-zinc-900 dark:text-zinc-50 font-mono">
+                                {avgRating}
+                              </span>
+                              <span className="text-[10px] text-zinc-400">/ 5</span>
+                            </div>
+                            <div className="text-[9.5px] text-zinc-400">
+                              {ratedRiderOrders.length > 0 ? `${ratedRiderOrders.length} reviews` : 'Initial Rating'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {tags.map((tag, idx) => (
+                              <span
+                                key={idx}
+                                className="text-[9px] font-bold bg-amber-100/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 px-2 py-0.5 rounded-full border border-amber-200/50 dark:border-amber-900/30"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {ratedRiderOrders.some(o => o.deliveryPartnerFeedback) && (
+                          <div className="text-[10.5px] text-zinc-600 dark:text-zinc-300 bg-white dark:bg-zinc-900 p-2.5 rounded-xl border border-slate-200/70 dark:border-zinc-700/60 italic">
+                            "{ratedRiderOrders.find(o => o.deliveryPartnerFeedback)?.deliveryPartnerFeedback}"
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-slate-200/50 dark:border-zinc-700/50">
+                          <span>Total Delivered: <b className="text-zinc-700 dark:text-zinc-200 font-mono">{riderOrders.filter(o => o.status === 'delivered').length}</b></span>
+                          <span>Earned: <b className="text-emerald-600 font-mono">₹{rider.currentBalance || 0}</b></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Embedded Catalog Manager inside Admin Settings */}
+            <AdminCatalogManager />
+          </div>
+        )}
+
+        {/* WHATSAPP NOTIFICATION SETTINGS & HISTORY SECTION */}
+        {activeTab === 'whatsapp' && (
+          <AdminWhatsAppSettings
+            focusFailedTrigger={whatsappFailedFocusTick}
+            onNotificationRetried={() => fetchWhatsappStatus(true)}
+          />
+        )}
+
+        {/* ANALYTICS SECTION */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-4">
+            
+            {/* STATS ACTION BAR / CLEAR STATS ACCESS */}
+            <div className="bg-white dark:bg-zinc-900 p-4 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    orders.length > 0 
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {orders.length > 0 ? '● Active Stats' : '○ Stats Cleared (₹0)'}
+                  </span>
+                  <span className="text-xs font-mono text-zinc-400">
+                    {orders.length} orders recorded
+                  </span>
+                </div>
+                <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 mt-1">
+                  Chirala Territory Performance Stats
+                </h4>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {orders.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => seedSampleOrders()}
+                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                    title="Seed Sample Orders"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Seed Sample Stats</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Clear Territory Statistics',
+                        itemType: 'Analytics Reset (గణాంకాలు రీసెట్)',
+                        description: 'Are you sure you want to clear all territory sales stats and order history? All metrics will reset to ₹0.',
+                        onConfirm: () => {
+                          clearStats();
+                        }
+                      });
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                    title="Clear All Stats & Orders"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Clear All Stats</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* LIVE SUPABASE REVENUE & ORDER COUNT SUMMARY WITH D3 BAR CHART */}
+            <AdminDashboardSummaryWidget />
+
+            {/* RECENT ORDERS LOG LIST WITH PAYMENT STATUS FILTERS */}
+            <div className="bg-white dark:bg-zinc-900 rounded-3xl p-4 border shadow-sm space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-zinc-800 pb-2.5">
+                <div>
+                  <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-50 uppercase">Territory Orders & Payments Console</h4>
+                  <p className="text-[10px] text-zinc-400">Manage orders and manually verify direct UPI transactions</p>
+                </div>
+                <span className="text-[10px] font-mono font-bold text-zinc-500">
+                  Total: {orders.length} orders
+                </span>
+              </div>
+
+              {/* Order Lifecycle Stage Filter */}
+              <OrderStatusFilter
+                orders={orders}
+                value={orderStatusFilter}
+                onChange={setOrderStatusFilter}
+                compact
+                title="Order Lifecycle Stage"
+              />
+
+              {/* Requirement #13: Payment Status Filters */}
+              <div className="space-y-1.5 pt-1 border-t border-slate-100 dark:border-zinc-800/70">
+                <span className="text-[10px] font-black uppercase tracking-wider text-zinc-500 dark:text-zinc-400 block">
+                  Payment Status
+                </span>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[10px]">
+                  {[
+                    { id: 'all', label: 'All Payments', count: orders.length },
+                    { id: 'pending', label: '⏳ Payment Pending', count: orders.filter(o => o.paymentStatus === 'pending').length },
+                    { id: 'initiated', label: '🚀 Initiated', count: orders.filter(o => o.paymentStatus === 'initiated').length },
+                    { id: 'awaiting_confirmation', label: '🔍 Awaiting Confirmation', count: orders.filter(o => o.paymentStatus === 'awaiting_confirmation').length },
+                    { id: 'confirmed', label: '✅ Payment Confirmed', count: orders.filter(o => o.paymentStatus === 'confirmed' || o.paymentStatus === 'success').length },
+                    { id: 'failed', label: '❌ Failed / Cancelled', count: orders.filter(o => o.paymentStatus === 'failed' || o.paymentStatus === 'cancelled').length }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setPaymentFilter(tab.id as any)}
+                      className={`px-2.5 py-1.5 rounded-xl font-bold whitespace-nowrap cursor-pointer transition-all ${
+                        paymentFilter === tab.id
+                          ? 'bg-orange-500 text-white font-extrabold shadow-xs'
+                          : 'bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-slate-200 dark:hover:bg-zinc-700'
+                      }`}
+                    >
+                      {tab.label} ({tab.count})
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              {(() => {
+                const filteredOrders = orders.filter(or => {
+                  if (!matchesOrderStatusFilter(or.status, orderStatusFilter)) return false;
+                  if (paymentFilter === 'all') return true;
+                  if (paymentFilter === 'pending') return or.paymentStatus === 'pending';
+                  if (paymentFilter === 'initiated') return or.paymentStatus === 'initiated';
+                  if (paymentFilter === 'awaiting_confirmation') return or.paymentStatus === 'awaiting_confirmation';
+                  if (paymentFilter === 'confirmed') return or.paymentStatus === 'confirmed' || or.paymentStatus === 'success';
+                  if (paymentFilter === 'failed') return or.paymentStatus === 'failed' || or.paymentStatus === 'cancelled';
+                  return true;
+                });
+
+                if (filteredOrders.length === 0) {
+                  return (
+                    <div className="py-8 text-center border border-dashed rounded-2xl dark:border-zinc-800 space-y-2">
+                      <p className="text-xs text-zinc-400 font-bold">
+                        No orders match the selected filters
+                        {orderStatusFilter !== 'all' ? ` (Stage: "${orderStatusFilter.replace(/_/g, ' ')}")` : ''}
+                        {paymentFilter !== 'all' ? ` (Payment: "${paymentFilter.replace(/_/g, ' ')}")` : ''}.
+                      </p>
+                      {(orderStatusFilter !== 'all' || paymentFilter !== 'all') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOrderStatusFilter('all');
+                            setPaymentFilter('all');
+                          }}
+                          className="px-3 py-1 bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 rounded-lg text-[10px] font-extrabold uppercase tracking-wider cursor-pointer hover:bg-orange-100 transition"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="overflow-y-auto max-h-80 divide-y space-y-3">
+                    {filteredOrders.map(or => {
+                      const amount = or.finalAmount || or.totalAmount || 0;
+                      const isAwaiting = or.paymentStatus === 'awaiting_confirmation';
+                      const isInitiated = or.paymentStatus === 'initiated';
+                      const isConfirmed = or.paymentStatus === 'confirmed' || or.paymentStatus === 'success';
+                      const lifecycleBadge = getOrderLifecycleBadge(or.status);
+
+                      return (
+                        <div key={or.id} className="pt-3 first:pt-0 flex flex-col gap-2 text-xs text-left">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-extrabold text-zinc-900 dark:text-zinc-50">
+                                  Order #{or.id.replace('order_', '').slice(-6).toUpperCase()}
+                                </h4>
+                                <span className={`text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                  isAwaiting
+                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30'
+                                    : isConfirmed
+                                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
+                                    : isInitiated
+                                    ? 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-500/30'
+                                    : or.paymentStatus === 'failed'
+                                    ? 'bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30'
+                                    : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300'
+                                }`}>
+                                  {isAwaiting && '🔍 Awaiting Payment Confirmation'}
+                                  {isConfirmed && '✅ Payment Confirmed'}
+                                  {isInitiated && '🚀 Payment Initiated'}
+                                  {or.paymentStatus === 'pending' && '⏳ Payment Pending'}
+                                  {or.paymentStatus === 'failed' && '❌ Payment Failed'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-zinc-400 mt-0.5">
+                                {or.customerName} • {or.items.length} items • {or.paymentMethod || 'UPI'}
+                                {or.scheduledTime && <span className="text-orange-500 font-bold block mt-0.5">⏰ Scheduled: {or.scheduledTime}</span>}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-mono font-black text-sm text-zinc-900 dark:text-zinc-50 block">₹{amount}</span>
+                              <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-md mt-0.5 inline-block ${lifecycleBadge.badgeClass}`}>
+                                {lifecycleBadge.label}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* UPI Transaction Details & Requirement #14: Manual Admin Confirmation */}
+                          <div className="bg-slate-50 dark:bg-zinc-850 p-2.5 rounded-xl border border-slate-100 dark:border-zinc-800 text-[10.5px] space-y-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+                              <span>Receiver UPI ID: <strong className="text-zinc-800 dark:text-zinc-200 font-mono">{or.upiDetails?.upiId || storePaymentSettings?.upiId || 'arjun.gorrepati@axl'}</strong></span>
+                              {(or.upiDetails?.transactionRef || or.paymentDetails?.transactionRef) && (
+                                <span>Txn Ref: <strong className="font-mono text-zinc-700 dark:text-zinc-300">{or.upiDetails?.transactionRef || or.paymentDetails?.transactionRef}</strong></span>
+                              )}
+                            </div>
+
+                            {(or.upiDetails?.customerUtr || or.paymentDetails?.customerUtr) && (
+                              <div className="p-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-blue-800 dark:text-blue-300 text-[10px] flex items-center justify-between">
+                                <span>Customer Submitted UTR: <strong className="font-mono font-black">{or.upiDetails?.customerUtr || or.paymentDetails?.customerUtr}</strong></span>
+                                <span className="text-[9px] uppercase font-bold">Verify in Bank App</span>
+                              </div>
+                            )}
+
+                            {/* Manual Admin Action Buttons */}
+                            {(isAwaiting || isInitiated || or.paymentStatus === 'pending') && (
+                              <div className="pt-1 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    requestAdminSaveConfirmation({
+                                      title: `Verify & Confirm Payment: ₹${amount}`,
+                                      itemType: 'Payment Verification (చెల్లింపు ధృవీకరణ)',
+                                      description: `Verify and confirm UPI payment of ₹${amount} received from ${or.customerName} for Order #${or.id.slice(-6).toUpperCase()}?`,
+                                      onConfirm: () => {
+                                        updateOrderPaymentStatus(or.id, 'confirmed', 'Admin confirmed payment externally on bank app');
+                                      }
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[10px] uppercase tracking-wider transition cursor-pointer flex items-center gap-1 shadow-xs active:scale-95"
+                                >
+                                  ✓ Verify & Confirm Payment
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    requestAdminSaveConfirmation({
+                                      title: `Mark Payment Failed: #${or.id.slice(-6).toUpperCase()}`,
+                                      itemType: 'Payment Status Update (చెల్లింపు స్థితి)',
+                                      description: `Mark payment as failed for Order #${or.id.slice(-6).toUpperCase()}?`,
+                                      onConfirm: () => {
+                                        updateOrderPaymentStatus(or.id, 'failed', 'Admin marked as payment failed');
+                                      }
+                                    });
+                                  }}
+                                  className="px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500 hover:text-white text-rose-600 rounded-lg font-bold text-[10px] uppercase transition cursor-pointer"
+                                >
+                                  ✕ Mark Failed
+                                </button>
+                              </div>
+                            )}
+
+                            {isConfirmed && (
+                              <div className="text-[9.5px] text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                                <span>✓ Payment Confirmed by Admin</span>
+                                {or.upiDetails?.confirmedAt && (
+                                  <span className="text-zinc-400 font-mono">({new Date(or.upiDetails.confirmedAt).toLocaleTimeString()})</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* COMPLETE DETAILED ADDRESS INFO FOR RESTAURANT & SUPER ADMIN VIEW */}
+                          <div className="bg-slate-50 dark:bg-zinc-850 p-2 rounded-xl border border-slate-100 dark:border-zinc-800 text-[10px]">
+                            <span className="text-[8.5px] font-black text-zinc-400 dark:text-zinc-500 uppercase block mb-0.5">📍 Drop Location:</span>
+                            <p className="text-zinc-700 dark:text-zinc-300 font-medium">
+                              {or.address?.customerName} ({or.address?.mobileNumber}) • {or.address?.houseNumber || or.address?.flatNo || ''} {or.address?.streetName || or.address?.locality || or.address?.area || ''}, {or.address?.city}
+                            </p>
+                            {(or.deliveryInstructions || or.instructions) && (
+                              <div className="mt-1 pt-1 border-t border-slate-200/60 dark:border-zinc-800 text-[10px] text-amber-700 dark:text-amber-400 font-semibold flex items-start gap-1">
+                                <span>📝 Drop Instructions:</span>
+                                <span className="font-medium text-zinc-800 dark:text-zinc-200">{or.deliveryInstructions || or.instructions}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+          </div>
+        )}
+
+        {/* DISHES CATALOG MANAGEMENT */}
+        {activeTab === 'catalog' && (
+          user?.role === 'Customer' ? (
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-6 text-center shadow-sm space-y-4">
+              <div className="w-16 h-16 bg-rose-50 dark:bg-rose-950/20 text-rose-500 rounded-full flex items-center justify-center mx-auto border border-rose-100 dark:border-rose-900/50">
+                <ShieldAlert className="w-8 h-8 font-black text-rose-500" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-black text-rose-600 dark:text-rose-400 uppercase tracking-wider">Access Restricted to Customers</h4>
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto leading-relaxed">
+                  The live culinary dish catalog of exactly <strong className="text-zinc-805 dark:text-zinc-200">200 active menus</strong> is encrypted and restricted to <strong className="text-zinc-900 dark:text-zinc-100">Super Admin Authorized Terminals only</strong>.
+                </p>
+              </div>
+              <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-2xl border text-[10px] text-zinc-450 dark:text-zinc-500 font-mono leading-relaxed">
+                Security Pass: REQ-CATALOG-RESTRICTED-CUSTOMER
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+            {(catalogFeedback || foodError) && (
+              <div
+                role="alert"
+                className={`p-3 rounded-2xl border text-xs font-bold flex items-center justify-between gap-2 ${
+                  catalogFeedback?.type === 'success' && !foodError
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                }`}
+              >
+                <span>{catalogFeedback?.text || foodError}</span>
+                {catalogFeedback && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogFeedback(null)}
+                    className="p-1 hover:opacity-75 cursor-pointer"
+                    aria-label="Dismiss notice"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+            
+            {/* ADD FOOD FORM */}
+            <SuperAdminGuard showBadge={true}>
+              <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border shadow-sm">
+                <h4 className="text-xs font-black text-zinc-900 dark:text-zinc-50 tracking-tight uppercase mb-3 text-orange-500">Inject customized food package</h4>
+                
+                <form onSubmit={handleAddFood} className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-zinc-500 mb-0.5 font-bold">Dish Name</label>
+                      <input 
+                        type="text" 
+                        required 
+                        placeholder="Butter Paneer Masala" 
+                        value={newFoodName}
+                        onChange={e => setNewFoodName(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-zinc-500 mb-0.5 font-bold">Price (₹)</label>
+                      <input 
+                        type="number" 
+                        required 
+                        value={newFoodPrice}
+                        onChange={e => setNewFoodPrice(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-zinc-500 mb-0.5 font-bold">Category</label>
+                      <select 
+                        value={newFoodCategory} 
+                        onChange={e => setNewFoodCategory(e.target.value)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border text-xs font-bold"
+                      >
+                        <option value="North Indian">North Indian</option>
+                        <option value="Biryani">Biryani</option>
+                        <option value="South Indian">South Indian</option>
+                        <option value="Desserts">Desserts</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-zinc-500 mb-0.5 font-bold">Veg Tag</label>
+                      <select 
+                        value={newFoodVeg} 
+                        onChange={e => setNewFoodVeg(e.target.value as any)}
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border text-xs font-bold"
+                      >
+                        <option value={VegIndicator.VEG}>VEG</option>
+                        <option value={VegIndicator.NON_VEG}>NON-VEG</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* LOCAL RESTAURANT PARTNER SELECTION / CREATION OPTION */}
+                  <div className="border border-slate-150/70 p-3 bg-slate-50 dark:bg-zinc-850/10 dark:border-zinc-850 rounded-2xl space-y-2.5 mt-2">
+                    <div>
+                      <label className="block text-orange-500 mb-1 font-extrabold uppercase tracking-wide text-[9.5px]">Local Restaurant Name Option *</label>
+                      <input
+                        type="text"
+                        placeholder="Type direct restaurant name (e.g. Daawat Palace)"
+                        value={directRestaurantNameInput}
+                        onChange={e => setDirectRestaurantNameInput(e.target.value)}
+                        className="w-full bg-white dark:bg-zinc-800 p-2 rounded-xl border text-xs font-semibold focus:outline-none focus:border-orange-500 mb-2.5 text-zinc-900 dark:text-zinc-50"
+                      />
+                      
+                      <div className="text-[9px] text-zinc-400 font-bold uppercase mb-1 flex items-center gap-1">
+                        <span>— OR Choose Existing Partner Vendor —</span>
+                      </div>
+
+                      <select
+                        value={selectedRestaurantId}
+                        disabled={!!directRestaurantNameInput.trim()}
+                        onChange={e => {
+                          setSelectedRestaurantId(e.target.value);
+                          if (e.target.value === 'new') {
+                            setIsAddingNewRestaurant(true);
+                          } else {
+                            setIsAddingNewRestaurant(false);
+                          }
+                        }}
+                        className={`w-full bg-white dark:bg-zinc-800 p-2 rounded-xl border text-xs font-bold ${
+                          directRestaurantNameInput.trim() ? 'opacity-40 cursor-not-allowed' : ''
+                        }`}
+                      >
+                        <option value="">Ecosystem (Default Kitchen)</option>
+                        {restaurants.map(r => (
+                          <option key={r.id} value={r.id}>{r.name} ({r.businessType || 'General'})</option>
+                        ))}
+                        <option value="new">➕ Add & Link New Local Restaurant...</option>
+                      </select>
+                    </div>
+
+                    {isAddingNewRestaurant && (
+                      <div className="p-3 bg-amber-500/5 dark:bg-amber-500/10 border border-orange-200/50 dark:border-zinc-800/80 rounded-xl space-y-3 animate-fadeIn">
+                        <p className="text-[10px] text-orange-500 font-extrabold uppercase mt-0.5 tracking-wide">
+                          Define New Local Restaurant Details
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[8.5px] text-zinc-400 mb-0.5 font-bold uppercase">Restaurant Name</label>
+                            <input 
+                              type="text" 
+                              placeholder="e.g. Chirala Royal Mandi" 
+                              value={newRestaurantName}
+                              onChange={e => setNewRestaurantName(e.target.value)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-xs font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[8.5px] text-zinc-400 mb-0.5 font-bold uppercase">Business Type</label>
+                            <select
+                              value={newRestaurantType}
+                              onChange={e => setNewRestaurantType(e.target.value as any)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-xs font-bold"
+                            >
+                              <option value="Meals & Tiffins">Meals & Tiffins</option>
+                              <option value="Biryani & Mandi">Biryani & Mandi</option>
+                              <option value="Seafood">Seafood</option>
+                              <option value="Fast Food">Fast Food</option>
+                              <option value="Family">Family</option>
+                              <option value="Desserts & Bakery">Desserts & Bakery</option>
+                              <option value="Juices & Cafe">Juices & Cafe</option>
+                              <option value="Hotel & Resort">Hotel & Resort</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-[8.5px] text-zinc-400 mb-0.5 font-bold uppercase">Cuisines (comma sep)</label>
+                            <input 
+                              type="text" 
+                              placeholder="Tiffins, South" 
+                              value={newRestaurantCuisines}
+                              onChange={e => setNewRestaurantCuisines(e.target.value)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-xs font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[8.5px] text-zinc-400 mb-0.5 font-bold uppercase">Cost for Two (₹)</label>
+                            <input 
+                              type="number" 
+                              value={newRestaurantCostForTwo}
+                              onChange={e => setNewRestaurantCostForTwo(e.target.value)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-xs font-semibold font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[8.5px] text-zinc-400 mb-0.5 font-bold uppercase">Contact Phone</label>
+                            <input 
+                              type="text" 
+                              placeholder="9876543210" 
+                              value={newRestaurantPhone}
+                              onChange={e => setNewRestaurantPhone(e.target.value)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-xs font-semibold font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-zinc-500 font-bold">Dish Image</label>
+                      <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">Choose or Upload</span>
+                    </div>
+                    
+                    <div className="space-y-3 p-3 bg-slate-100/50 dark:bg-zinc-850/20 border border-slate-150 dark:border-zinc-800/80 rounded-2xl">
+                      
+                      {/* Sub-tabs for Image selection mode */}
+                      <div className="grid grid-cols-3 bg-slate-100 dark:bg-zinc-805 p-0.5 rounded-xl text-[10px] text-center font-bold">
+                        {[
+                          { id: 'preset', label: 'Presets 🍲' },
+                          { id: 'upload', label: 'Local File 📤' },
+                          { id: 'url', label: 'Web URL 🔗' }
+                        ].map(t => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => setImageSourceType(t.id as any)}
+                            className={`py-1.5 rounded-lg transition-colors cursor-pointer ${
+                              imageSourceType === t.id
+                                ? 'bg-white dark:bg-zinc-900 text-orange-500 shadow-xs'
+                                : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
+                            }`}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Interactive Areas */}
+                      {imageSourceType === 'preset' && (
+                        <div className="space-y-2">
+                          <p className="text-[9px] text-zinc-400 font-semibold uppercase tracking-wider text-left">Select a curated high-def food preset</p>
+                          <div className="grid grid-cols-5 gap-1.5 max-h-24 overflow-y-auto p-1 scrollbar-hide">
+                            {PRESET_DISH_IMAGES.map((p, idx) => {
+                              const isSelected = newFoodImg === p.url;
+                              return (
+                                <button
+                                  key={idx}
+                                  type="button"
+                                  onClick={() => setNewFoodImg(p.url)}
+                                  className={`relative aspect-square rounded-xl overflow-hidden border-2 transition ${
+                                    isSelected 
+                                      ? 'border-orange-500 scale-95 shadow-md shadow-orange-500/10' 
+                                      : 'border-transparent opacity-80 hover:opacity-100'
+                                  }`}
+                                  title={p.name}
+                                >
+                                  <img 
+                                    src={p.url} 
+                                    alt={p.name} 
+                                    className="w-full h-full object-cover"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                  <div className="absolute inset-x-0 bottom-0 bg-black/60 py-0.5 text-center">
+                                    <p className="text-[6.5px] font-black text-white truncate px-0.5">{p.name}</p>
+                                  </div>
+                                  {isSelected && (
+                                    <div className="absolute inset-0 bg-orange-500/10 flex items-center justify-center">
+                                      <span className="bg-orange-500 text-white rounded-full p-0.5 text-[6px]">✔</span>
+                                    </div>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {imageSourceType === 'upload' && (
+                        <div>
+                          {newFoodImg && newFoodImg.startsWith('data:') ? (
+                            <div className="relative w-full h-24 bg-slate-200 dark:bg-zinc-800 rounded-xl overflow-hidden border flex items-center justify-center">
+                              <img 
+                                src={newFoodImg} 
+                                alt="Uploaded Dish" 
+                                className="w-full h-full object-cover"
+                              />
+                              <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center opacity-0 hover:opacity-100 transition-all gap-1.5">
+                                <label className="bg-white/95 text-zinc-800 text-[10px] font-black px-3 py-1.5 rounded-lg shadow cursor-pointer hover:bg-orange-500 hover:text-white transition">
+                                  Change file
+                                  <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    className="hidden" 
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => {
+                                          if (typeof reader.result === 'string') {
+                                            setNewFoodImg(reader.result);
+                                          }
+                                        };
+                                        reader.readAsDataURL(file);
+                                      }
+                                    }}
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => setNewFoodImg('')}
+                                  className="bg-red-655 text-white text-[10px] font-black px-3 py-1 rounded-lg hover:bg-red-700 transition"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 dark:border-zinc-700 rounded-xl cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition">
+                              <Upload className="w-5 h-5 text-orange-505 mb-1" />
+                              <p className="text-[10px] font-bold text-zinc-700 dark:text-zinc-300">Upload Dish File</p>
+                              <p className="text-[8px] text-zinc-400">PNG, JPG or WebP image</p>
+                              <input 
+                                type="file" 
+                                accept="image/*" 
+                                className="hidden" 
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => {
+                                      if (typeof reader.result === 'string') {
+                                        setNewFoodImg(reader.result);
+                                      }
+                                    };
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
+                      )}
+
+                      {imageSourceType === 'url' && (
+                        <div className="space-y-1.5 text-left">
+                          <p className="text-[9px] text-zinc-400 font-semibold uppercase tracking-wider">Paste Any Online Food Image web-link</p>
+                          <input 
+                            type="text" 
+                            placeholder="https://images.unsplash.com/photo-..." 
+                            value={newFoodImg.startsWith('data:') ? '' : newFoodImg}
+                            onChange={e => setNewFoodImg(e.target.value)}
+                            className="w-full bg-white dark:bg-zinc-800 p-2 rounded-xl border text-[10px] outline-none focus:border-orange-500 font-mono"
+                          />
+                        </div>
+                      )}
+
+                      {/* Active Preview Banner block */}
+                      {newFoodImg && (
+                        <div className="flex items-center gap-2.5 p-2 bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-xl mt-1">
+                          <img 
+                            src={newFoodImg} 
+                            alt="Final Preview" 
+                            className="w-10 h-10 object-cover rounded-lg border dark:border-zinc-800 shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="flex-1 min-w-0 text-left">
+                            <p className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider leading-none">Active Chosen Image</p>
+                            <p className="text-[10px] text-zinc-700 dark:text-zinc-300 font-mono truncate mt-1">
+                              {newFoodImg.startsWith('data:') ? 'base64://UploadedFileStreamData...' : newFoodImg}
+                            </p>
+                          </div>
+                          
+                          <label className="text-[9px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 font-black px-2.5 py-1 rounded-lg uppercase cursor-pointer text-zinc-600 dark:text-zinc-350 transition shrink-0">
+                            Change
+                            <input 
+                              type="file" 
+                              accept="image/*" 
+                              className="hidden" 
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  setImageSourceType('upload');
+                                  const reader = new FileReader();
+                                  reader.onloadend = () => {
+                                    if (typeof reader.result === 'string') {
+                                      setNewFoodImg(reader.result);
+                                    }
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
+
+                  <button type="submit" className="w-full bg-orange-500 hover:bg-orange-655 text-white font-bold py-2.5 rounded-xl uppercase tracking-wider shadow-md">
+                    Commit Dish to Menu
+                  </button>
+                </form>
+              </div>
+            </SuperAdminGuard>
+
+            {/* DISHES LIST */}
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-4 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-455 uppercase flex items-center gap-1.5">
+                    <span>Live Menu Catalog</span>
+                    <span className="font-mono bg-orange-500/10 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded-full font-black text-[10px]">
+                      {foodCatalog.length} dishes
+                    </span>
+                  </h4>
+                  <p className="text-[10px] text-zinc-400 mt-0.5">
+                    Centralized database: Supabase <code className="font-mono text-orange-500">public.food_items</code>
+                  </p>
+                </div>
+                
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Seed Menu to Supabase',
+                        itemType: 'Menu Synchronization (వంటకాల సమన్వయం)',
+                        description: 'Populate Supabase public.food_items database with curated baseline menu dishes?',
+                        onConfirm: async () => {
+                          const res = await seedDishesToSupabase();
+                          if (!res?.success) {
+                            setCatalogFeedback({ text: res?.error || 'Failed to seed catalog.', type: 'error' });
+                          } else {
+                            setCatalogFeedback({ text: res?.message || `Synchronized ${res?.count || 28} dishes.`, type: 'success' });
+                          }
+                        }
+                      });
+                    }}
+                    className="px-2.5 py-1 text-[10px] font-bold bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 rounded-lg transition cursor-pointer"
+                    title="Seed default dishes to Supabase food_items table"
+                  >
+                    📥 Seed Menu to Supabase
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => refetchFoodCatalog()}
+                    className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition cursor-pointer"
+                    title="Refresh from Supabase"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {foodLoading ? (
+                <div className="text-center py-10 bg-slate-50 dark:bg-zinc-800/40 rounded-2xl p-4 flex flex-col items-center justify-center gap-2">
+                  <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs font-bold text-zinc-400">Loading dishes from Supabase public.food_items...</p>
+                </div>
+              ) : foodCatalog.length === 0 ? (
+                <div className="text-center py-10 bg-slate-50 dark:bg-zinc-800/40 rounded-2xl p-6 space-y-3">
+                  <p className="text-xs font-bold text-zinc-600 dark:text-zinc-300">
+                    No food items currently found in Supabase public.food_items.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Seed Initial Menu to Supabase',
+                        itemType: 'Menu Synchronization (వంటకాల ప్రారంభ సమన్వయం)',
+                        description: 'Populate Supabase public.food_items with initial curated menu dishes?',
+                        onConfirm: async () => {
+                          const res = await seedDishesToSupabase();
+                          if (!res?.success) {
+                            setCatalogFeedback({ text: res?.error || 'Failed to seed catalog.', type: 'error' });
+                          } else {
+                            setCatalogFeedback({ text: res?.message || `Synchronized ${res?.count || 28} dishes.`, type: 'success' });
+                          }
+                        }
+                      });
+                    }}
+                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-black text-xs rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                  >
+                    📥 Seed Initial Menu to Supabase
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3.5 max-h-96 overflow-y-auto pr-1">
+                  {foodCatalog.map(item => (
+                    <div key={item.id} className="p-3 bg-slate-50 dark:bg-zinc-800/40 border border-slate-100/70 dark:border-zinc-800/60 rounded-2xl transition-all">
+                      
+                      {/* Top Row: Info & Trigger */}
+                      <div className="flex justify-between items-center text-xs">
+                        <div className="flex items-center gap-3">
+                          <img 
+                            src={item.image} 
+                            alt={item.name} 
+                            className="w-11 h-11 rounded-xl object-cover border border-slate-200/50 dark:border-zinc-700/50 shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div>
+                            <h5 className="font-extrabold text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5 leading-snug">
+                              {item.name}
+                              {item.vegIndicator === VegIndicator.VEG ? (
+                                <span className="veg-icon shrink-0"><span className="veg-dot" /></span>
+                              ) : (
+                                <span className="nonveg-icon shrink-0"><span className="nonveg-dot" /></span>
+                              )}
+                              <span className={`text-[8px] font-black px-1.5 py-0.2 rounded uppercase ${
+                                item.is_available !== false && item.isAvailable !== false
+                                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                  : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'
+                              }`}>
+                                {item.is_available !== false && item.isAvailable !== false ? 'Live' : 'Unavailable'}
+                              </span>
+                            </h5>
+                            <p className="text-[10px] text-zinc-450 font-mono mt-0.5">{item.category} • ₹{item.price}</p>
+                            <p className="text-[9px] text-orange-500 font-extrabold uppercase mt-0.5 flex items-center gap-1">
+                              <span>📍</span>
+                              <span>{restaurants.find(r => r.id === item.restaurantId)?.name || 'Ecosystem (Default Kitchen)'}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        {isSuperAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (activeReplaceId === item.id) {
+                                setActiveReplaceId(null);
+                                setReplaceImgUrl('');
+                                setReplaceRestaurantId('');
+                                setReplacePrice('');
+                                setReplaceDishName('');
+                              } else {
+                                setActiveReplaceId(item.id);
+                                setReplaceImgUrl(item.image);
+                                setReplaceRestaurantId(item.restaurantId || '');
+                                setReplacePrice(String(item.price));
+                                setReplaceAvailability(item.is_available !== false && item.isAvailable !== false);
+                                setReplaceDishName(item.name);
+                              }
+                            }}
+                            className={`flex items-center gap-1.5 font-bold text-[9px] px-2.5 py-1.5 rounded-xl uppercase tracking-wider transition-all cursor-pointer border ${
+                              activeReplaceId === item.id
+                                ? 'bg-orange-500/15 border-orange-500 text-orange-505 dark:text-orange-400'
+                                : 'bg-white dark:bg-zinc-800 border-slate-250 dark:border-zinc-750 text-zinc-650 dark:text-zinc-300 hover:border-orange-500 hover:text-orange-500'
+                            }`}
+                          >
+                            <Settings className="w-3.5 h-3.5 shrink-0" />
+                            <span>{activeReplaceId === item.id ? 'Close' : 'Configure'}</span>
+                          </button>
+                        ) : (
+                          <span className="text-[8.5px] bg-slate-100 dark:bg-zinc-800 text-zinc-450 dark:text-zinc-500 px-2.5 py-1.5 rounded-xl font-extrabold uppercase tracking-wider border border-slate-200/60 dark:border-zinc-750 flex items-center gap-1 shrink-0">
+                            🔒 Locked
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Expandable Image & Restaurant Replace Widget */}
+                      {activeReplaceId === item.id && (
+                        <div className="border-t border-dashed border-slate-200 dark:border-zinc-700/60 pt-3 mt-3 space-y-3 animate-fadeIn">
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] font-black uppercase text-orange-500 tracking-wider">Configure dish parameters (Supabase)</p>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-left">
+                            <div>
+                              <label className="block text-[8.5px] uppercase font-bold text-zinc-400">Dish Name</label>
+                              <input 
+                                type="text"
+                                value={replaceDishName}
+                                onChange={e => setReplaceDishName(e.target.value)}
+                                className="w-full bg-white dark:bg-zinc-800 p-1.5 rounded-xl border text-[11px] font-bold"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[8.5px] uppercase font-bold text-zinc-400">Price (₹)</label>
+                              <input 
+                                type="number"
+                                value={replacePrice}
+                                onChange={e => setReplacePrice(e.target.value)}
+                                className="w-full bg-white dark:bg-zinc-800 p-1.5 rounded-xl border text-[11px] font-mono font-bold"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Availability Toggle */}
+                          <div className="flex items-center justify-between p-2 bg-slate-100/60 dark:bg-zinc-950/20 rounded-xl border border-slate-200/50 dark:border-zinc-800 text-left">
+                            <div>
+                              <span className="text-[10px] font-extrabold text-zinc-800 dark:text-zinc-200">Dish Availability</span>
+                              <p className="text-[8.5px] text-zinc-400">Customer menu visibility in Supabase</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setReplaceAvailability(!replaceAvailability)}
+                              className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition cursor-pointer ${
+                                replaceAvailability ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                              }`}
+                            >
+                              {replaceAvailability ? '✓ Available' : '✕ Unavailable'}
+                            </button>
+                          </div>
+                          
+                          <div className="flex gap-3 items-center">
+                            {/* Live Thumbnail Preview */}
+                            <div className="w-16 h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-750 bg-slate-100 dark:bg-zinc-800 shrink-0">
+                              <img 
+                                src={replaceImgUrl || item.image} 
+                                alt="New proposal thumbnail" 
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+
+                            <div className="flex-1 space-y-1.5 text-xs text-left">
+                              <p className="text-[8.5px] uppercase font-bold text-zinc-400">Dish Image Source</p>
+                              {/* Option A: Upload Local Image file */}
+                              <label className="inline-flex items-center justify-center gap-1.5 text-[10px] bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 font-bold px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition w-full text-center shadow-xs">
+                                <Upload className="w-3.5 h-3.5 text-orange-505" />
+                                <span>Upload from files</span>
+                                <input 
+                                  type="file" 
+                                  accept="image/*" 
+                                  className="hidden" 
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => {
+                                        if (typeof reader.result === 'string') {
+                                          setReplaceImgUrl(reader.result);
+                                        }
+                                      };
+                                      reader.readAsDataURL(file);
+                                    }
+                                  }}
+                                />
+                              </label>
+                              
+                              {/* Option B: Direct URL Input link */}
+                              <div className="flex items-center gap-1.5">
+                                <input 
+                                  type="text" 
+                                  placeholder="Or direct image URL link..." 
+                                  value={replaceImgUrl.startsWith('data:') ? '' : replaceImgUrl}
+                                  onChange={e => setReplaceImgUrl(e.target.value)}
+                                  className="w-full bg-white dark:bg-zinc-800 border p-1.5 rounded-xl text-[10px] placeholder-zinc-400 dark:placeholder-zinc-500 outline-none focus:border-orange-500"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Dropdown to switch or associate with another Local Restaurant */}
+                          <div className="space-y-1 text-left bg-slate-100/55 dark:bg-zinc-950/20 p-2.5 rounded-xl border border-slate-150/40 dark:border-zinc-850">
+                            <label className="block text-[9px] text-zinc-450 font-extrabold uppercase tracking-wide">
+                              Modify Linked Local Restaurant
+                            </label>
+                            <select
+                              value={replaceRestaurantId}
+                              onChange={e => setReplaceRestaurantId(e.target.value)}
+                              className="w-full bg-white dark:bg-zinc-800 p-2 rounded-lg border text-[11px] font-bold"
+                            >
+                              <option value="">Ecosystem (Default Kitchen)</option>
+                              {restaurants.map(r => (
+                                <option key={r.id} value={r.id}>{r.name} ({r.businessType || 'General'})</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Actions row */}
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-zinc-800">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                requestAdminSaveConfirmation({
+                                  title: `Permanently Delete Dish: "${item.name}"`,
+                                  itemType: 'Dish Removal (వంటకం శాశ్వత తొలగింపు)',
+                                  description: `Are you sure you want to permanently delete "${item.name}" (ID: ${item.id}) from Supabase food_items and active menu?`,
+                                  onConfirm: async () => {
+                                    const res = await deleteFoodItem(item.id);
+                                    if (!res?.success) {
+                                      setCatalogFeedback({ text: res?.error || 'Failed to delete dish.', type: 'error' });
+                                      return;
+                                    }
+                                    setCatalogFeedback({ text: `Dish "${item.name}" removed from catalog.`, type: 'success' });
+                                    setActiveReplaceId(null);
+                                  }
+                                });
+                              }}
+                              className="bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-[10px] px-3 py-1.5 rounded-lg uppercase tracking-wider transition cursor-pointer flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete Dish</span>
+                            </button>
+
+                            <div className="flex items-center gap-1.5">
+                              <button 
+                                type="button"
+                                onClick={() => {
+                                  setActiveReplaceId(null);
+                                  setReplaceImgUrl('');
+                                  setReplaceRestaurantId('');
+                                }}
+                                className="text-[10px] font-extrabold text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 px-2.5 py-1 rounded-lg transition cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              
+                              <button 
+                                type="button"
+                                onClick={() => {
+                                  const updatedName = replaceDishName || item.name;
+                                  const updatedPrice = replacePrice ? parseFloat(replacePrice) : item.price;
+                                  requestAdminSaveConfirmation({
+                                    title: `Update Dish Details: "${updatedName}"`,
+                                    itemType: 'Dish Details (వంటకం వివరాలు సవరణ)',
+                                    description: `Price: ₹${updatedPrice} • Live Status: ${replaceAvailability ? 'Available' : 'Unavailable'}`,
+                                    onConfirm: async () => {
+                                      const res = await updateFoodItem(item.id, { 
+                                        name: updatedName,
+                                        price: updatedPrice,
+                                        image: replaceImgUrl || item.image,
+                                        image_url: replaceImgUrl || item.image,
+                                        is_available: replaceAvailability,
+                                        isAvailable: replaceAvailability,
+                                        restaurantId: replaceRestaurantId || undefined
+                                      });
+                                      if (!res?.success) {
+                                        setCatalogFeedback({ text: res?.error || 'Failed to update dish.', type: 'error' });
+                                        return;
+                                      }
+                                      setCatalogFeedback({ text: `Dish "${updatedName}" updated.`, type: 'success' });
+                                      setActiveReplaceId(null);
+                                      setReplaceImgUrl('');
+                                      setReplaceRestaurantId('');
+                                    }
+                                  });
+                                }}
+                                className="bg-orange-500 hover:bg-orange-655 text-white font-black text-[10px] px-3.5 py-1.5 rounded-lg uppercase tracking-wider transition-all shadow-md active:scale-95 cursor-pointer"
+                              >
+                                Save Changes
+                              </button>
+                            </div>
+                          </div>
+
+                        </div>
+                      )}
+
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+          )
+        )}
+
+        {/* PHONEPE UPI & BANK ACCOUNT CONFIGURATION PANEL */}
+        {activeTab === 'payments' && (
+          <div className="space-y-4 text-left">
+            
+            {/* Header Card */}
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-purple-600 text-white font-black text-lg flex items-center justify-center shadow-md shadow-purple-600/30">
+                    पे
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-zinc-900 dark:text-zinc-50 flex items-center gap-1.5">
+                      PhonePe UPI & Bank Setup
+                    </h3>
+                    <p className="text-[10.5px] text-zinc-400 font-medium">
+                      PhonePe పేమెంట్ & బ్యాంక్ ఖాతా కనెక్ట్
+                    </p>
+                  </div>
+                </div>
+
+                <span className="text-[9px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-extrabold uppercase px-2.5 py-1 rounded-full border border-emerald-500/20">
+                  ● Realtime Live Sync
+                </span>
+              </div>
+
+              {/* Telugu instructions */}
+              <div className="p-3 bg-purple-500/5 border border-purple-500/20 rounded-2xl text-[11px] text-purple-900 dark:text-purple-300 space-y-1">
+                <p className="font-bold flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span>డైరెక్ట్ బ్యాంక్ అకౌంట్ బదిలీ గ్యారెంటీ:</span>
+                </p>
+                <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  మీరు ఇక్కడ నమోదు చేసిన PhonePe UPI ID మరియు బ్యాంక్ అకౌంట్‌తో కస్టమర్ల QR కోడ్ స్వయంచాలకంగా అనుసంధానించబడుతుంది. కస్టమర్ PhonePe లో QR స్కాన్ చేసిన వెంటనే ఫుడ్ బిల్ అమౌంట్ ఆటోమేటిక్‌గా ఫిల్ అయి, ఎటువంటి ఎర్రర్ లేకుండా నేరుగా మీ బ్యాంక్ ఖాతాకు అమౌంట్ ట్రాన్స్‌ఫర్ అవుతుంది.
+                </p>
+              </div>
+            </div>
+
+            {/* Configuration Form */}
+            <form onSubmit={handleSavePhonePeSettings} className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-50 tracking-wider flex items-center gap-1.5">
+                  <Settings className="w-4 h-4 text-orange-500" />
+                  <span>PhonePe Account Details</span>
+                </h4>
+                {isSavedSuccess && (
+                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Saved!
+                  </span>
+                )}
+              </div>
+
+              {paymentFormError && (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 text-xs font-semibold text-rose-700 dark:text-rose-300">
+                  {paymentFormError}
+                </div>
+              )}
+
+              {/* Field 1: PhonePe UPI ID */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    PhonePe UPI ID (VPA) <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('PhonePe UPI ID', 'arjun.gorrepati@axl', () => {
+                      setAdminPhonePeUpiId('arjun.gorrepati@axl');
+                      updateStorePaymentSettings({ upiId: 'arjun.gorrepati@axl' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset UPI ID to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    required
+                    value={adminPhonePeUpiId}
+                    onChange={e => setAdminPhonePeUpiId(e.target.value.toLowerCase().replace(/\s/g, ''))}
+                    placeholder="e.g. arjun.gorrepati@axl or 9876543210@ybl"
+                    className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                  />
+                  <div className="absolute right-2 top-2">
+                    <span className="text-[9px] bg-purple-100 text-purple-700 font-bold px-2 py-1 rounded-md">
+                      UPI ID
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  <span className="text-[9px] text-zinc-400 font-medium self-center">Quick Suffix:</span>
+                  {['@ybl', '@axl', '@ibl', '@oksbi', '@paytm'].map(suffix => (
+                    <button
+                      key={suffix}
+                      type="button"
+                      onClick={() => {
+                        const base = adminPhonePeUpiId.split('@')[0] || '9876543210';
+                        setAdminPhonePeUpiId(`${base}${suffix}`);
+                      }}
+                      className="text-[9px] px-2 py-0.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-md font-mono text-zinc-700 dark:text-zinc-300 transition cursor-pointer"
+                    >
+                      {suffix}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Field 2: Connected Bank Account Name */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    PhonePe Connected Bank Account <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('Connected Bank Name', 'Karur Vysya Bank - 4761', () => {
+                      setAdminBankName('Karur Vysya Bank - 4761');
+                      updateStorePaymentSettings({ bankName: 'Karur Vysya Bank - 4761' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset bank name to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={adminBankName}
+                  onChange={e => setAdminBankName(e.target.value)}
+                  placeholder="e.g. Karur Vysya Bank - 4761 or State Bank of India"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-bold text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                />
+                <p className="text-[9.5px] text-zinc-400">
+                  This bank name will be prominently displayed on customer menu checkout and payment receipt.
+                </p>
+              </div>
+
+              {/* Field 3: Merchant / Business Name */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    Store / Business Name (Shown in UPI Scanner)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleSetting('Merchant Business Name', 'Nuvvo Food & Hospitality', () => {
+                      setAdminMerchantName('Nuvvo Food & Hospitality');
+                      updateStorePaymentSettings({ merchantName: 'Nuvvo Food & Hospitality' });
+                    })}
+                    className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                    title="Reset merchant name to default"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                    <span>Reset</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  maxLength={25}
+                  value={adminMerchantName}
+                  onChange={e => setAdminMerchantName(e.target.value)}
+                  placeholder="e.g. Nuvvo Food & Hospitality"
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-bold text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              {/* Field 4 & 5: Mobile & Account Holder */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                      PhonePe Mobile Number
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleResetSingleSetting('PhonePe Number', '9876543210', () => {
+                        setAdminPhonePePhone('9876543210');
+                        updateStorePaymentSettings({ phonePeNumber: '9876543210' });
+                      })}
+                      className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                      title="Reset phone number to default"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                      <span>Reset</span>
+                    </button>
+                  </div>
+                  <input
+                    type="tel"
+                    maxLength={10}
+                    value={adminPhonePePhone}
+                    onChange={e => setAdminPhonePePhone(e.target.value.replace(/[^0-9]/g, ''))}
+                    placeholder="9876543210"
+                    className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                      Account Holder Name
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleResetSingleSetting('Account Holder Name', 'Arjun Gorrepati (Nuvvo Foods)', () => {
+                        setAdminAccountHolder('Arjun Gorrepati (Nuvvo Foods)');
+                        updateStorePaymentSettings({ accountHolderName: 'Arjun Gorrepati (Nuvvo Foods)' });
+                      })}
+                      className="text-[9.5px] font-bold text-zinc-500 hover:text-purple-600 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-md transition"
+                      title="Reset account holder to default"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-purple-500" />
+                      <span>Reset</span>
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={adminAccountHolder}
+                    onChange={e => setAdminAccountHolder(e.target.value)}
+                    placeholder="Arjun Gorrepati"
+                    className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3.5 py-2.5 text-xs font-bold text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+              </div>
+
+              {/* SECTION: Customer Payment Options Toggles */}
+              <div className="pt-3 border-t border-slate-100 dark:border-zinc-800 space-y-3">
+                <h5 className="text-[11px] font-black uppercase text-zinc-800 dark:text-zinc-200 tracking-wider flex items-center gap-1.5">
+                  <span>💳 Customer Payment Options & Activation</span>
+                </h5>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* UPI Payment Option Toggle */}
+                  <div className="p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                        <span>📱 PhonePe / UPI Payment</span>
+                      </p>
+                      <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                        Display business UPI ID and QR code to customers
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEnableUpi(!enableUpi)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                        enableUpi ? 'bg-purple-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          enableUpi ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Cash on Delivery (COD) Option Toggle */}
+                  <div className="p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-200/80 dark:border-zinc-700/80 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                        <span>💵 Cash on Delivery (COD)</span>
+                      </p>
+                      <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                        Allow customers to pay cash directly to delivery rider
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEnableCod(!enableCod)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                        enableCod ? 'bg-emerald-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          enableCod ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: Customer-Facing Payment Instructions */}
+              <div className="space-y-1.5 pt-2">
+                <label className="block text-[11px] font-bold text-zinc-700 dark:text-zinc-300 flex items-center justify-between">
+                  <span>Customer Payment Instructions (కస్టమర్ సూచనలు)</span>
+                  <span className="text-[9.5px] text-zinc-400 font-normal">Shown on Checkout & Receipt</span>
+                </label>
+                <textarea
+                  rows={2}
+                  value={customerInstructions}
+                  onChange={e => setCustomerInstructions(e.target.value)}
+                  placeholder="e.g. Please verify UPI recipient name before sending. For Cash on Delivery, please keep exact cash ready upon delivery."
+                  className="w-full bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl p-3 text-xs text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500 resize-none"
+                />
+              </div>
+
+              {/* SECTION: Custom Static QR Code (Optional Override) */}
+              <div className="space-y-2 pt-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300">
+                    Custom Printed UPI QR Code Image (Optional)
+                  </label>
+                  {staticQrImage && (
+                    <button
+                      type="button"
+                      onClick={() => setStaticQrImage('')}
+                      className="text-[10px] text-rose-500 hover:underline"
+                    >
+                      Clear image
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={staticQrImage.startsWith('data:') ? 'Custom Image File Uploaded' : staticQrImage}
+                    onChange={e => setStaticQrImage(e.target.value)}
+                    placeholder="https://... or upload custom merchant QR"
+                    className="flex-1 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs font-mono text-zinc-900 dark:text-zinc-50 focus:outline-none focus:border-purple-500"
+                  />
+                  <label className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-bold rounded-xl cursor-pointer transition flex items-center gap-1 shrink-0">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            if (typeof reader.result === 'string') {
+                              setStaticQrImage(reader.result);
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+                <p className="text-[9.5px] text-zinc-400">
+                  If left blank, Nuvvo automatically generates an NPCI standard dynamic UPI QR with embedded order amounts.
+                </p>
+              </div>
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                className="w-full py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-2xl text-xs uppercase tracking-wider transition cursor-pointer shadow-md shadow-purple-600/25 active:scale-98 flex items-center justify-center gap-2"
+              >
+                <Save className="w-4 h-4" />
+                <span>Save Payment & Checkout Settings (సేవ్ చేయండి)</span>
+              </button>
+            </form>
+
+            {/* WHATSAPP BUSINESS CLOUD API NOTIFICATION STATUS CARD */}
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-zinc-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black shadow-xs">
+                    <Smartphone className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-50 tracking-wider flex items-center gap-1.5">
+                      <span>WhatsApp Business Cloud API Dispatcher</span>
+                    </h4>
+                    <p className="text-[10px] text-zinc-400">
+                      Automatic real-time order dispatch to business phone
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => fetchWhatsappStatus()}
+                  disabled={whatsappStatusLoading}
+                  className="px-2.5 py-1 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3 h-3 ${whatsappStatusLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              {/* Status details */}
+              {whatsappStatus ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/80 border border-slate-100 dark:border-zinc-800">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-extrabold text-zinc-900 dark:text-zinc-100">
+                        {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Meta Cloud API Ready' : 'Meta Credentials Pending'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md ${
+                        (whatsappStatus.isConfigured || whatsappStatus.configured)
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300'
+                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
+                      }`}>
+                        {(whatsappStatus.isConfigured || whatsappStatus.configured) ? 'Configured' : 'Needs Setup'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('whatsapp')}
+                        className="px-2.5 py-1 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer whitespace-nowrap"
+                      >
+                        Manage Settings
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-[10px] font-mono">
+                    <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
+                      <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">WHATSAPP_ACCESS_TOKEN</p>
+                      <p className={`font-bold mt-1 ${(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_ACCESS_TOKEN') ? 'text-rose-500' : 'text-emerald-600'}`}>
+                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_ACCESS_TOKEN') ? 'Missing' : 'Configured'}
+                      </p>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
+                      <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">PHONE_NUMBER_ID</p>
+                      <p className={`font-bold mt-1 ${(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_PHONE_NUMBER_ID') ? 'text-rose-500' : 'text-emerald-600'}`}>
+                        {(whatsappStatus.missingVars || whatsappStatus.missing)?.includes('WHATSAPP_PHONE_NUMBER_ID') ? 'Missing' : 'Configured'}
+                      </p>
+                    </div>
+
+                    <div className="p-2.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-100 dark:border-zinc-800/80">
+                      <p className="text-[9px] text-zinc-400 uppercase font-sans font-bold">ADMIN WHATSAPP</p>
+                      <p className="font-bold text-zinc-700 dark:text-zinc-200 mt-1 truncate">
+                        {whatsappStatus.businessRecipientMasked || 'Protected on Server'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!(whatsappStatus.isConfigured || whatsappStatus.configured) && (
+                    <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 rounded-2xl text-[10.5px] text-amber-900 dark:text-amber-200 space-y-1">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>Orders Safely Recorded While Meta Setup Is Pending</span>
+                      </p>
+                      <p className="text-[10px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+                        Customer orders remain 100% operational. Open the WhatsApp Settings tab to view missing Meta Cloud API variables, webhook verification settings, template approvals, and notification retry logs.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 bg-slate-50 dark:bg-zinc-800/40 rounded-2xl text-center text-xs text-zinc-400 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-600" />
+                  <span>Checking WhatsApp Cloud API status...</span>
+                </div>
+              )}
+            </div>
+
+            {/* LIVE DYNAMIC QR TESTER CARD */}
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm space-y-4 text-center">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800 text-left">
+                <div>
+                  <h4 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-50 tracking-wider flex items-center gap-1.5">
+                    <QrCode className="w-4 h-4 text-purple-600" />
+                    <span>Live QR Scanner Tester</span>
+                  </h4>
+                  <p className="text-[10px] text-zinc-400">
+                    Test scanning with your own PhonePe app right now
+                  </p>
+                </div>
+                <span className="text-[9px] bg-purple-50 text-purple-700 font-mono font-bold px-2 py-0.5 rounded-full border border-purple-200">
+                  Amount Embedded
+                </span>
+              </div>
+
+              {/* Amount selector pills */}
+              <div className="flex items-center justify-center gap-2">
+                <span className="text-[10.5px] text-zinc-500 font-bold">Test Bill Amount:</span>
+                {['150', '250', '499', '1000'].map(amt => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setTestAmount(amt)}
+                    className={`px-3 py-1 rounded-xl text-xs font-mono font-bold transition cursor-pointer ${
+                      testAmount === amt
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : 'bg-slate-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-slate-200'
+                    }`}
+                  >
+                    ₹{amt}
+                  </button>
+                ))}
+              </div>
+
+              {/* QR Preview Display */}
+              <div className="bg-white p-4 rounded-2xl border-2 border-purple-200 dark:border-purple-900/40 max-w-xs mx-auto shadow-xs space-y-3">
+                {testQrUrl ? (
+                  <img
+                    src={testQrUrl}
+                    alt="Test PhonePe QR Code"
+                    className="w-48 h-48 mx-auto object-contain block bg-white rounded-xl"
+                  />
+                ) : (
+                  <div className="w-48 h-48 mx-auto flex items-center justify-center text-zinc-400">
+                    <RefreshCw className="w-6 h-6 animate-spin text-purple-600" />
+                  </div>
+                )}
+
+                <div className="space-y-1 text-center">
+                  <span className="text-xs font-black font-mono text-purple-700 bg-purple-50 px-3 py-1 rounded-full border border-purple-200">
+                    Exact Bill Amount: ₹{testAmount}
+                  </span>
+                  <p className="text-[10px] text-zinc-500 font-mono pt-1">
+                    UPI ID: <strong>{adminPhonePeUpiId}</strong>
+                  </p>
+                  <p className="text-[9.5px] text-emerald-600 font-bold">
+                    Connected Bank: {adminBankName}
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-50 dark:bg-zinc-800/60 rounded-2xl text-[10px] text-zinc-500 text-left space-y-1 font-mono break-all">
+                <span className="text-zinc-400 block font-sans font-bold">NPCI Universal UPI URI:</span>
+                <span>upi://pay?pa={adminPhonePeUpiId}&pn={encodeURIComponent(adminMerchantName)}&am={testAmount}.00&cu=INR</span>
+              </div>
+            </div>
+
+            {/* Quick Orders Verification Table */}
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+                <h4 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-50 tracking-wider flex items-center gap-1.5">
+                  <IndianRupee className="w-4 h-4 text-emerald-600" />
+                  <span>Recent Customer UPI Orders</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('analytics')}
+                  className="text-[10px] font-bold text-orange-600 hover:underline cursor-pointer"
+                >
+                  View All Orders Console →
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {orders.filter(o => o.paymentMethod === 'UPI' || o.paymentMethod === 'PhonePe').slice(0, 5).map(o => (
+                  <div key={o.id} className="p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl border border-slate-100 dark:border-zinc-800 flex items-center justify-between text-xs">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                          #{o.id.replace('order_', '').slice(-6).toUpperCase()}
+                        </span>
+                        <span className="text-zinc-400">• {o.customerName}</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 mt-0.5">
+                        Bill: <strong className="text-emerald-600 font-mono">₹{o.finalAmount}</strong>
+                        {o.upiDetails?.customerUtr && (
+                          <span className="ml-2 font-mono bg-blue-50 text-blue-700 px-1.5 py-0.2 rounded">
+                            UTR: {o.upiDetails.customerUtr}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      {o.paymentStatus === 'confirmed' || o.paymentStatus === 'success' ? (
+                        <span className="text-[9px] bg-emerald-500/10 text-emerald-600 font-extrabold uppercase px-2 py-0.5 rounded-full border border-emerald-500/20">
+                          ✓ Confirmed
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            requestAdminSaveConfirmation({
+                              title: `Verify Payment (₹${o.finalAmount})`,
+                              itemType: 'Payment Verification (చెల్లింపు ధృవీకరణ)',
+                              description: `Verify payment of ₹${o.finalAmount} for Order #${o.id.slice(-6).toUpperCase()}?`,
+                              onConfirm: () => {
+                                updateOrderPaymentStatus(o.id, 'confirmed', 'Admin confirmed via PhonePe panel');
+                              }
+                            });
+                          }}
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[9.5px] uppercase transition cursor-pointer shadow-xs active:scale-95"
+                        >
+                          Confirm
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {orders.filter(o => o.paymentMethod === 'UPI' || o.paymentMethod === 'PhonePe').length === 0 && (
+                  <p className="text-[11px] text-zinc-400 text-center py-4">
+                    No UPI orders received yet. Once customers scan and pay with PhonePe, they will appear here!
+                  </p>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* PROMOS & VOUCHERS SYSTEMS */}
+        {activeTab === 'coupons' && (
+          <div className="space-y-5 text-left">
+            
+            {/* PROMO ACTIONS HEADER BAR */}
+            <div className="bg-white dark:bg-zinc-900 p-4 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    couponsList.length > 0 
+                      ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20' 
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {couponsList.length > 0 ? `${couponsList.length} Active Codes` : 'No Promo Codes'}
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-400">
+                    {banners.length} Carousel Banners
+                  </span>
+                </div>
+                <h4 className="text-sm font-black text-zinc-900 dark:text-zinc-100 mt-1 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-orange-500" /> Promotional Codes & Campaigns
+                </h4>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {couponsList.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => resetDefaultCoupons()}
+                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                    title="Restore default mock promo codes"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Restore Promo Codes</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      requestAdminSaveConfirmation({
+                        title: 'Clear Promotional Coupons',
+                        itemType: 'Coupons Reset (కూపన్లు తొలగింపు)',
+                        description: 'Are you sure you want to clear all active promotional coupon codes? Users will not be able to apply promo codes until new ones are created.',
+                        onConfirm: () => {
+                          clearAllCoupons();
+                        }
+                      });
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                    title="Clear All Promo Voucher Codes"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Clear All Promo Codes</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* ISSUE NEW PROMO VOUCHER FORM (DIRECT ADMIN ACCESS) */}
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-3xl border border-slate-200/90 dark:border-zinc-800 shadow-sm">
+              <h4 className="text-xs font-black uppercase text-orange-500 mb-3 flex items-center gap-1.5">
+                <Tag className="w-4 h-4" /> Issue New Promo Voucher Code
+              </h4>
+              
+              <form onSubmit={handleAddCoupon} className="space-y-3 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Voucher Code</label>
+                    <input 
+                      type="text" 
+                      required 
+                      placeholder="e.g. FESTIVE50"
+                      value={newCouponCode}
+                      onChange={e => setNewCouponCode(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono text-center font-black tracking-wider outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Discount Type</label>
+                    <select
+                      value={newCouponType}
+                      onChange={e => setNewCouponType(e.target.value as 'percentage' | 'flat')}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-bold outline-none focus:border-orange-500"
+                    >
+                      <option value="percentage">Percentage (%)</option>
+                      <option value="flat">Flat Amount (₹)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">
+                      {newCouponType === 'flat' ? 'Discount Amount (₹)' : 'Discount Percentage (%)'}
+                    </label>
+                    <input 
+                      type="number" 
+                      required 
+                      min="1"
+                      max={newCouponType === 'percentage' ? '100' : '5000'}
+                      value={newCouponVal}
+                      onChange={e => setNewCouponVal(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono text-center font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Min Order (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={newCouponMinOrder}
+                      onChange={e => setNewCouponMinOrder(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Expiry Date</label>
+                    <input
+                      type="date"
+                      value={newCouponExpiry}
+                      onChange={e => setNewCouponExpiry(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-zinc-500 mb-0.5 font-bold">Max Uses (Opt.)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Unlimited"
+                      value={newCouponMaxUses}
+                      onChange={e => setNewCouponMaxUses(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs font-mono font-bold outline-none focus:border-orange-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-zinc-500 mb-0.5 font-bold">Short Description</label>
+                  <input 
+                    type="text" 
+                    required 
+                    placeholder="e.g. Save flat 20% on all orders above ₹199"
+                    value={newCouponDesc}
+                    onChange={e => setNewCouponDesc(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 text-xs outline-none focus:border-orange-500"
+                  />
+                </div>
+
+                <button 
+                  type="submit" 
+                  className="w-full bg-orange-500 hover:bg-orange-600 active:scale-98 text-white font-bold py-2.5 rounded-xl uppercase tracking-wider transition shadow-sm cursor-pointer"
+                >
+                  Create &amp; Activate Promo Code
+                </button>
+              </form>
+            </div>
+
+            {/* LIVE PROMO VOUCHERS LIST */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Percent className="w-3.5 h-3.5 text-orange-500" /> Active Promo Codes ({couponsList.length})
+                </h4>
+                {couponsList.length > 0 && (
+                  <span className="text-[10px] text-zinc-400">Pause or remove any promo</span>
+                )}
+              </div>
+              
+              {couponsList.length === 0 ? (
+                <div className="py-8 text-center space-y-2 border border-dashed border-slate-200 dark:border-zinc-800 rounded-2xl p-4">
+                  <Tag className="w-7 h-7 text-zinc-300 dark:text-zinc-600 mx-auto" />
+                  <p className="text-xs font-bold text-zinc-500">All promo codes have been cleared.</p>
+                  <p className="text-[11px] text-zinc-400">Users cannot apply vouchers until a new code is created or defaults are restored.</p>
+                  <button
+                    type="button"
+                    onClick={() => resetDefaultCoupons()}
+                    className="mt-2 px-3 py-1 bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 rounded-xl text-xs font-bold transition hover:bg-orange-100 cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Restore Default Codes</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {couponsList.map(item => {
+                    const isPaused = item.isActive === false;
+                    return (
+                      <div 
+                        key={item.code} 
+                        className={`p-3 bg-slate-50 dark:bg-zinc-800/80 rounded-2xl flex items-center justify-between border border-slate-200/70 dark:border-zinc-700/60 hover:border-orange-500/40 transition gap-3 ${isPaused ? 'opacity-70' : ''}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-black text-xs border border-orange-500 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded bg-white dark:bg-zinc-900 tracking-wider">
+                              {item.code}
+                            </span>
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
+                              {item.discountType === 'flat' ? `₹${item.value} OFF` : `${item.value}% OFF`}
+                            </span>
+                            <span className="text-[10px] font-bold text-zinc-500">Min ₹{item.minOrder}</span>
+                            {item.expiryDate && (
+                              <span className="text-[10px] font-mono text-zinc-400">Exp {item.expiryDate}</span>
+                            )}
+                            {typeof item.maxUses === 'number' && (
+                              <span className="text-[10px] font-mono text-indigo-500">
+                                Uses {item.usedCount || 0}/{item.maxUses}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1 font-medium truncate">
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleCouponActive(item.code)}
+                            className={`text-[11px] px-2.5 py-1.5 rounded-xl font-bold transition cursor-pointer ${
+                              isPaused
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                            }`}
+                          >
+                            {isPaused ? 'Activate' : 'Pause'}
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              removeCoupon(item.code);
+                            }}
+                            className="text-xs bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 px-2.5 py-1.5 rounded-xl font-bold transition flex items-center gap-1 shrink-0 cursor-pointer active:scale-95"
+                            title={`Clear promo code ${item.code}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Clear</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* PROMOTIONAL CAROUSEL BANNERS (SPOTLIGHT PROMOS) */}
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-3xl p-5 shadow-sm space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                    <Flame className="w-3.5 h-3.5 text-orange-500 fill-orange-500" /> Home Screen Spotlight Promos ({banners.length})
+                  </h4>
+                  <p className="text-[10px] text-zinc-400 mt-0.5">
+                    Create, edit, toggle, or clear promotional banners displayed at the top of the Customer home screen (synced to Supabase)
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingBanner(true);
+                      setEditingBanner(null);
+                      setBannerForm({
+                        title: '',
+                        description: '',
+                        image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80',
+                        discount: '20% OFF',
+                        actionType: 'category',
+                        actionValue: 'Biryani',
+                        enabled: true
+                      });
+                    }}
+                    className="px-2.5 py-1 bg-orange-500 hover:bg-orange-600 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Add Banner</span>
+                  </button>
+
+                  {banners.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => resetDefaultBanners()}
+                      className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Restore Banners</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        requestAdminSaveConfirmation({
+                          title: 'Clear Promotional Banners',
+                          itemType: 'Carousel Banners Reset (బ్యానర్లు తొలగింపు)',
+                          description: 'Are you sure you want to clear all promotional carousel banners? The home screen will have no banner carousel.',
+                          onConfirm: () => {
+                            clearAllBanners();
+                          }
+                        });
+                      }}
+                      className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Clear All Banners</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {bannerNotice && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{bannerNotice}</span>
+                  </div>
+                  <button onClick={() => setBannerNotice(null)} className="text-emerald-600 hover:text-emerald-800">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* BANNER EDIT / ADD FORM */}
+              {(editingBanner || isAddingBanner) && (
+                <div className="p-4 bg-orange-50/70 dark:bg-zinc-800/90 border-2 border-orange-500/40 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-xs font-black uppercase text-orange-600 dark:text-orange-400 flex items-center gap-1.5">
+                      <Edit className="w-3.5 h-3.5" />
+                      {editingBanner ? `Edit Banner: "${editingBanner.title}"` : 'Create New Promotional Banner'}
+                    </h5>
+                    <button 
+                      type="button"
+                      onClick={() => { setEditingBanner(null); setIsAddingBanner(false); }}
+                      className="text-zinc-400 hover:text-zinc-600 p-1"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Banner Title *</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="e.g. Authentic Andhra Biryani Fest"
+                        value={bannerForm.title || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, title: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-semibold outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Discount Tag (Optional)</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Flat 30% OFF, ₹50 Cashback"
+                        value={bannerForm.discount || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, discount: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-mono font-bold outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Short Description</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Fragrant spiced rice delivered piping hot to your doorstep"
+                        value={bannerForm.description || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, description: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs outline-none focus:border-orange-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Image URL *</label>
+                      <input 
+                        type="url"
+                        required
+                        placeholder="https://images.unsplash.com/..."
+                        value={bannerForm.image || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, image: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-mono outline-none focus:border-orange-500"
+                      />
+                      {bannerForm.image && (
+                        <div className="mt-2 h-20 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800">
+                          <img src={bannerForm.image} alt="Preview" className="w-full h-full object-cover" />
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Click Action Type</label>
+                      <select 
+                        value={bannerForm.actionType || 'category'}
+                        onChange={e => setBannerForm(prev => ({ ...prev, actionType: e.target.value as any }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs font-bold outline-none focus:border-orange-500"
+                      >
+                        <option value="category">Open Food Category</option>
+                        <option value="restaurant">Open Specific Restaurant</option>
+                        <option value="screen">Navigate to Screen</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-zinc-600 dark:text-zinc-400 font-bold mb-1">Action Value Target</label>
+                      <input 
+                        type="text"
+                        placeholder="e.g. Biryani, South Indian, franchise"
+                        value={bannerForm.actionValue || ''}
+                        onChange={e => setBannerForm(prev => ({ ...prev, actionValue: e.target.value }))}
+                        className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 p-2 rounded-xl text-xs outline-none focus:border-orange-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-orange-200 dark:border-zinc-700">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      <input 
+                        type="checkbox"
+                        checked={bannerForm.enabled ?? true}
+                        onChange={e => setBannerForm(prev => ({ ...prev, enabled: e.target.checked }))}
+                        className="w-4 h-4 text-orange-500 rounded"
+                      />
+                      <span>Banner Visible in App</span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setEditingBanner(null); setIsAddingBanner(false); }}
+                        className="px-3 py-1.5 bg-slate-200 dark:bg-zinc-700 hover:bg-slate-300 text-zinc-700 dark:text-zinc-200 rounded-xl text-xs font-bold transition cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!bannerForm.title?.trim() || !bannerForm.image?.trim()) {
+                            alert('Please provide a banner title and image URL');
+                            return;
+                          }
+                          if (editingBanner) {
+                            updateBanner(editingBanner.id, {
+                              title: bannerForm.title.trim(),
+                              description: bannerForm.description?.trim() || '',
+                              image: bannerForm.image.trim(),
+                              discount: bannerForm.discount?.trim() || undefined,
+                              actionType: bannerForm.actionType || 'category',
+                              actionValue: bannerForm.actionValue?.trim() || 'Biryani',
+                              enabled: bannerForm.enabled ?? true
+                            });
+                            setBannerNotice(`Banner "${bannerForm.title}" updated and persisted in Supabase!`);
+                          } else {
+                            addBanner({
+                              title: bannerForm.title.trim(),
+                              description: bannerForm.description?.trim() || '',
+                              image: bannerForm.image.trim(),
+                              discount: bannerForm.discount?.trim() || undefined,
+                              actionType: bannerForm.actionType || 'category',
+                              actionValue: bannerForm.actionValue?.trim() || 'Biryani',
+                              enabled: bannerForm.enabled ?? true
+                            });
+                            setBannerNotice(`New banner "${bannerForm.title}" created and persisted in Supabase!`);
+                          }
+                          setEditingBanner(null);
+                          setIsAddingBanner(false);
+                          setTimeout(() => setBannerNotice(null), 4500);
+                        }}
+                        className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save Banner</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {banners.length === 0 ? (
+                <div className="py-8 text-center space-y-2 border border-dashed border-slate-200 dark:border-zinc-800 rounded-2xl p-4">
+                  <Flame className="w-7 h-7 text-zinc-300 dark:text-zinc-600 mx-auto" />
+                  <p className="text-xs font-bold text-zinc-500">All promotional banners have been cleared.</p>
+                  <p className="text-[11px] text-zinc-400">Home screen banner carousel is currently hidden.</p>
+                  <button
+                    type="button"
+                    onClick={() => resetDefaultBanners()}
+                    className="mt-2 px-3 py-1 bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 rounded-xl text-xs font-bold transition hover:bg-orange-100 cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Restore Default Banners</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                  {banners.map(b => (
+                    <div 
+                      key={b.id} 
+                      className={`p-3 rounded-2xl border transition flex items-center justify-between gap-3 ${
+                        b.enabled 
+                          ? 'bg-slate-50 dark:bg-zinc-800/80 border-slate-200/80 dark:border-zinc-700/60' 
+                          : 'bg-zinc-100/50 dark:bg-zinc-900/50 border-zinc-200/50 dark:border-zinc-800 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {b.image ? (
+                          <img 
+                            src={b.image} 
+                            alt={b.title} 
+                            className="w-12 h-12 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-zinc-700" 
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center shrink-0">
+                            <Flame className="w-5 h-5 text-orange-500" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100 truncate">
+                              {b.title}
+                            </span>
+                            {b.discount && (
+                              <span className="text-[9px] bg-red-500 text-white font-black px-1.5 py-0.2 rounded font-mono shrink-0">
+                                {b.discount}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-zinc-400 dark:text-zinc-400 truncate mt-0.5">
+                            {b.description || `Action: ${b.actionType} (${b.actionValue})`}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBanner(b);
+                            setIsAddingBanner(false);
+                            setBannerForm({ ...b });
+                          }}
+                          className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-lg transition cursor-pointer"
+                          title="Edit this promo banner"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => enableBanner(b.id, !b.enabled)}
+                          className={`text-[10px] font-bold px-2 py-1 rounded-lg transition cursor-pointer ${
+                            b.enabled 
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300' 
+                              : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-400'
+                          }`}
+                        >
+                          {b.enabled ? 'Active' : 'Paused'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            deleteBanner(b.id);
+                          }}
+                          className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition cursor-pointer"
+                          title="Clear this promo banner"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* FRANCHISE APPLICATION TRACKER */}
+        {activeTab === 'franchise' && (
+          <div className="space-y-4 text-left">
+            
+            {/* KPI METRICS OVERVIEW */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-white dark:bg-zinc-900 border p-3 rounded-2xl shadow-xs">
+                <span className="text-[8.5px] text-zinc-400 font-bold uppercase block">Total applications</span>
+                <p className="text-sm font-black text-zinc-900 dark:text-zinc-50 mt-1">{franchiseApplications.length}</p>
+              </div>
+              <div className="bg-white dark:bg-zinc-900 border p-3 rounded-2xl shadow-xs">
+                <span className="text-[8.5px] text-zinc-400 font-bold uppercase block">Active franchise</span>
+                <p className="text-sm font-black text-emerald-500 mt-1">
+                  {franchiseApplications.filter(a => a.status === 'Active Franchise').length}
+                </p>
+              </div>
+              <div className="bg-white dark:bg-zinc-900 border p-3 rounded-2xl shadow-xs">
+                <span className="text-[8.5px] text-zinc-400 font-bold uppercase block">Under Review</span>
+                <p className="text-sm font-black text-amber-500 mt-1">
+                  {franchiseApplications.filter(a => a.status === 'Under Review' || a.status === 'Verification Pending').length}
+                </p>
+              </div>
+            </div>
+
+            {/* COMMISSION SYSTEM CONFIGURATION (Only Super Admin edits) */}
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3.5">
+              <h4 className="text-xs font-black uppercase tracking-wider text-orange-500 flex items-center justify-between">
+                <span>⚙️ Localized Commission & Incentive Setup</span>
+                <span className="text-[9px] text-zinc-400 font-mono">Parameters lock</span>
+              </h4>
+
+              <div className="grid grid-cols-3 gap-2 text-[10px]">
+                <div>
+                  <label className="block text-zinc-400 font-bold mb-1">Onboarding Fee (₹)</label>
+                  <SuperAdminGuard 
+                    fallback={
+                      <input 
+                        type="text" 
+                        disabled 
+                        value={`₹${onboardingInc}`} 
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold" 
+                      />
+                    }
+                  >
+                    <input 
+                      type="number" 
+                      value={onboardingInc}
+                      onChange={e => setOnboardingInc(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold border" 
+                    />
+                  </SuperAdminGuard>
+                </div>
+
+                <div>
+                  <label className="block text-zinc-400 font-bold mb-1">Courier Bonus (₹)</label>
+                  <SuperAdminGuard 
+                    fallback={
+                      <input 
+                        type="text" 
+                        disabled 
+                        value={`₹${courierInc}`} 
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold" 
+                      />
+                    }
+                  >
+                    <input 
+                      type="number" 
+                      value={courierInc}
+                      onChange={e => setCourierInc(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold border" 
+                    />
+                  </SuperAdminGuard>
+                </div>
+
+                <div>
+                  <label className="block text-zinc-400 font-bold mb-1">Revenue Share (%)</label>
+                  <SuperAdminGuard 
+                    fallback={
+                      <input 
+                        type="text" 
+                        disabled 
+                        value={`${revShare}%`} 
+                        className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold" 
+                      />
+                    }
+                  >
+                    <input 
+                      type="text" 
+                      value={revShare}
+                      onChange={e => setRevShare(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-zinc-800 p-2 rounded-xl text-center font-mono font-bold border" 
+                    />
+                  </SuperAdminGuard>
+                </div>
+              </div>
+              <p className="text-[9px] text-zinc-450 leading-snug">
+                * Adjusted rates securely synchronize payouts to localized Cloud Kitchens, Area Franchises, and Restaurant onboarding incentive channels.
+              </p>
+            </div>
+
+            {/* CANDIDATE INQUIRIES & ACCOUNTS */}
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-4">
+              <h3 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-50 border-b pb-2 tracking-wider flex items-center justify-between">
+                <span>🏢 View All Applications & Accounts</span>
+                <span className="text-[9.5px] font-mono tracking-normal bg-orange-100 dark:bg-orange-950/20 text-orange-605 px-2 py-0.5 rounded uppercase">Verified OTP mandatory</span>
+              </h3>
+
+              {franchiseApplications.length === 0 ? (
+                <div className="py-12 text-center text-zinc-400 space-y-2">
+                  <Building className="w-10 h-10 mx-auto text-zinc-300" />
+                  <p>No investment candidates filed records in regional system database yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {franchiseApplications.map(app => {
+                    const localTerritory = territoryUpdates[app.id] || {
+                      city: app.city,
+                      district: app.district || app.city,
+                      state: app.state || "Andhra Pradesh"
+                    };
+
+                    const handleSaveTerritory = () => {
+                      requestAdminSaveConfirmation({
+                        title: `Territory Assignment: "${app.fullName}"`,
+                        itemType: 'Franchise Geographic Territory (ప్రాంతీయ కేటాయింపు)',
+                        description: `City: ${localTerritory.city} • District: ${localTerritory.district} • State: ${localTerritory.state}`,
+                        onConfirm: () => {
+                          setTerritoryUpdates(prev => ({
+                            ...prev,
+                            [app.id]: localTerritory
+                          }));
+                        }
+                      });
+                    };
+
+                    return (
+                      <div key={app.id} className="p-4 bg-slate-50 dark:bg-zinc-850 rounded-2xl border space-y-3.5 relative overflow-hidden">
+                        
+                        {/* Title area */}
+                        <div className="flex justify-between items-start gap-2">
+                          <div>
+                            <span className="text-[8px] font-mono bg-zinc-200 dark:bg-zinc-700 font-black px-1.5 py-0.5 rounded text-zinc-650 dark:text-zinc-300">
+                              ID: {app.id.replace('franchise_', '')}
+                            </span>
+                            <h4 className="font-extrabold text-xs text-zinc-905 dark:text-zinc-50 mt-1">{app.fullName}</h4>
+                            <p className="text-[9.5px] text-zinc-450 mt-0.5">{app.email} • {app.date}</p>
+                          </div>
+                          
+                          <span className={`text-[8.5px] font-black px-2 py-0.5 rounded font-mono uppercase tracking-wide border shrink-0 ${
+                            app.status === 'Active Franchise' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' :
+                            app.status === 'Rejected' ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' :
+                            app.status === 'Verification Pending' ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' :
+                            'bg-indigo-500/10 border-indigo-500/20 text-indigo-505'
+                          }`}>
+                            {app.status}
+                          </span>
+                        </div>
+
+                        {/* Profile breakdown */}
+                        <div className="grid grid-cols-2 gap-2 text-[9.5px] bg-white dark:bg-zinc-900 border p-2.5 rounded-xl text-zinc-600 dark:text-zinc-400">
+                          <p><strong>Option Format:</strong> {app.preferredFranchiseType}</p>
+                          <p><strong>Capital Scope:</strong> {app.investmentRange}</p>
+                          <p><strong>Current Job:</strong> {app.currentOccupation}</p>
+                          <p><strong>Launch Timeline:</strong> {app.expectedLaunchTimeline}</p>
+                          <p><strong>Employees Target:</strong> {app.numberOfEmployees} Agents</p>
+                          <p><strong>Aadhaar/PAN Verified:</strong> ✓ True</p>
+                        </div>
+
+                        {/* Text reasons */}
+                        <div className="space-y-1 text-[9.5px]">
+                          <p className="font-bold text-zinc-520 uppercase tracking-wide">Candidate Motivation Statement</p>
+                          <p className="bg-white dark:bg-zinc-900 p-2 rounded-lg border text-zinc-700 dark:text-zinc-300 italic">
+                            "{app.whyJoinNuvvo || "No response provided."}"
+                          </p>
+                        </div>
+
+                        {/* MANDATORY ATTACHMENTS AND IDENTITIES DUMP */}
+                        <div className="space-y-1">
+                          <p className="text-[9.5px] font-bold text-zinc-520 uppercase tracking-wide">Candidate Document Dossier Checks</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="block text-[8px] text-zinc-400 font-bold uppercase mb-0.5">Aadhaar Card Copy</span>
+                              {app.aadhaarCardImage ? (
+                                <div className="h-14 rounded-lg overflow-hidden border bg-zinc-100 flex items-center justify-center relative cursor-pointer group" onClick={() => alert("Showing Fullscreen Aadhaar Document File.")}>
+                                  <img src={app.aadhaarCardImage} alt="Aadhaar" className="w-full h-full object-cover" />
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[8px] text-white">View Full</div>
+                                </div>
+                              ) : (
+                                <span className="text-[8px] text-rose-500 block p-1.5 bg-rose-50 rounded">⚠️ Upload missing/empty</span>
+                              )}
+                            </div>
+
+                            <div>
+                              <span className="block text-[8px] text-zinc-400 font-bold uppercase mb-0.5">PAN Dossier Copy</span>
+                              {app.panCardImage ? (
+                                <div className="h-14 rounded-lg overflow-hidden border bg-zinc-100 flex items-center justify-center relative cursor-pointer group" onClick={() => alert("Showing Fullscreen PAN Document File.")}>
+                                  <img src={app.panCardImage} alt="PAN" className="w-full h-full object-cover" />
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[8px] text-white">View Full</div>
+                                </div>
+                              ) : (
+                                <span className="text-[8px] text-rose-500 block p-1.5 bg-rose-50 rounded">⚠️ Upload missing/empty</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* ASSIGN TERRITORIES FORM FIELDS */}
+                        <div className="bg-slate-100 dark:bg-zinc-950 p-3 rounded-xl border space-y-2.5">
+                          <p className="text-[9px] font-black uppercase tracking-wider text-indigo-500 flex items-center gap-1">
+                            <MapPin className="w-3.5 h-3.5" /> Geographic Territory Assignments
+                          </p>
+                          
+                          <div className="grid grid-cols-3 gap-1">
+                            <div>
+                              <label className="text-[8px] text-zinc-500 block">City</label>
+                              <input 
+                                type="text"
+                                value={localTerritory.city}
+                                onChange={e => {
+                                  setTerritoryUpdates(prev => ({
+                                    ...prev,
+                                    [app.id]: { ...localTerritory, city: e.target.value }
+                                  }));
+                                }}
+                                className="w-full bg-white dark:bg-zinc-900 border p-1 rounded text-[9px] uppercase font-bold"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[8px] text-zinc-500 block">District</label>
+                              <input 
+                                type="text"
+                                value={localTerritory.district}
+                                onChange={e => {
+                                  setTerritoryUpdates(prev => ({
+                                    ...prev,
+                                    [app.id]: { ...localTerritory, district: e.target.value }
+                                  }));
+                                }}
+                                className="w-full bg-white dark:bg-zinc-900 border p-1 rounded text-[9px] uppercase"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[8px] text-zinc-500 block">State</label>
+                              <input 
+                                type="text"
+                                value={localTerritory.state}
+                                onChange={e => {
+                                  setTerritoryUpdates(prev => ({
+                                    ...prev,
+                                    [app.id]: { ...localTerritory, state: e.target.value }
+                                  }));
+                                }}
+                                className="w-full bg-white dark:bg-zinc-900 border p-1 rounded text-[9px] uppercase"
+                              />
+                            </div>
+                          </div>
+
+                          <SuperAdminGuard
+                            fallback={
+                              <button type="button" disabled className="w-full bg-zinc-300 dark:bg-zinc-800 text-zinc-400 font-extrabold uppercase py-1.5 rounded-lg text-[8px] tracking-wide">
+                                Locked - Super Admin clearance Required
+                              </button>
+                            }
+                          >
+                            <button 
+                              type="button" 
+                              onClick={handleSaveTerritory}
+                              className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-extrabold uppercase py-1.5 rounded-lg text-[8px] tracking-wide cursor-pointer transition"
+                            >
+                              Save Geographic Territory Assignments
+                            </button>
+                          </SuperAdminGuard>
+                        </div>
+
+                        {/* MOCK PERFORMANCE PROGRESS OVERVIEW FOR APPROVED ACCOUNTS */}
+                        {(app.status === 'Approved' || app.status === 'Active Franchise') && (
+                          <div className="bg-emerald-500/5 border border-emerald-500/10 p-3 rounded-xl space-y-2">
+                            <p className="text-[9px] font-black uppercase tracking-wider text-emerald-500">Live Territory Performance Monitor</p>
+                            <div className="grid grid-cols-4 gap-1 text-[8.5px] text-center text-zinc-650 dark:text-zinc-405 font-bold">
+                              <div>
+                                <span className="block text-zinc-400 text-[8px]">Restaurants</span>
+                                <span className="text-zinc-850 dark:text-zinc-200">12</span>
+                              </div>
+                              <div>
+                                <span className="block text-zinc-400 text-[8px]">Riders</span>
+                                <span className="text-zinc-850 dark:text-zinc-200">8</span>
+                              </div>
+                              <div>
+                                <span className="block text-zinc-400 text-[8px]">Total orders</span>
+                                <span className="text-zinc-850 dark:text-zinc-200">738 Bills</span>
+                              </div>
+                              <div>
+                                <span className="block text-zinc-400 text-[8px]">Yield Volume</span>
+                                <span className="text-zinc-855 dark:text-zinc-200">₹1.84L</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* FRANCHISE APPLICATION DECISION CONTROLS */}
+                        <div className="border-t border-slate-200 dark:border-zinc-800 pt-3 flex flex-wrap gap-2 items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <a href={`tel:${app.phone}`} className="p-2 bg-slate-100 hover:bg-slate-200 text-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl flex items-center justify-center" title="Call Candidate">
+                              <Phone className="w-3.5 h-3.5" />
+                            </a>
+                            <button 
+                              type="button" 
+                              onClick={() => {
+                                setSelectedAppIdForAgreement(app.id);
+                                setShowAgreement(true);
+                              }}
+                              className="p-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/20 rounded-xl flex items-center justify-center cursor-pointer"
+                              title="Generate Contract Agreement File"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <SuperAdminGuard 
+                              fallback={
+                                <span className="text-[8.5px] bg-zinc-100 dark:bg-zinc-800 text-zinc-400 font-bold px-2 py-1 rounded">
+                                  🔒 Locked - Super Admin clearance Required
+                                </span>
+                              }
+                            >
+                              <div className="flex items-center gap-2">
+                                {/* Dedicated Accept / Approve Button */}
+                                {app.status !== 'Approved' && app.status !== 'Active Franchise' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Approved');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" has been Approved and saved to Supabase!`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to approve application: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1 shadow-xs active:scale-95"
+                                    title="Accept and approve this franchise application"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{franchiseProcessingId === app.id ? 'Processing...' : 'Accept / Approve'}</span>
+                                  </button>
+                                )}
+
+                                {/* Dedicated Reject Button */}
+                                {app.status !== 'Rejected' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      if (!window.confirm(`Are you sure you want to reject the franchise application from "${app.fullName}"?`)) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Rejected');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" has been marked as Rejected and saved to Supabase.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to reject application: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 disabled:opacity-50 text-rose-600 dark:text-rose-400 font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1 active:scale-95"
+                                    title="Reject this franchise application"
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                    <span>{franchiseProcessingId === app.id ? 'Processing...' : 'Reject'}</span>
+                                  </button>
+                                )}
+
+                                {/* Re-Open if previously rejected */}
+                                {app.status === 'Rejected' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Under Review');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Application for "${app.fullName}" re-opened for Under Review.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to re-open: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 font-extrabold px-3 py-1.5 rounded-xl text-[9.5px] uppercase tracking-wide cursor-pointer transition flex items-center gap-1"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    <span>Re-open Application</span>
+                                  </button>
+                                )}
+
+                                {/* Activate / Suspend if already Approved or Active */}
+                                {(app.status === 'Approved' || app.status === 'Agreement Pending') && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Active Franchise');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Franchise partner "${app.fullName}" has been set to Active Franchise!`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to activate: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold px-3 py-1.5 rounded-xl text-[9px] uppercase tracking-wider flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <Check className="w-3 h-3" /> Activate Franchise
+                                  </button>
+                                )}
+
+                                {app.status === 'Active Franchise' && (
+                                  <button 
+                                    type="button"
+                                    disabled={franchiseProcessingId === app.id}
+                                    onClick={async () => {
+                                      if (franchiseProcessingId) return;
+                                      setFranchiseProcessingId(app.id);
+                                      try {
+                                        await updateFranchiseStatus(app.id, 'Agreement Pending');
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Franchise account for "${app.fullName}" suspended to Agreement Pending.`,
+                                          type: 'success'
+                                        });
+                                        setTimeout(() => setFranchiseNotice(null), 5000);
+                                      } catch (err: any) {
+                                        setFranchiseNotice({
+                                          id: app.id,
+                                          msg: `Failed to suspend: ${err?.message || 'Error'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setFranchiseProcessingId(null);
+                                      }
+                                    }}
+                                    className="bg-amber-500 hover:bg-amber-600 text-white font-extrabold px-2.5 py-1.5 rounded-xl text-[8.5px] uppercase tracking-wider flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <Ban className="w-3 h-3" /> Suspend
+                                  </button>
+                                )}
+                              </div>
+                            </SuperAdminGuard>
+                          </div>
+                        </div>
+
+                        {/* Franchise notice display for this card */}
+                        {franchiseNotice && franchiseNotice.id === app.id && (
+                          <div className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
+                            franchiseNotice.type === 'success' 
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800' 
+                              : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                          }`}>
+                            {franchiseNotice.type === 'success' ? (
+                              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                            )}
+                            <span className="font-semibold">{franchiseNotice.msg}</span>
+                          </div>
+                        )}
+
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* COMMUNICATIONS & BROADCASTING DESK */}
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3.5">
+              <h4 className="text-xs font-black uppercase text-orange-500 flex items-center gap-1.5">
+                <MessageSquare className="w-4.5 h-4.5" /> Corporate Communication Broadcasting
+              </h4>
+              
+              <div className="space-y-2">
+                <label className="block text-[9px] font-bold text-zinc-400 uppercase">Write bulk announcement notice</label>
+                <textarea 
+                  placeholder="Draft SMS notification or WhatsApp bulk transmission to all municipal franchise inquiries..."
+                  value={bulkMsg}
+                  onChange={e => setBulkMsg(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-zinc-800 p-2.5 rounded-2xl border h-16 resize-none text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[9px]">
+                <button 
+                  onClick={() => {
+                    if (!bulkMsg.trim()) { alert("Please type your announcement message notice draft first."); return; }
+                    setMsgLogs(prev => [`[SMS - ${new Date().toLocaleTimeString()}] Broadcasted message: "${bulkMsg}"`, ...prev]);
+                    alert(`NUVVO: Notice draft successfully broadcasted to all ${franchiseApplications.length} municipal candidates phone networks!`);
+                    setBulkMsg('');
+                  }}
+                  className="bg-orange-500 hover:bg-orange-600 text-white font-black py-2.5 rounded-xl uppercase flex items-center justify-center gap-1 cursor-pointer shadow-md"
+                >
+                  <Send className="w-3 h-3" /> Broadcast SMS
+                </button>
+                <button 
+                  onClick={() => {
+                    if (!bulkMsg.trim()) { alert("Please type your warning message notice draft first."); return; }
+                    const text = encodeURIComponent(bulkMsg);
+                    const supportNo = String((import.meta as any).env?.VITE_SUPPORT_WHATSAPP_NUMBER || '').replace(/\D/g, '');
+                    window.open(supportNo ? `https://wa.me/${supportNo}?text=${text}` : `https://wa.me/?text=${text}`, "_blank");
+                    setMsgLogs(prev => [`[WA - ${new Date().toLocaleTimeString()}] Sync template initialized`, ...prev]);
+                    alert("Ecosystem: Initiated bulk WhatsApp API redirect pipeline check.");
+                  }}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-black py-2.5 rounded-xl uppercase flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <MessageSquare className="w-3 h-3" /> Sync WhatsApp
+                </button>
+              </div>
+
+              {msgLogs.length > 0 && (
+                <div className="space-y-1 bg-slate-50 dark:bg-zinc-950 p-2 rounded-xl text-[8.5px] font-mono border">
+                  <p className="font-bold text-zinc-400 uppercase block tracking-wider">Broadcast Journal Logs:</p>
+                  {msgLogs.slice(0, 3).map((l, i) => (
+                    <p key={i} className="text-zinc-600 dark:text-zinc-400">✓ {l}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* AUDIT REPORTS DESK */}
+            <div className="bg-white dark:bg-zinc-900 border rounded-3xl p-5 shadow-sm space-y-3">
+              <h4 className="text-xs font-black uppercase text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                <FileText className="w-4.5 h-4.5 text-orange-500" /> Export Regional Territory Audits
+              </h4>
+              <p className="text-[10px] text-zinc-450 leading-relaxed">
+                Compile all assigned municipal areas, total candidates files, current review pipelines, and registered onboarding commission rates into a single system report.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <button 
+                  onClick={() => setShowReport(true)}
+                  className="bg-white hover:bg-slate-50 text-zinc-900 border font-extrabold py-2.5 rounded-xl uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" /> Generate Report
+                </button>
+                <button 
+                  onClick={() => {
+                    const textContent = `--- NUVVO CORPS SYSTEM TERRITORIAL REPORT ---\nDATED: ${new Date().toLocaleDateString()}\nAPPLICANTS DETECTED: ${franchiseApplications.length}\nONBOARDING STANDARD RATE: ₹${onboardingInc}\nCOURIER REGISTRATION RATE: ₹${courierInc}\nREVENUE POOL ACCENT: ${revShare}%\n`;
+                    const file = new Blob([textContent], {type: 'text/plain'});
+                    const element = document.createElement("a");
+                    element.href = URL.createObjectURL(file);
+                    element.download = "Nuvvo_Regional_Commission_Report.txt";
+                    document.body.appendChild(element);
+                    element.click();
+                    alert("System Report finalized! Executing local device download: Nuvvo_Regional_Commission_Report.txt");
+                  }}
+                  className="bg-zinc-800 hover:bg-zinc-900 text-white font-extrabold py-2.5 rounded-xl uppercase flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" /> Export as TXT
+                </button>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+      </div>
+
+      {/* REPORT TEXT DISPLAY BOX MODAL */}
+      {showReport && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 w-full max-w-sm text-left space-y-4 border shadow-xl">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h4 className="font-extrabold text-[11px] text-orange-505 uppercase flex items-center gap-1">
+                <TrendingUp className="w-4 h-4" /> Systemic Territory Audit
+              </h4>
+              <button onClick={() => setShowReport(false)} className="p-1 text-zinc-400 hover:text-zinc-650">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="bg-slate-50 dark:bg-zinc-950 p-3 rounded-2xl border font-mono text-[9px] text-zinc-600 dark:text-zinc-350 space-y-1">
+              <p className="font-bold text-orange-500 uppercase">** NUVVO AUDIT FILE DATED {new Date().toLocaleDateString()} **</p>
+              <p>------------------------------------------</p>
+              <p>- TOTAL ACTIVE ENQUIRIES: {franchiseApplications.length} CANDIDATES</p>
+              <p>- RESTAURANT ONBOARDING FEE: ₹{onboardingInc}</p>
+              <p>- COURIER ENROLLMENT BONUS: ₹{courierInc}</p>
+              <p>- PLATFORM ROYALTY ACCRUED: {revShare}%</p>
+              <p>- SEALS GEOGRAPHY REGIONS: {franchiseApplications.filter(a => a.status === 'Active Franchise').length} ACTIVE SECTORS</p>
+              <p>------------------------------------------</p>
+              <p className="text-[8px] text-zinc-400">Security key: [SHA-256 SYSTEMIC CLEARANCE GRANTED]</p>
+            </div>
+
+            <button onClick={() => setShowReport(false)} className="w-full bg-zinc-850 hover:bg-zinc-900 text-white font-extrabold uppercase py-2 text-[10px] rounded-xl text-center">
+              Acknowledge Checks
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* AGREEMENT DOCUMENT GENERATOR MODAL */}
+      {showAgreement && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 w-full max-w-md text-left space-y-4 border shadow-xl flex flex-col max-h-[85vh]">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h4 className="font-extrabold text-[11px] text-indigo-600 uppercase flex items-center gap-1.5">
+                <FileText className="w-4.5 h-4.5" /> Bilateral Franchise Agreement
+              </h4>
+              <button 
+                onClick={() => {
+                  setShowAgreement(false);
+                  setSelectedAppIdForAgreement(null);
+                }} 
+                className="p-1 text-zinc-400 hover:text-zinc-650"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 bg-slate-50 dark:bg-zinc-950 p-4 rounded-xl border text-[9.5px] leading-relaxed text-zinc-705 dark:text-zinc-300 font-sans space-y-3.5">
+              <div className="text-center font-black text-xs uppercase tracking-tight text-zinc-800 dark:text-zinc-100 pb-2 border-b">
+                MEMORANDUM OF UNDERSTANDING & COMMISSION DEED 
+              </div>
+              <p>
+                <strong>SECTION A: PARTIES</strong><br />
+                This Bilateral Operator Agreement is entered into on this day <strong>{new Date().toLocaleDateString()}</strong> by and between <strong>NUVVO TECHNOLOGIES PRIVATE LIMITED</strong> (hereinafter "Ecosystem Proprietor") and the Evaluated Candidate.
+              </p>
+              <p>
+                <strong>SECTION B: GEOGRAPHICAL INTENT LOCKUP</strong><br />
+                Consistent with candidate dossier filing, exclusive operations locks are hereby assigned to the designated municipal zip codes. The franchisee holds full localized recruitment authorization for the region.
+              </p>
+              <p>
+                <strong>SECTION C: DECLARED COMMISSION STRUCTURES</strong><br />
+                - Onboarding Fee Incentive: <strong>₹{onboardingInc}</strong> per verified vendor registration.<br />
+                - Logistics Recruitment Reward: <strong>₹{courierInc}</strong> per Courier logistics agent.<br />
+                - Sustained Platform Micro-royalty share: <strong>{revShare}%</strong> on municipal volume billing pools.
+              </p>
+              <p className="border-t pt-2 italic text-center text-[8.5px] text-zinc-450">
+                This document draft is instantly compiled and cleared for signatures. Click "Download Agreement Document" to sign.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              <button 
+                onClick={() => {
+                  alert("Executing digital draft download: Nuvvo_Franchise_Operator_Agreement.pdf");
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-2.5 rounded-xl uppercase flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Agreement
+              </button>
+              <button 
+                onClick={() => {
+                  setShowAgreement(false);
+                  setSelectedAppIdForAgreement(null);
+                }}
+                className="bg-white hover:bg-slate-50 text-zinc-800 border font-extrabold py-2.5 rounded-xl uppercase text-center"
+              >
+                Dismiss Draft
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

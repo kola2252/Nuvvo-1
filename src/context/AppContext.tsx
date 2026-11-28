@@ -1170,7 +1170,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [franchiseApplications]);
 
   // Admin and Super Admin
-  const [isSuperAdminAuthenticated, setSuperAdminAuthenticated] = useState<boolean>(false);
+  const [isSuperAdminAuthenticated, setSuperAdminAuthenticated] = useState<boolean>(() => hasActiveAdminJwtSession());
   const [designatedAdmins, setDesignatedAdmins] = useState<DesignatedAdmin[]>(() => {
     return safeParse<DesignatedAdmin[]>('nuvvo_designated_admins', [
       {
@@ -1571,7 +1571,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           await hydrateCustomerFromSession(session.access_token);
         } else {
           // If no Supabase Auth session, check signed server JWT (`nuvvo_jwt_*`) before clearing Customer state
-          const cached = safeParse<User | null>('nuvvo_user', null);
+          const cached = safeParse<User | null>('nuvvo_user', null) || (() => {
+            try {
+              const sRaw = window.sessionStorage.getItem('nuvvo_user');
+              return sRaw ? (JSON.parse(sRaw) as User) : null;
+            } catch {
+              return null;
+            }
+          })();
           const storedTok = getStoredAuthToken();
           if (storedTok.startsWith('nuvvo_jwt_') && (!cached || !cached.role || cached.role === 'Customer')) {
             await hydrateCustomerFromSession(storedTok);
@@ -4915,6 +4922,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteCustomerAccount = async (password: string): Promise<{ success: boolean; error?: string; message?: string }> => {
     try {
+      const deletedUserId = user?.id;
       const { data: { session } } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
       const token = session?.access_token || getStoredAuthToken();
       const email = user?.email || '';
@@ -4934,6 +4942,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           error: data?.error || 'Failed to delete account. Please verify your current password.'
         };
       }
+      clearCustomerScopedCache(deletedUserId);
       logoutUser();
       return { success: true, message: data.message || 'Account successfully deleted and anonymized.' };
     } catch (err: any) {
@@ -4945,6 +4954,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // --- SECURE SERVER ADMIN PHONE & PIN AUTHENTICATION ---
+  const parseJsonSafe = async (resp: Response): Promise<any> => {
+    try {
+      const text = await resp.text();
+      if (!text) return null;
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  };
+
   const adminCheckPhone = async (phone: string): Promise<{ success: boolean; promptForPin: boolean; maskedPhone?: string; error?: string }> => {
     try {
       const normalizedInput = normalizeAdminPhoneDigits(phone);
@@ -4954,16 +4973,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         body: JSON.stringify({ phone: normalizedInput })
       });
 
-      if (!resp.ok && resp.status === 404) {
+      let data = await parseJsonSafe(resp);
+      if (!resp.ok && (resp.status === 404 || (resp.status >= 500 && !data))) {
         resp = await fetch('/api/auth/admin-check-phone', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ phone: normalizedInput })
         });
+        data = await parseJsonSafe(resp);
       }
 
-      const data = await resp.json().catch(() => null);
       if (!resp.ok || !data?.success || !data?.promptForPin || !data?.isAuthorizedAdmin) {
+        if (resp.status >= 500 && !data?.error) {
+          return {
+            success: false,
+            promptForPin: false,
+            error: `Verification server unavailable (HTTP ${resp.status}). Please retry or check backend deployment.`
+          };
+        }
         return {
           success: false,
           promptForPin: false,
@@ -4993,19 +5020,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         body: JSON.stringify({ phone: normalizedInput, pin, masterCode: pin })
       });
 
-      if (!resp.ok && resp.status === 404) {
+      let data = await parseJsonSafe(resp);
+      if (!resp.ok && (resp.status === 404 || (resp.status >= 500 && !data))) {
         resp = await fetch('/api/auth/admin-verify-pin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ phone: normalizedInput, pin, masterCode: pin })
         });
+        data = await parseJsonSafe(resp);
       }
 
-      const data = await resp.json().catch(() => null);
       if (!resp.ok || !data?.success) {
+        if (data?.error) {
+          return {
+            success: false,
+            error: data.error
+          };
+        }
+        if (resp.status >= 500) {
+          return {
+            success: false,
+            error: `Master Code verification server error (HTTP ${resp.status}). Please retry or check server logs.`
+          };
+        }
         return {
           success: false,
-          error: data?.error || 'Master Code verification failed. Please enter the correct Master Code.'
+          error: 'Master Code verification failed. Please enter the correct Master Code.'
         };
       }
 
@@ -5042,6 +5082,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem('nuvvo_registered_admin', JSON.stringify(adminUser));
         localStorage.setItem('nuvvo_user', JSON.stringify(adminUser));
         localStorage.setItem('nuvvo_auth_role', 'Admin');
+        localStorage.setItem('nuvvo_admin_target_tab', data.redirectTab || 'settings');
         window.sessionStorage.removeItem('nuvvo_auth_token');
         window.sessionStorage.removeItem('nuvvo_user');
       } catch {}
@@ -5172,12 +5213,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem('nuvvo_app_language', preferredLanguage);
       }
       try {
-        if (authedPhone) {
+        const useLocal = updatedUser.role !== 'Customer' || getAuthPersistencePreference();
+        const primary = useLocal ? localStorage : sessionStorage;
+        const secondary = useLocal ? sessionStorage : localStorage;
+        if (authedPhone && updatedUser.role !== 'Customer') {
           localStorage.setItem(`nuvvo_registered_${authedPhone}`, JSON.stringify(updatedUser));
         }
-        localStorage.setItem('nuvvo_user', JSON.stringify(updatedUser));
+        primary.setItem('nuvvo_user', JSON.stringify(updatedUser));
+        secondary.removeItem('nuvvo_user');
       } catch (err) {
-        console.error('Failed to write user to localStorage:', err);
+        console.error('Failed to write user to storage:', err);
       }
       return updatedUser;
     });
@@ -5222,11 +5267,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logoutUser = () => {
-    const leavingUserId = user?.id;
     addAuditLog('User Logout', `Session terminated for current account`);
     supabase.auth.signOut().catch(() => {});
     clearAllSupabaseAuthStorage();
-    clearCustomerScopedCache(leavingUserId);
     clearUnscopedLegacyCustomerCache();
     tanstackQueryClient.clear();
     queryClient.clear();
@@ -5259,10 +5302,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!prevUser) return null;
       const updated = { ...prevUser, addresses };
       try {
-        localStorage.setItem(`nuvvo_registered_${prevUser.phone}`, JSON.stringify(updated));
-        localStorage.setItem('nuvvo_user', JSON.stringify(updated));
+        const useLocal = prevUser.role !== 'Customer' || getAuthPersistencePreference();
+        const primary = useLocal ? localStorage : sessionStorage;
+        const secondary = useLocal ? sessionStorage : localStorage;
+        if (prevUser.phone && prevUser.role !== 'Customer') {
+          localStorage.setItem(`nuvvo_registered_${prevUser.phone}`, JSON.stringify(updated));
+        }
+        primary.setItem('nuvvo_user', JSON.stringify(updated));
+        secondary.removeItem('nuvvo_user');
       } catch (err) {
-        console.error('Failed to write addresses to localStorage:', err);
+        console.error('Failed to write addresses to storage:', err);
       }
       return updated;
     });

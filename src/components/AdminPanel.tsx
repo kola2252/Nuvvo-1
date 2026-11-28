@@ -622,13 +622,13 @@ export default function AdminPanel() {
     <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 pb-24 duration-300">
       
       {/* Upper header */}
-      <div className="sticky top-0 bg-white dark:bg-zinc-900 border-b p-4 z-10 flex items-center justify-between">
+      <div className="sticky top-0 bg-white dark:bg-zinc-900 border-b p-3 sm:p-4 z-10 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-black p-0.5 border border-amber-500/30 shrink-0 flex items-center justify-center shadow-xs">
             <img src="/nuvvo-logo.png" alt="Nuvvo Logo" className="w-full h-full rounded-full object-contain" referrerPolicy="no-referrer" />
           </div>
           <div>
-            <h2 className="text-xl font-black text-zinc-950 dark:text-zinc-50 tracking-tight flex items-center gap-1.5">
+            <h2 className="text-lg sm:text-xl font-black text-zinc-950 dark:text-zinc-50 tracking-tight flex items-center gap-1.5">
               📊 Micro-Region Admin
             </h2>
             <p className="text-[10px] text-zinc-400 font-bold font-mono tracking-wide mt-0.5">METRIC CONTROL ENGINE</p>

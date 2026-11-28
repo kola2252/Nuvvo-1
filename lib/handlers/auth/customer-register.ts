@@ -265,8 +265,35 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const existingLocalAccount = findLocalCustomerAccountByEmail(cleanEmail) || findLocalCustomerByEmail(cleanEmail);
-    if (existingLocalAccount) {
+    const existingLocalPasswordAccount = findLocalCustomerAccountByEmail(cleanEmail);
+    if (existingLocalPasswordAccount) {
+      return sendJsonResponse(res, 409, {
+        success: false,
+        code: "EMAIL_ALREADY_REGISTERED",
+        error: "An account with this email address already exists. Please sign in or reset your password."
+      });
+    }
+
+    const existingLocalIdx = findLocalCustomerByEmail(cleanEmail);
+    if (existingLocalIdx) {
+      if (existingLocalIdx.isEmailVerified === false) {
+        try {
+          await publicSupabase.auth.resend({
+            type: "signup",
+            email: cleanEmail,
+            options: { emailRedirectTo }
+          });
+        } catch {}
+
+        return sendJsonResponse(res, 409, {
+          success: false,
+          code: "ACCOUNT_PENDING_VERIFICATION",
+          requiresEmailVerification: true,
+          email: cleanEmail,
+          error: `An account with ${cleanEmail} is already awaiting email verification. Please check your inbox (and spam folder) or resend the verification link below.`
+        });
+      }
+
       return sendJsonResponse(res, 409, {
         success: false,
         code: "EMAIL_ALREADY_REGISTERED",
@@ -644,6 +671,7 @@ export default async function handler(req: any, res: any) {
       whatsappOptInAt: consentTimestamp || undefined,
       whatsappOptInSource: validatedWhatsappE164 ? "registration" : undefined,
       preferredLanguage: "te",
+      isEmailVerified: emailVerified,
       role: "Customer",
       createdAt: nowIso,
       updatedAt: nowIso

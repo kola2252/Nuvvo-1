@@ -103,7 +103,7 @@ function resolveRequestTarget(req: any): { pathname: string; queryString: string
 export default async function handler(req: any, res: any) {
   try {
     const { pathname, queryString } = resolveRequestTarget(req);
-    const cleanSub = pathname.replace(/^\/api\/?/, '').replace(/^\/+/, '').toLowerCase();
+    const cleanSub = pathname.replace(/^\/api\/?/, '').replace(/^\/+|\/+$/g, '').toLowerCase();
 
     req.url = pathname + queryString;
 

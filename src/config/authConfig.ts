@@ -65,6 +65,7 @@ export function normalizePhoneNumber(phone?: string | null): string {
 export function normalizeAdminPhoneDigits(phone?: string | null): string {
   if (!phone) return '';
   const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 14 && digits.startsWith('0091')) return digits.slice(4);
   if (digits.length === 13 && digits.startsWith('091')) return digits.slice(3);
   if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
   if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
@@ -73,10 +74,13 @@ export function normalizeAdminPhoneDigits(phone?: string | null): string {
 
 /**
  * Incremental input sanitizer for #admin-phone-input that lets users type or paste
- * formats with +91, 91, 091, or 0 country prefixes cleanly without leaking numbers.
+ * formats with +91, 91, 091, 0091, or 0 country prefixes cleanly without leaking numbers.
  */
 export function normalizeAdminPhoneInput(value: string): string {
   const raw = String(value || '').replace(/\D/g, '');
+  if (raw.startsWith('0091')) {
+    return raw.length >= 14 ? raw.slice(4, 14) : raw;
+  }
   if (raw.startsWith('091')) {
     return raw.length >= 13 ? raw.slice(3, 13) : raw;
   }

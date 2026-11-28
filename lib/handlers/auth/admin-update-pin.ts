@@ -89,7 +89,13 @@ export default async function handler(req: any, res: any) {
     }
 
     const newHash = hashPassword(cleanNew);
-    await saveAdminMasterCodeHash(newHash);
+    const saved = await saveAdminMasterCodeHash(newHash);
+    if (!saved) {
+      return sendJsonResponse(res, 500, {
+        success: false,
+        error: "Unable to persist the updated Master Code. Ensure SUPABASE_SERVICE_ROLE_KEY and app_settings/admin_credentials table are configured on the server."
+      });
+    }
 
     return sendJsonResponse(res, 200, {
       success: true,
